@@ -26,7 +26,9 @@ Example:
 
 ```bash
 generatedts /usr/share/dotnet/packs/Microsoft.NETCore.App.Ref/8.0.0/ref/net8.0/System.Text.Json.dll
-# Creates: ./System.Text.Json.d.ts
+# Creates:
+#   ./System.Text.Json.d.ts
+#   ./System.Text.Json.metadata.json
 ```
 
 ### Command-Line Options
@@ -60,7 +62,14 @@ generatedts System.IO.dll --log build.log.json
 
 ## Generated Output
 
-The tool generates TypeScript declarations with:
+The tool generates two files for each assembly:
+
+1. **TypeScript declarations** (`.d.ts`) - TypeScript type definitions
+2. **Metadata sidecar** (`.metadata.json`) - C# semantic information
+
+### TypeScript Declarations
+
+The `.d.ts` file contains TypeScript declarations with:
 
 1. **Branded type aliases** for C# numeric types:
    ```typescript
@@ -86,6 +95,81 @@ The tool generates TypeScript declarations with:
    - `T[]` → `ReadonlyArray<T>`
    - `List<T>` → `List<T>`
    - `Nullable<T>` → `T | null`
+
+### Metadata Sidecar Files
+
+The `.metadata.json` file contains C# semantic information that TypeScript cannot express. This enables the Tsonic compiler to generate correct C# code, particularly for:
+
+- **Virtual/override methods** - Required to correctly override base class methods
+- **Abstract classes/methods** - Required to properly extend abstract types
+- **Sealed classes/methods** - Prevents invalid inheritance
+- **Static classes** - Type-level restrictions
+- **Struct vs Class** - Value vs reference type semantics
+- **Method accessibility** - Public, protected, private, internal modifiers
+
+#### Example Structure
+
+```json
+{
+  "assemblyName": "System.Text.Json",
+  "assemblyVersion": "10.0.0.0",
+  "types": {
+    "System.Text.Json.JsonSerializer": {
+      "kind": "class",
+      "isAbstract": true,
+      "isSealed": false,
+      "isStatic": false,
+      "baseType": null,
+      "interfaces": [],
+      "members": {
+        "Serialize<T>(T)": {
+          "kind": "method",
+          "isVirtual": false,
+          "isAbstract": false,
+          "isSealed": false,
+          "isOverride": false,
+          "isStatic": true,
+          "accessibility": "public"
+        },
+        "Deserialize<T>(string)": {
+          "kind": "method",
+          "isVirtual": false,
+          "isAbstract": false,
+          "isSealed": false,
+          "isOverride": false,
+          "isStatic": true,
+          "accessibility": "public"
+        }
+      }
+    }
+  }
+}
+```
+
+#### Metadata Fields
+
+**Type-level fields:**
+- `kind`: `"class"`, `"struct"`, `"interface"`, or `"enum"`
+- `isAbstract`: True for abstract classes (excluding interfaces)
+- `isSealed`: True for sealed classes (excluding value types and enums)
+- `isStatic`: True for static classes
+- `baseType`: Full name of base class (if any)
+- `interfaces`: Array of implemented interface names
+- `members`: Dictionary of member metadata keyed by signature
+
+**Member-level fields:**
+- `kind`: `"method"`, `"property"`, or `"constructor"`
+- `isVirtual`: True if method can be overridden
+- `isAbstract`: True for abstract methods
+- `isSealed`: True if method prevents further overriding
+- `isOverride`: True if method overrides a base method
+- `isStatic`: True for static members
+- `accessibility`: `"public"`, `"protected"`, `"private"`, `"internal"`, etc.
+
+**Signature format:**
+- Methods: `MethodName(Type1,Type2,...)` using C# type names
+- Properties: `PropertyName`
+- Constructors: `ctor(Type1,Type2,...)`
 
 ## Configuration File
 
@@ -158,10 +242,13 @@ The tool automatically skips:
 generatedts/
 ├── Src/
 │   ├── Program.cs              # CLI entry point
-│   ├── AssemblyProcessor.cs    # Reflection and type extraction
+│   ├── AssemblyProcessor.cs    # Reflection and type/metadata extraction
 │   ├── TypeMapper.cs           # C# to TypeScript type mapping
 │   ├── DeclarationRenderer.cs  # TypeScript output generation
-│   ├── TypeInfo.cs             # Data structures
+│   ├── TypeInfo.cs             # Data structures for declarations
+│   ├── MetadataModel.cs        # Data structures for metadata
+│   ├── SignatureFormatter.cs   # Method/property signature formatting
+│   ├── MetadataWriter.cs       # JSON metadata serialization
 │   ├── GeneratorConfig.cs      # Configuration support
 │   └── GenerationLogger.cs     # Logging functionality
 └── README.md

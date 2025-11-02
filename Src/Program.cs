@@ -92,17 +92,27 @@ public static class Program
             var renderer = new DeclarationRenderer();
             var declarations = renderer.RenderDeclarations(typeInfo);
 
+            // Process metadata
+            var metadata = processor.ProcessAssemblyMetadata(assembly);
+
             // Determine output file name
             var assemblyName = Path.GetFileNameWithoutExtension(assemblyPath);
             var outputFileName = $"{assemblyName}.d.ts";
             var outputPath = Path.Combine(outDir, outputFileName);
+            var metadataFileName = $"{assemblyName}.metadata.json";
+            var metadataPath = Path.Combine(outDir, metadataFileName);
 
             // Ensure output directory exists
             Directory.CreateDirectory(outDir);
 
-            // Write output file
+            // Write TypeScript declarations
             await File.WriteAllTextAsync(outputPath, declarations, System.Text.Encoding.UTF8);
             Console.WriteLine($"Generated: {outputPath}");
+
+            // Write metadata file
+            var metadataWriter = new MetadataWriter();
+            await metadataWriter.WriteMetadataAsync(metadata, metadataPath);
+            Console.WriteLine($"Generated: {metadataPath}");
 
             // Write log if requested
             if (logPath != null)

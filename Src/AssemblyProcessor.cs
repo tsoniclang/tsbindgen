@@ -7,6 +7,7 @@ public sealed class AssemblyProcessor
     private readonly GeneratorConfig _config;
     private readonly HashSet<string>? _namespaceWhitelist;
     private readonly TypeMapper _typeMapper = new();
+    private readonly SignatureFormatter _signatureFormatter = new();
 
     public AssemblyProcessor(GeneratorConfig config, string[] namespaces)
     {
@@ -297,5 +298,207 @@ public sealed class AssemblyProcessor
         var name = type.Name;
         var backtickIndex = name.IndexOf('`');
         return backtickIndex > 0 ? name.Substring(0, backtickIndex) : name;
+    }
+
+    /// <summary>
+    /// Processes assembly and extracts metadata for all types and members.
+    /// </summary>
+    public AssemblyMetadata ProcessAssemblyMetadata(Assembly assembly)
+    {
+        var types = assembly.GetExportedTypes()
+            .Where(ShouldIncludeType)
+            .OrderBy(t => t.Namespace)
+            .ThenBy(t => t.Name)
+            .ToList();
+
+        var typeMetadataDict = new Dictionary<string, TypeMetadata>();
+
+        foreach (var type in types)
+        {
+            try
+            {
+                var metadata = ProcessTypeMetadata(type);
+                if (metadata != null)
+                {
+                    var fullName = type.FullName!.Replace('+', '.');
+                    typeMetadataDict[fullName] = metadata;
+                }
+            }
+            catch (Exception ex)
+            {
+                _typeMapper.AddWarning($"Failed to process metadata for type {type.FullName}: {ex.Message}");
+            }
+        }
+
+        return new AssemblyMetadata(
+            assembly.GetName().Name ?? assembly.FullName ?? "Unknown",
+            assembly.GetName().Version?.ToString() ?? "0.0.0.0",
+            typeMetadataDict);
+    }
+
+    private TypeMetadata? ProcessTypeMetadata(Type type)
+    {
+        // Determine the kind of type
+        string kind;
+        if (type.IsEnum)
+        {
+            kind = "enum";
+        }
+        else if (type.IsInterface)
+        {
+            kind = "interface";
+        }
+        else if (type.IsValueType)
+        {
+            kind = "struct";
+        }
+        else
+        {
+            kind = "class";
+        }
+
+        // Get type-level flags
+        bool isAbstract = type.IsAbstract && !type.IsInterface && !type.IsSealed;
+        bool isSealed = type.IsSealed && !type.IsValueType && !type.IsEnum;
+        bool isStatic = type.IsAbstract && type.IsSealed && type.IsClass;
+
+        // Get base type (if any)
+        string? baseType = null;
+        if (type.BaseType != null && type.BaseType != typeof(object) && type.BaseType != typeof(ValueType))
+        {
+            baseType = type.BaseType.FullName?.Replace('+', '.');
+        }
+
+        // Get interfaces
+        var interfaces = type.GetInterfaces()
+            .Where(i => i.IsPublic)
+            .Select(i => i.FullName?.Replace('+', '.') ?? i.Name)
+            .ToList();
+
+        // Process members
+        var memberMetadataDict = new Dictionary<string, MemberMetadata>();
+
+        // Process constructors (skip for interfaces and enums)
+        if (!type.IsInterface && !type.IsEnum)
+        {
+            var constructors = type.GetConstructors(BindingFlags.Public | BindingFlags.Instance);
+            foreach (var ctor in constructors)
+            {
+                var signature = _signatureFormatter.FormatConstructor(ctor);
+                var metadata = ProcessConstructorMetadata(ctor);
+                memberMetadataDict[signature] = metadata;
+            }
+        }
+
+        // Process properties
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(ShouldIncludeMember);
+
+        foreach (var prop in properties)
+        {
+            var signature = _signatureFormatter.FormatProperty(prop);
+            var metadata = ProcessPropertyMetadata(prop);
+            memberMetadataDict[signature] = metadata;
+        }
+
+        // Process methods (skip special methods like property getters/setters)
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(ShouldIncludeMember)
+            .Where(m => !m.IsSpecialName);
+
+        foreach (var method in methods)
+        {
+            var signature = _signatureFormatter.FormatMethod(method);
+            var metadata = ProcessMethodMetadata(method);
+            memberMetadataDict[signature] = metadata;
+        }
+
+        return new TypeMetadata(
+            kind,
+            isAbstract,
+            isSealed,
+            isStatic,
+            baseType,
+            interfaces,
+            memberMetadataDict);
+    }
+
+    private MemberMetadata ProcessConstructorMetadata(System.Reflection.ConstructorInfo ctor)
+    {
+        return new MemberMetadata(
+            "constructor",
+            IsVirtual: false,
+            IsAbstract: false,
+            IsSealed: false,
+            IsOverride: false,
+            IsStatic: false,
+            Accessibility: GetAccessibility(ctor));
+    }
+
+    private MemberMetadata ProcessPropertyMetadata(System.Reflection.PropertyInfo prop)
+    {
+        // For properties, check the getter method for virtual/override information
+        var getter = prop.GetMethod;
+        var setter = prop.SetMethod;
+        var accessMethod = getter ?? setter;
+
+        bool isVirtual = accessMethod?.IsVirtual == true && !accessMethod.IsFinal;
+        bool isAbstract = accessMethod?.IsAbstract == true;
+        bool isSealed = accessMethod?.IsFinal == true && accessMethod.IsVirtual;
+        bool isOverride = IsOverrideMethod(accessMethod);
+        bool isStatic = accessMethod?.IsStatic ?? false;
+
+        return new MemberMetadata(
+            "property",
+            isVirtual,
+            isAbstract,
+            isSealed,
+            isOverride,
+            isStatic,
+            GetAccessibility(accessMethod));
+    }
+
+    private MemberMetadata ProcessMethodMetadata(System.Reflection.MethodInfo method)
+    {
+        bool isVirtual = method.IsVirtual && !method.IsFinal;
+        bool isAbstract = method.IsAbstract;
+        bool isSealed = method.IsFinal && method.IsVirtual;
+        bool isOverride = IsOverrideMethod(method);
+        bool isStatic = method.IsStatic;
+
+        return new MemberMetadata(
+            "method",
+            isVirtual,
+            isAbstract,
+            isSealed,
+            isOverride,
+            isStatic,
+            GetAccessibility(method));
+    }
+
+    private bool IsOverrideMethod(MethodInfo? method)
+    {
+        if (method == null || !method.IsVirtual)
+        {
+            return false;
+        }
+
+        // A method is an override if its base definition is different from itself
+        var baseDefinition = method.GetBaseDefinition();
+        return baseDefinition != method;
+    }
+
+    private string GetAccessibility(MethodBase? method)
+    {
+        if (method == null) return "public";
+
+        if (method.IsPublic) return "public";
+        if (method.IsFamily) return "protected";
+        if (method.IsFamilyOrAssembly) return "protected internal";
+        if (method.IsFamilyAndAssembly) return "private protected";
+        if (method.IsAssembly) return "internal";
+        if (method.IsPrivate) return "private";
+
+        return "public";
     }
 }
