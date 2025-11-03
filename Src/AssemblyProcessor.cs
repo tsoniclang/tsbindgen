@@ -253,7 +253,7 @@ public sealed class AssemblyProcessor
             .ToList();
 
         return new EnumDeclaration(
-            type.Name,
+            GetTypeName(type), // Use GetTypeName() for nested types (e.g., Environment_SpecialFolder)
             type.FullName!,
             false,
             Array.Empty<string>(),
@@ -1150,12 +1150,11 @@ public sealed class AssemblyProcessor
 
                     var basePropertyType = _typeMapper.MapType(baseProp.PropertyType);
 
-                    // Check if we already have this exact property signature
-                    var hasExactMatch = properties.Any(p =>
-                        p.Name == baseProp.Name &&
-                        p.Type == basePropertyType);
+                    // Check if we already have a property with this name
+                    // (Properties cannot be overloaded in TypeScript, unlike methods)
+                    var hasProperty = properties.Any(p => p.Name == baseProp.Name);
 
-                    if (!hasExactMatch)
+                    if (!hasProperty)
                     {
                         // Add base class-compatible property signature
                         var isStatic = baseProp.GetMethod?.IsStatic ?? baseProp.SetMethod?.IsStatic ?? false;
