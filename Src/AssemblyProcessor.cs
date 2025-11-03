@@ -192,6 +192,23 @@ public sealed class AssemblyProcessor
         return false;
     }
 
+    /// <summary>
+    /// Checks if an interface should be excluded from implements clause.
+    /// Interfaces that map to ReadonlyArray<T> cause TS2420 errors because
+    /// they require array methods that .NET collections don't have.
+    /// </summary>
+    private static bool ShouldSkipInterfaceInImplementsClause(Type iface)
+    {
+        var fullName = iface.FullName;
+        if (fullName == null) return false;
+
+        // Skip interfaces that map to ReadonlyArray<T>
+        // These require array methods (length, concat, join, slice, etc.) that .NET collections don't have
+        return fullName.StartsWith("System.Collections.Generic.IEnumerable`") ||
+               fullName.StartsWith("System.Collections.Generic.IReadOnlyList`") ||
+               fullName.StartsWith("System.Collections.Generic.IReadOnlyCollection`");
+    }
+
     private static bool IsStaticOnly(Type type)
     {
         // Static class in C# (abstract sealed)
@@ -262,6 +279,8 @@ public sealed class AssemblyProcessor
         var extends = type.GetInterfaces()
             .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
             .Select(i => _typeMapper.MapType(i))
+            .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
+            .Distinct() // Remove duplicates
             .ToList();
 
         // Track base interface dependencies
@@ -399,6 +418,8 @@ public sealed class AssemblyProcessor
         var interfaces = type.GetInterfaces()
             .Where(i => i.IsPublic)
             .Select(i => _typeMapper.MapType(i))
+            .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
+            .Distinct() // Remove duplicates
             .ToList();
 
         // Track interface dependencies
@@ -908,9 +929,11 @@ public sealed class AssemblyProcessor
                         var targetMethod = map.TargetMethods[i];
                         var interfaceMethod = map.InterfaceMethods[i];
 
-                        // Explicit implementation = private + virtual
+                        // Explicit implementation = not public
+                        // For classes: private + virtual
+                        // For structs: private (can't be virtual)
                         // Method name will be like "System.IDisposable.Dispose"
-                        if (!targetMethod.IsPublic && targetMethod.IsPrivate && targetMethod.IsVirtual)
+                        if (!targetMethod.IsPublic)
                         {
                             result.Add((iface, interfaceMethod, targetMethod));
                         }
