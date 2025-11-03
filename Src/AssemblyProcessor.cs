@@ -151,6 +151,12 @@ public sealed class AssemblyProcessor
         }
         else if (type.IsClass || type.IsValueType)
         {
+            // Skip delegate types - they're mapped to function types in TypeMapper
+            if (IsDelegate(type))
+            {
+                return null;
+            }
+
             // Check if this is a static-only type
             if (IsStaticOnly(type))
             {
@@ -160,6 +166,23 @@ public sealed class AssemblyProcessor
         }
 
         return null;
+    }
+
+    private static bool IsDelegate(Type type)
+    {
+        // Check if type inherits from System.Delegate or System.MulticastDelegate
+        // Use name-based comparison for MetadataLoadContext compatibility
+        var baseType = type.BaseType;
+        while (baseType != null)
+        {
+            var baseName = baseType.FullName;
+            if (baseName == "System.Delegate" || baseName == "System.MulticastDelegate")
+            {
+                return true;
+            }
+            baseType = baseType.BaseType;
+        }
+        return false;
     }
 
     private static bool IsStaticOnly(Type type)
@@ -292,6 +315,44 @@ public sealed class AssemblyProcessor
             .Select(m => ProcessMethod(m, type))
             .ToList();
 
+        // Add public wrappers for explicit interface implementations
+        // This satisfies TS2420 errors where TypeScript expects public members
+        var explicitImplementations = GetExplicitInterfaceImplementations(type);
+        foreach (var (interfaceType, interfaceMethod, implementation) in explicitImplementations)
+        {
+            // Check if this is a property getter/setter (special name)
+            if (interfaceMethod.IsSpecialName && interfaceMethod.Name.StartsWith("get_"))
+            {
+                // Property getter - emit as readonly property
+                var propName = interfaceMethod.Name.Substring(4); // Remove "get_"
+                var propType = _typeMapper.MapType(interfaceMethod.ReturnType);
+
+                // Check if we already have this property (from public implementation)
+                if (!properties.Any(p => p.Name == propName))
+                {
+                    properties.Add(new TypeInfo.PropertyInfo(propName, propType, true, false));
+                }
+            }
+            else if (interfaceMethod.IsSpecialName && interfaceMethod.Name.StartsWith("set_"))
+            {
+                // Property setter - usually handled with getter, skip
+                continue;
+            }
+            else if (!interfaceMethod.IsSpecialName)
+            {
+                // Regular method - emit as public method
+                // Check if we already have this method (from public implementation)
+                if (!methods.Any(m => m.Name == interfaceMethod.Name))
+                {
+                    methods.Add(ProcessMethod(interfaceMethod, type));
+                }
+            }
+        }
+
+        // Add interface-compatible overloads for all interface members
+        // This handles TS2416 (covariant return types) and remaining TS2420 (interface implementation)
+        AddInterfaceCompatibleOverloads(type, properties, methods);
+
         // Use name-based comparison for MetadataLoadContext compatibility
         // (typeof(object) returns runtime type, but type.BaseType returns MetadataLoadContext type)
         var baseType = type.BaseType != null
@@ -333,6 +394,18 @@ public sealed class AssemblyProcessor
 
     private TypeInfo.PropertyInfo ProcessProperty(System.Reflection.PropertyInfo prop)
     {
+        // Skip indexers (properties with index parameters like this[int index])
+        // These cause TS2300 duplicate identifier errors when multiple indexers exist
+        // with the same name but different parameter types
+        var indexParams = prop.GetIndexParameters();
+        if (indexParams.Length > 0)
+        {
+            // Log for visibility - indexers are tracked in metadata
+            _typeMapper.AddWarning($"Skipped indexer {prop.DeclaringType?.Name}.{prop.Name} - " +
+                $"indexers with parameters cannot be represented as TypeScript properties (TS2300)");
+            return null!; // Will be filtered out
+        }
+
         var isStatic = prop.GetMethod?.IsStatic ?? prop.SetMethod?.IsStatic ?? false;
 
         // TypeScript: static properties cannot reference class type parameters
@@ -471,14 +544,89 @@ public sealed class AssemblyProcessor
 
     private string GetTypeName(Type type)
     {
-        if (!type.IsGenericType)
+        var baseName = type.Name;
+        var arity = 0;
+
+        // Handle generic types - extract arity and strip the `N suffix
+        if (type.IsGenericType)
         {
-            return type.Name;
+            var backtickIndex = baseName.IndexOf('`');
+            if (backtickIndex > 0)
+            {
+                // Extract arity (e.g., "Tuple`3" -> arity = 3)
+                if (int.TryParse(baseName.Substring(backtickIndex + 1), out var parsedArity))
+                {
+                    arity = parsedArity;
+                }
+                baseName = baseName.Substring(0, backtickIndex);
+            }
         }
 
-        var name = type.Name;
-        var backtickIndex = name.IndexOf('`');
-        return backtickIndex > 0 ? name.Substring(0, backtickIndex) : name;
+        // Handle nested types - build full ancestry chain to avoid conflicts
+        // For deeply nested types like Dictionary<K,V>.KeyCollection.Enumerator,
+        // we need to include the top-level type's arity to distinguish from other variants
+        if (type.IsNested && type.DeclaringType != null)
+        {
+            // Walk up the nesting chain to find the top-level type
+            var ancestorChain = new List<(string name, int arity)>();
+            var current = type.DeclaringType;
+
+            while (current != null)
+            {
+                var ancestorName = current.Name;
+                var ancestorArity = 0;
+
+                var backtickIndex = ancestorName.IndexOf('`');
+                if (backtickIndex > 0)
+                {
+                    if (int.TryParse(ancestorName.Substring(backtickIndex + 1), out var parsedArity))
+                    {
+                        ancestorArity = parsedArity;
+                    }
+                    ancestorName = ancestorName.Substring(0, backtickIndex);
+                }
+
+                ancestorChain.Insert(0, (ancestorName, ancestorArity));
+                current = current.DeclaringType;
+            }
+
+            // Build name from ancestor chain
+            var nameBuilder = new System.Text.StringBuilder();
+            foreach (var (ancestorName, ancestorArity) in ancestorChain)
+            {
+                if (nameBuilder.Length > 0)
+                {
+                    nameBuilder.Append('_');
+                }
+
+                nameBuilder.Append(ancestorName);
+                if (ancestorArity > 0)
+                {
+                    nameBuilder.Append('_');
+                    nameBuilder.Append(ancestorArity);
+                }
+            }
+
+            // Append the current type
+            nameBuilder.Append('_');
+            nameBuilder.Append(baseName);
+            if (arity > 0)
+            {
+                nameBuilder.Append('_');
+                nameBuilder.Append(arity);
+            }
+
+            return nameBuilder.ToString();
+        }
+
+        // For top-level generic types, include arity to distinguish Tuple<T1> from Tuple<T1,T2>
+        // Example: Tuple`1 becomes Tuple_1, Tuple`2 becomes Tuple_2
+        if (arity > 0)
+        {
+            return $"{baseName}_{arity}";
+        }
+
+        return baseName;
     }
 
     /// <summary>
@@ -629,6 +777,9 @@ public sealed class AssemblyProcessor
         bool isOverride = IsOverrideMethod(accessMethod);
         bool isStatic = accessMethod?.IsStatic ?? false;
 
+        // Check if this is an indexer (has index parameters)
+        bool isIndexer = prop.GetIndexParameters().Length > 0;
+
         return new MemberMetadata(
             "property",
             isVirtual,
@@ -636,7 +787,8 @@ public sealed class AssemblyProcessor
             isSealed,
             isOverride,
             isStatic,
-            GetAccessibility(accessMethod));
+            GetAccessibility(accessMethod),
+            IsIndexer: isIndexer ? true : null);
     }
 
     private MemberMetadata ProcessMethodMetadata(System.Reflection.MethodInfo method)
@@ -669,6 +821,46 @@ public sealed class AssemblyProcessor
         return baseDefinition != method;
     }
 
+    private List<(Type interfaceType, System.Reflection.MethodInfo interfaceMethod, System.Reflection.MethodInfo implementation)> GetExplicitInterfaceImplementations(Type type)
+    {
+        var result = new List<(Type, System.Reflection.MethodInfo, System.Reflection.MethodInfo)>();
+
+        try
+        {
+            var interfaces = type.GetInterfaces();
+            foreach (var iface in interfaces)
+            {
+                try
+                {
+                    var map = type.GetInterfaceMap(iface);
+                    for (int i = 0; i < map.TargetMethods.Length; i++)
+                    {
+                        var targetMethod = map.TargetMethods[i];
+                        var interfaceMethod = map.InterfaceMethods[i];
+
+                        // Explicit implementation = private + virtual
+                        // Method name will be like "System.IDisposable.Dispose"
+                        if (!targetMethod.IsPublic && targetMethod.IsPrivate && targetMethod.IsVirtual)
+                        {
+                            result.Add((iface, interfaceMethod, targetMethod));
+                        }
+                    }
+                }
+                catch
+                {
+                    // GetInterfaceMap can fail for some types in MetadataLoadContext
+                    // Skip and continue
+                }
+            }
+        }
+        catch
+        {
+            // Type may not support interface mapping
+        }
+
+        return result;
+    }
+
     private string GetAccessibility(MethodBase? method)
     {
         if (method == null) return "public";
@@ -681,5 +873,90 @@ public sealed class AssemblyProcessor
         if (method.IsPrivate) return "private";
 
         return "public";
+    }
+
+    /// <summary>
+    /// Adds interface-compatible overloads for methods to handle covariant return types.
+    /// This fixes TS2416 (method not assignable) and TS2420 (incorrectly implements interface) errors.
+    ///
+    /// Note: Properties with covariant types are NOT handled here because TypeScript doesn't allow
+    /// multiple property declarations with different types (TS2717). Property type variance is
+    /// typically acceptable in TypeScript when the concrete type is more specific than the interface.
+    /// </summary>
+    private void AddInterfaceCompatibleOverloads(Type type, List<TypeInfo.PropertyInfo> properties, List<TypeInfo.MethodInfo> methods)
+    {
+        try
+        {
+            var interfaces = type.GetInterfaces();
+            foreach (var iface in interfaces)
+            {
+                try
+                {
+                    var map = type.GetInterfaceMap(iface);
+                    for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                    {
+                        var interfaceMethod = map.InterfaceMethods[i];
+
+                        // Skip property getters/setters - they can't have overloads in TypeScript
+                        if (interfaceMethod.IsSpecialName)
+                        {
+                            continue;
+                        }
+
+                        // Regular method - add interface-compatible overload
+                        var interfaceReturnType = _typeMapper.MapType(interfaceMethod.ReturnType);
+                        var interfaceParams = interfaceMethod.GetParameters()
+                            .Select(ProcessParameter)
+                            .ToList();
+
+                        // Check if we already have this exact method signature
+                        var hasExactMatch = methods.Any(m =>
+                            m.Name == interfaceMethod.Name &&
+                            m.ReturnType == interfaceReturnType &&
+                            ParameterListsMatch(m.Parameters, interfaceParams));
+
+                        if (!hasExactMatch)
+                        {
+                            // Add interface-compatible method signature
+                            var genericParams = interfaceMethod.IsGenericMethod
+                                ? interfaceMethod.GetGenericArguments().Select(t => t.Name).ToList()
+                                : new List<string>();
+
+                            methods.Add(new TypeInfo.MethodInfo(
+                                interfaceMethod.Name,
+                                interfaceReturnType,
+                                interfaceParams,
+                                false, // Instance method (interface methods are never static)
+                                interfaceMethod.IsGenericMethod,
+                                genericParams));
+                        }
+                    }
+                }
+                catch
+                {
+                    // GetInterfaceMap can fail for some types in MetadataLoadContext
+                    // Skip and continue
+                }
+            }
+        }
+        catch
+        {
+            // Type may not support interface mapping
+        }
+    }
+
+    /// <summary>
+    /// Checks if two parameter lists have matching types.
+    /// </summary>
+    private bool ParameterListsMatch(IReadOnlyList<TypeInfo.ParameterInfo> params1, IReadOnlyList<TypeInfo.ParameterInfo> params2)
+    {
+        if (params1.Count != params2.Count) return false;
+
+        for (int i = 0; i < params1.Count; i++)
+        {
+            if (params1[i].Type != params2[i].Type) return false;
+        }
+
+        return true;
     }
 }

@@ -24,10 +24,16 @@ const BCL_ASSEMBLIES = [
     // NOTE: System.Private.CoreLib is now generated using MetadataLoadContext
     'System.Private.CoreLib',
     'System.Runtime',
+    'System.Runtime.Extensions',
+    'System.Runtime.InteropServices',
     'System.Console',
     'System.ComponentModel',
+    'System.ComponentModel.Primitives',
+    'System.ComponentModel.TypeConverter',
+    'System.ObjectModel',
     'System.Reflection',
     'System.Memory',
+    'System.Numerics.Vectors',
 
     // Core collections
     'System.Collections',
@@ -55,10 +61,14 @@ const BCL_ASSEMBLIES = [
     'System.Text.Encodings.Web',
 
     // Networking
+    'System.Net',
+    'System.Net.Primitives',
     'System.Net.Http',
     'System.Net.Http.Json',
     'System.Net.Sockets',
     'System.Net.WebSockets',
+    'System.Net.Security',
+    'System.Net.NetworkInformation',
 
     // Threading
     'System.Threading',
@@ -69,16 +79,24 @@ const BCL_ASSEMBLIES = [
     'System.Data',
     'System.Data.Common',
     'System.Xml',
-    'System.Xml.Linq',
+    'System.Xml.ReaderWriter',
     'System.Xml.XDocument',
+    'System.Xml.XmlDocument',
+    'System.Xml.Linq',
+    'System.Xml.Serialization',
+    'System.Xml.XPath',
 
     // Security
     'System.Security.Cryptography',
     'System.Security.Claims',
+    'System.Security.Principal',
 
     // Diagnostics
     'System.Diagnostics.Process',
-    'System.Diagnostics.DiagnosticSource'
+    'System.Diagnostics.DiagnosticSource',
+
+    // Drawing (primitives only - no UI dependencies)
+    'System.Drawing.Primitives'
 ];
 
 const VALIDATION_DIR = path.join(os.tmpdir(), 'generatedts-validation');

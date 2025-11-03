@@ -59,7 +59,9 @@ public sealed class TypeMapper
         }
 
         // Handle primitive types
-        if (type.IsPrimitive || type == typeof(string) || type == typeof(void))
+        // Use name-based check for string/void since type == typeof() fails with MetadataLoadContext
+        var fullName = type.FullName ?? type.Name;
+        if (type.IsPrimitive || fullName == "System.String" || fullName == "System.Void")
         {
             return MapPrimitiveType(type);
         }
@@ -86,22 +88,26 @@ public sealed class TypeMapper
 
     private string MapPrimitiveType(Type type)
     {
-        return type switch
+        // Use name-based comparisons for MetadataLoadContext compatibility
+        // type == typeof(bool) fails when type is from MetadataLoadContext
+        var fullName = type.FullName ?? type.Name;
+
+        return fullName switch
         {
-            _ when type == typeof(void) => "void",
-            _ when type == typeof(string) => "string",
-            _ when type == typeof(bool) => "boolean",
-            _ when type == typeof(double) => "double",
-            _ when type == typeof(float) => "float",
-            _ when type == typeof(int) => "int",
-            _ when type == typeof(uint) => "uint",
-            _ when type == typeof(long) => "long",
-            _ when type == typeof(ulong) => "ulong",
-            _ when type == typeof(short) => "short",
-            _ when type == typeof(ushort) => "ushort",
-            _ when type == typeof(byte) => "byte",
-            _ when type == typeof(sbyte) => "sbyte",
-            _ when type == typeof(decimal) => "decimal",
+            "System.Void" => "void",
+            "System.String" => "string",
+            "System.Boolean" => "boolean",
+            "System.Double" => "double",
+            "System.Single" => "float",
+            "System.Int32" => "int",
+            "System.UInt32" => "uint",
+            "System.Int64" => "long",
+            "System.UInt64" => "ulong",
+            "System.Int16" => "short",
+            "System.UInt16" => "ushort",
+            "System.Byte" => "byte",
+            "System.SByte" => "sbyte",
+            "System.Decimal" => "decimal",
             _ => "number"
         };
     }
@@ -150,27 +156,8 @@ public sealed class TypeMapper
             }
         }
 
-        // Handle List<T>
-        if (fullName.StartsWith("System.Collections.Generic.List"))
-        {
-            var elementType = MapType(type.GenericTypeArguments[0]);
-            return $"List<{elementType}>";
-        }
-
-        // Handle Dictionary<K,V>
-        if (fullName.StartsWith("System.Collections.Generic.Dictionary"))
-        {
-            var keyType = MapType(type.GenericTypeArguments[0]);
-            var valueType = MapType(type.GenericTypeArguments[1]);
-            return $"Dictionary<{keyType}, {valueType}>";
-        }
-
-        // Handle HashSet<T>
-        if (fullName.StartsWith("System.Collections.Generic.HashSet"))
-        {
-            var elementType = MapType(type.GenericTypeArguments[0]);
-            return $"HashSet<{elementType}>";
-        }
+        // Note: List<T>, Dictionary<K,V>, HashSet<T> are handled by the generic logic below
+        // We use fully qualified names for .d.ts files to avoid TS2304 errors
 
         // Handle IEnumerable<T> and similar
         if (fullName.StartsWith("System.Collections.Generic.IEnumerable") ||
@@ -223,24 +210,96 @@ public sealed class TypeMapper
             return type.Name ?? "T";
         }
 
-        if (type.IsGenericType)
+        // Build the type name with arity included
+        var typeName = GetTypeNameWithArity(type);
+
+        // Add namespace if present
+        var fullName = type.Namespace != null ? $"{type.Namespace}.{typeName}" : typeName;
+
+        // Fallback to "any" if we somehow got an empty name
+        return string.IsNullOrWhiteSpace(fullName) ? "any" : fullName;
+    }
+
+    private string GetTypeNameWithArity(Type type)
+    {
+        var baseName = type.Name;
+        var arity = 0;
+
+        // Extract arity from generic types
+        if (type.IsGenericType || baseName.Contains('`'))
         {
-            var name = type.Name;
-            var backtickIndex = name.IndexOf('`');
+            var backtickIndex = baseName.IndexOf('`');
             if (backtickIndex > 0)
             {
-                name = name.Substring(0, backtickIndex);
+                if (int.TryParse(baseName.Substring(backtickIndex + 1), out var parsedArity))
+                {
+                    arity = parsedArity;
+                }
+                baseName = baseName.Substring(0, backtickIndex);
             }
-            var result = type.Namespace != null ? $"{type.Namespace}.{name}" : name;
-            return string.IsNullOrWhiteSpace(result) ? "any" : result;
         }
 
-        // Replace + with . for nested types (C# uses + but TypeScript uses .)
-        var fullName = type.FullName ?? type.Name ?? "";
-        var finalName = fullName.Replace('+', '.');
+        // Handle nested types - build full ancestry chain
+        if (type.IsNested && type.DeclaringType != null)
+        {
+            var ancestorChain = new List<(string name, int arity)>();
+            var current = type.DeclaringType;
 
-        // Fallback to "any" if we somehow got an empty name (can happen with function pointers, etc.)
-        return string.IsNullOrWhiteSpace(finalName) ? "any" : finalName;
+            while (current != null)
+            {
+                var ancestorName = current.Name;
+                var ancestorArity = 0;
+
+                var backtickIndex = ancestorName.IndexOf('`');
+                if (backtickIndex > 0)
+                {
+                    if (int.TryParse(ancestorName.Substring(backtickIndex + 1), out var parsedArity))
+                    {
+                        ancestorArity = parsedArity;
+                    }
+                    ancestorName = ancestorName.Substring(0, backtickIndex);
+                }
+
+                ancestorChain.Insert(0, (ancestorName, ancestorArity));
+                current = current.DeclaringType;
+            }
+
+            // Build name from ancestor chain
+            var nameBuilder = new StringBuilder();
+            foreach (var (ancestorName, ancestorArity) in ancestorChain)
+            {
+                if (nameBuilder.Length > 0)
+                {
+                    nameBuilder.Append('_');
+                }
+
+                nameBuilder.Append(ancestorName);
+                if (ancestorArity > 0)
+                {
+                    nameBuilder.Append('_');
+                    nameBuilder.Append(ancestorArity);
+                }
+            }
+
+            // Append the current type
+            nameBuilder.Append('_');
+            nameBuilder.Append(baseName);
+            if (arity > 0)
+            {
+                nameBuilder.Append('_');
+                nameBuilder.Append(arity);
+            }
+
+            return nameBuilder.ToString();
+        }
+
+        // For top-level types, include arity if generic
+        if (arity > 0)
+        {
+            return $"{baseName}_{arity}";
+        }
+
+        return baseName;
     }
 
     public void AddWarning(string message)

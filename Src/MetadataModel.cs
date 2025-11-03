@@ -32,4 +32,5 @@ public sealed record MemberMetadata(
     [property: JsonPropertyName("isSealed")] bool IsSealed,
     [property: JsonPropertyName("isOverride")] bool IsOverride,
     [property: JsonPropertyName("isStatic")] bool IsStatic,
-    [property: JsonPropertyName("accessibility")] string Accessibility);
+    [property: JsonPropertyName("accessibility")] string Accessibility,
+    [property: JsonPropertyName("isIndexer")] bool? IsIndexer = null);

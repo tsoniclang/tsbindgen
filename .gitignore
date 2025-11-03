@@ -59,3 +59,7 @@ nunit-*.xml
 # Node.js
 node_modules/
 package-lock.json
+
+# Project-specific temporary directories
+.tests/
+.analysis/
