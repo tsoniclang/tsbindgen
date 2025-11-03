@@ -59,7 +59,9 @@ public sealed class TypeMapper
         }
 
         // Handle primitive types
-        if (type.IsPrimitive || type == typeof(string) || type == typeof(void))
+        // Use name-based check for string/void since type == typeof() fails with MetadataLoadContext
+        var fullName = type.FullName ?? type.Name;
+        if (type.IsPrimitive || fullName == "System.String" || fullName == "System.Void")
         {
             return MapPrimitiveType(type);
         }
@@ -86,22 +88,26 @@ public sealed class TypeMapper
 
     private string MapPrimitiveType(Type type)
     {
-        return type switch
+        // Use name-based comparisons for MetadataLoadContext compatibility
+        // type == typeof(bool) fails when type is from MetadataLoadContext
+        var fullName = type.FullName ?? type.Name;
+
+        return fullName switch
         {
-            _ when type == typeof(void) => "void",
-            _ when type == typeof(string) => "string",
-            _ when type == typeof(bool) => "boolean",
-            _ when type == typeof(double) => "double",
-            _ when type == typeof(float) => "float",
-            _ when type == typeof(int) => "int",
-            _ when type == typeof(uint) => "uint",
-            _ when type == typeof(long) => "long",
-            _ when type == typeof(ulong) => "ulong",
-            _ when type == typeof(short) => "short",
-            _ when type == typeof(ushort) => "ushort",
-            _ when type == typeof(byte) => "byte",
-            _ when type == typeof(sbyte) => "sbyte",
-            _ when type == typeof(decimal) => "decimal",
+            "System.Void" => "void",
+            "System.String" => "string",
+            "System.Boolean" => "boolean",
+            "System.Double" => "double",
+            "System.Single" => "float",
+            "System.Int32" => "int",
+            "System.UInt32" => "uint",
+            "System.Int64" => "long",
+            "System.UInt64" => "ulong",
+            "System.Int16" => "short",
+            "System.UInt16" => "ushort",
+            "System.Byte" => "byte",
+            "System.SByte" => "sbyte",
+            "System.Decimal" => "decimal",
             _ => "number"
         };
     }
