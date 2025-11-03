@@ -185,7 +185,7 @@ public sealed class AssemblyProcessor
         var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(ShouldIncludeMember)
             .Where(m => !m.IsSpecialName)
-            .Select(ProcessMethod)
+            .Select(m => ProcessMethod(m, type))
             .ToList();
 
         var extends = type.GetInterfaces()
@@ -221,7 +221,7 @@ public sealed class AssemblyProcessor
         var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
             .Where(ShouldIncludeMember)
             .Where(m => !m.IsSpecialName)
-            .Select(ProcessMethod)
+            .Select(m => ProcessMethod(m, type))
             .ToList();
 
         // Use name-based comparison for MetadataLoadContext compatibility
@@ -272,22 +272,36 @@ public sealed class AssemblyProcessor
             prop.GetMethod?.IsStatic ?? prop.SetMethod?.IsStatic ?? false);
     }
 
-    private TypeInfo.MethodInfo ProcessMethod(System.Reflection.MethodInfo method)
+    private TypeInfo.MethodInfo ProcessMethod(System.Reflection.MethodInfo method, Type declaringType)
     {
         var parameters = method.GetParameters()
             .Select(ProcessParameter)
             .ToList();
 
-        var genericParams = method.IsGenericMethod
-            ? method.GetGenericArguments().Select(t => t.Name).ToList()
-            : new List<string>();
+        var genericParams = new List<string>();
+        var isGeneric = method.IsGenericMethod;
+
+        // TypeScript: static methods cannot reference class type parameters
+        // Solution: If this is a static method in a generic class, make the method generic
+        // by adding the class's type parameters to the method
+        if (method.IsStatic && declaringType.IsGenericType && !method.IsGenericMethod)
+        {
+            // Add class type parameters to the static method
+            genericParams = declaringType.GetGenericArguments().Select(t => t.Name).ToList();
+            isGeneric = genericParams.Count > 0;
+        }
+        else if (method.IsGenericMethod)
+        {
+            // Method already has its own type parameters
+            genericParams = method.GetGenericArguments().Select(t => t.Name).ToList();
+        }
 
         return new TypeInfo.MethodInfo(
             method.Name,
             _typeMapper.MapType(method.ReturnType),
             parameters,
             method.IsStatic,
-            method.IsGenericMethod,
+            isGeneric,
             genericParams);
     }
 
