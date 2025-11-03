@@ -40,6 +40,18 @@ public sealed class TypeMapper
             return $"ReadonlyArray<{MapType(elementType)}>";
         }
 
+        // Handle delegates - must come before generic type handling
+        // Check if this type is a delegate (inherits from System.Delegate or System.MulticastDelegate)
+        if (IsDelegate(type))
+        {
+            var delegateSignature = MapDelegateToFunctionType(type);
+            if (delegateSignature != null)
+            {
+                return delegateSignature;
+            }
+            // Fallback if delegate mapping fails
+        }
+
         // Handle generic types
         if (type.IsGenericType)
         {
@@ -234,5 +246,60 @@ public sealed class TypeMapper
     public void AddWarning(string message)
     {
         _warnings.Add(message);
+    }
+
+    private bool IsDelegate(Type type)
+    {
+        // Check if type inherits from System.Delegate or System.MulticastDelegate
+        // Use name-based comparison for MetadataLoadContext compatibility
+        var baseType = type.BaseType;
+        while (baseType != null)
+        {
+            var baseName = baseType.FullName;
+            if (baseName == "System.Delegate" || baseName == "System.MulticastDelegate")
+            {
+                return true;
+            }
+            baseType = baseType.BaseType;
+        }
+        return false;
+    }
+
+    private string? MapDelegateToFunctionType(Type delegateType)
+    {
+        try
+        {
+            // Find the Invoke method on the delegate
+            var invokeMethod = delegateType.GetMethod("Invoke");
+            if (invokeMethod == null)
+            {
+                AddWarning($"Delegate {delegateType.Name} has no Invoke method - mapped to 'any'");
+                return "any";
+            }
+
+            // Get parameters
+            var parameters = invokeMethod.GetParameters();
+            var paramStrings = new List<string>();
+
+            for (int i = 0; i < parameters.Length; i++)
+            {
+                var param = parameters[i];
+                var paramName = string.IsNullOrEmpty(param.Name) ? $"arg{i}" : param.Name;
+                var paramType = MapType(param.ParameterType);
+                paramStrings.Add($"{paramName}: {paramType}");
+            }
+
+            // Get return type
+            var returnType = MapType(invokeMethod.ReturnType);
+
+            // Build function signature
+            var paramList = string.Join(", ", paramStrings);
+            return $"({paramList}) => {returnType}";
+        }
+        catch (Exception ex)
+        {
+            AddWarning($"Failed to map delegate {delegateType.Name}: {ex.Message}");
+            return null;
+        }
     }
 }
