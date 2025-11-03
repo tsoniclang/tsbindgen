@@ -208,6 +208,7 @@ function createIntrinsicsFile() {
 // This file provides branded numeric type aliases used across all BCL declarations.
 // ESM module exports for full module support.
 
+// Branded numeric types
 export type int = number & { __brand: "int" };
 export type uint = number & { __brand: "uint" };
 export type byte = number & { __brand: "byte" };
@@ -219,6 +220,10 @@ export type ulong = number & { __brand: "ulong" };
 export type float = number & { __brand: "float" };
 export type double = number & { __brand: "double" };
 export type decimal = number & { __brand: "decimal" };
+
+// Phase 8B: Covariance helper for property type variance
+// Allows derived types to return more specific types than base/interface contracts
+export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };
 `;
 
     fs.writeFileSync(path.join(TYPES_DIR, '_intrinsics.d.ts'), intrinsicsContent);

@@ -18,6 +18,7 @@ public sealed class DeclarationRenderer
         sb.AppendLine("// This file provides branded numeric type aliases used across all BCL declarations.");
         sb.AppendLine("// ESM module exports for full module support.");
         sb.AppendLine();
+        sb.AppendLine("// Branded numeric types");
         sb.AppendLine("export type int = number & { __brand: \"int\" };");
         sb.AppendLine("export type uint = number & { __brand: \"uint\" };");
         sb.AppendLine("export type byte = number & { __brand: \"byte\" };");
@@ -29,6 +30,10 @@ public sealed class DeclarationRenderer
         sb.AppendLine("export type float = number & { __brand: \"float\" };");
         sb.AppendLine("export type double = number & { __brand: \"double\" };");
         sb.AppendLine("export type decimal = number & { __brand: \"decimal\" };");
+        sb.AppendLine();
+        sb.AppendLine("// Phase 8B: Covariance helper for property type variance");
+        sb.AppendLine("// Allows derived types to return more specific types than base/interface contracts");
+        sb.AppendLine("export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };");
 
         return sb.ToString();
     }
@@ -42,7 +47,7 @@ public sealed class DeclarationRenderer
         sb.AppendLine();
 
         // ESM import for branded types from intrinsics
-        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal } from './_intrinsics.js';");
+        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal, Covariant } from './_intrinsics.js';");
         sb.AppendLine();
 
         // ESM imports for cross-assembly dependencies
