@@ -379,7 +379,9 @@ async function main() {
         createIntrinsicsFile();
 
         // Step 3: Create index file
-        createIndexFile();
+        // SKIP: index.d.ts causes TS2308 namespace merging warnings (49 errors)
+        // Users should import from specific assemblies instead of using barrel export
+        // createIndexFile();
 
         // Step 4: Create tsconfig
         createTsConfig();
