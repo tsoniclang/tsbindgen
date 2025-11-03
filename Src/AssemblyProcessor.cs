@@ -349,6 +349,10 @@ public sealed class AssemblyProcessor
             }
         }
 
+        // Add interface-compatible overloads for all interface members
+        // This handles TS2416 (covariant return types) and remaining TS2420 (interface implementation)
+        AddInterfaceCompatibleOverloads(type, properties, methods);
+
         // Use name-based comparison for MetadataLoadContext compatibility
         // (typeof(object) returns runtime type, but type.BaseType returns MetadataLoadContext type)
         var baseType = type.BaseType != null
@@ -869,5 +873,90 @@ public sealed class AssemblyProcessor
         if (method.IsPrivate) return "private";
 
         return "public";
+    }
+
+    /// <summary>
+    /// Adds interface-compatible overloads for methods to handle covariant return types.
+    /// This fixes TS2416 (method not assignable) and TS2420 (incorrectly implements interface) errors.
+    ///
+    /// Note: Properties with covariant types are NOT handled here because TypeScript doesn't allow
+    /// multiple property declarations with different types (TS2717). Property type variance is
+    /// typically acceptable in TypeScript when the concrete type is more specific than the interface.
+    /// </summary>
+    private void AddInterfaceCompatibleOverloads(Type type, List<TypeInfo.PropertyInfo> properties, List<TypeInfo.MethodInfo> methods)
+    {
+        try
+        {
+            var interfaces = type.GetInterfaces();
+            foreach (var iface in interfaces)
+            {
+                try
+                {
+                    var map = type.GetInterfaceMap(iface);
+                    for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                    {
+                        var interfaceMethod = map.InterfaceMethods[i];
+
+                        // Skip property getters/setters - they can't have overloads in TypeScript
+                        if (interfaceMethod.IsSpecialName)
+                        {
+                            continue;
+                        }
+
+                        // Regular method - add interface-compatible overload
+                        var interfaceReturnType = _typeMapper.MapType(interfaceMethod.ReturnType);
+                        var interfaceParams = interfaceMethod.GetParameters()
+                            .Select(ProcessParameter)
+                            .ToList();
+
+                        // Check if we already have this exact method signature
+                        var hasExactMatch = methods.Any(m =>
+                            m.Name == interfaceMethod.Name &&
+                            m.ReturnType == interfaceReturnType &&
+                            ParameterListsMatch(m.Parameters, interfaceParams));
+
+                        if (!hasExactMatch)
+                        {
+                            // Add interface-compatible method signature
+                            var genericParams = interfaceMethod.IsGenericMethod
+                                ? interfaceMethod.GetGenericArguments().Select(t => t.Name).ToList()
+                                : new List<string>();
+
+                            methods.Add(new TypeInfo.MethodInfo(
+                                interfaceMethod.Name,
+                                interfaceReturnType,
+                                interfaceParams,
+                                false, // Instance method (interface methods are never static)
+                                interfaceMethod.IsGenericMethod,
+                                genericParams));
+                        }
+                    }
+                }
+                catch
+                {
+                    // GetInterfaceMap can fail for some types in MetadataLoadContext
+                    // Skip and continue
+                }
+            }
+        }
+        catch
+        {
+            // Type may not support interface mapping
+        }
+    }
+
+    /// <summary>
+    /// Checks if two parameter lists have matching types.
+    /// </summary>
+    private bool ParameterListsMatch(IReadOnlyList<TypeInfo.ParameterInfo> params1, IReadOnlyList<TypeInfo.ParameterInfo> params2)
+    {
+        if (params1.Count != params2.Count) return false;
+
+        for (int i = 0; i < params1.Count; i++)
+        {
+            if (params1[i].Type != params2[i].Type) return false;
+        }
+
+        return true;
     }
 }
