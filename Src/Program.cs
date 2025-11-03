@@ -154,9 +154,12 @@ public static class Program
                 var processor = new AssemblyProcessor(config, namespaces);
                 var typeInfo = processor.ProcessAssembly(assembly);
 
-                // Render declarations
+                // Get dependency tracker for import generation
+                var dependencyTracker = processor.GetDependencyTracker();
+
+                // Render declarations with dependencies
                 var renderer = new DeclarationRenderer();
-                var declarations = renderer.RenderDeclarations(typeInfo);
+                var declarations = renderer.RenderDeclarations(typeInfo, dependencyTracker);
 
                 // Process metadata
                 var metadata = processor.ProcessAssemblyMetadata(assembly);
@@ -181,7 +184,6 @@ public static class Program
                 Console.WriteLine($"Generated: {metadataPath}");
 
                 // Write dependency information
-                var dependencyTracker = processor.GetDependencyTracker();
                 if (dependencyTracker != null)
                 {
                     var dependenciesFileName = $"{assemblyName}.dependencies.json";

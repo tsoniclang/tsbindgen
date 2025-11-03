@@ -33,7 +33,7 @@ public sealed class DeclarationRenderer
         return sb.ToString();
     }
 
-    public string RenderDeclarations(ProcessedAssembly assembly)
+    public string RenderDeclarations(ProcessedAssembly assembly, DependencyTracker? dependencyTracker = null)
     {
         var sb = new StringBuilder();
 
@@ -45,6 +45,12 @@ public sealed class DeclarationRenderer
         sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal } from './_intrinsics.js';");
         sb.AppendLine();
 
+        // ESM imports for cross-assembly dependencies
+        if (dependencyTracker != null)
+        {
+            RenderDependencyImports(sb, dependencyTracker);
+        }
+
         // Namespaces
         foreach (var ns in assembly.Namespaces)
         {
@@ -53,6 +59,34 @@ public sealed class DeclarationRenderer
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Generates import statements for cross-assembly dependencies.
+    /// Uses namespace imports with aliases to avoid naming conflicts.
+    /// </summary>
+    private void RenderDependencyImports(StringBuilder sb, DependencyTracker dependencyTracker)
+    {
+        var dependentAssemblies = dependencyTracker.GetDependentAssemblies();
+
+        if (dependentAssemblies.Count == 0)
+        {
+            return; // No external dependencies
+        }
+
+        sb.AppendLine("// Cross-assembly type imports");
+
+        foreach (var assemblyName in dependentAssemblies)
+        {
+            var alias = DependencyTracker.GetModuleAlias(assemblyName);
+            var fileName = assemblyName.Replace(".", "_"); // Safe filename
+
+            // Import entire namespace with alias
+            // Example: import type * as System_Private_CoreLib from './System.Private.CoreLib.js';
+            sb.AppendLine($"import type * as {alias} from './{assemblyName}.js';");
+        }
+
+        sb.AppendLine();
     }
 
     private void RenderBrandedTypes(StringBuilder sb)
