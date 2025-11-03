@@ -359,7 +359,12 @@ public sealed class AssemblyProcessor
             "System.IConvertible",                              // Primitive type conversions
             "System.Runtime.Serialization.ISerializable",       // Serialization internals
             "System.Runtime.Serialization.IDeserializationCallback",  // Deserialization callback
-            "System.Runtime.CompilerServices.ITuple"            // Tuple implementation details
+            "System.Runtime.CompilerServices.ITuple",           // Tuple implementation details
+            "System.Collections.IStructuralComparable",         // Structural comparison (Array, Tuples)
+            "System.Collections.IStructuralEquatable",          // Structural equality (Array, Tuples)
+            "System.IComparable",                               // Non-generic IComparable (Tuples)
+            "System.ISpanFormattable",                          // Span-based formatting (primitives)
+            "System.IUtf8SpanFormattable"                       // UTF-8 span formatting (primitives)
         };
 
         // Check if this is an enumerator/memory struct (hide IEnumerator/IDisposable)
