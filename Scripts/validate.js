@@ -26,6 +26,8 @@ const BCL_ASSEMBLIES = [
     'System.Runtime',
     'System.Console',
     'System.ComponentModel',
+    'System.ComponentModel.Primitives',
+    'System.ComponentModel.TypeConverter',
     'System.Reflection',
     'System.Memory',
 
@@ -55,10 +57,14 @@ const BCL_ASSEMBLIES = [
     'System.Text.Encodings.Web',
 
     // Networking
+    'System.Net',
+    'System.Net.Primitives',
     'System.Net.Http',
     'System.Net.Http.Json',
     'System.Net.Sockets',
     'System.Net.WebSockets',
+    'System.Net.Security',
+    'System.Net.NetworkInformation',
 
     // Threading
     'System.Threading',
@@ -69,8 +75,12 @@ const BCL_ASSEMBLIES = [
     'System.Data',
     'System.Data.Common',
     'System.Xml',
-    'System.Xml.Linq',
+    'System.Xml.ReaderWriter',
     'System.Xml.XDocument',
+    'System.Xml.XmlDocument',
+    'System.Xml.Linq',
+    'System.Xml.Serialization',
+    'System.Xml.XPath',
 
     // Security
     'System.Security.Cryptography',
