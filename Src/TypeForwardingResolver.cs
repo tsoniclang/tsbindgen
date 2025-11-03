@@ -34,6 +34,12 @@ public class TypeForwardingResolver
         // Security
         ["System.Security.Cryptography"] = new[] { "System.Security.Cryptography" },
         ["System.Security.Principal"] = new[] { "System.Private.CoreLib" },
+
+        // Drawing
+        ["System.Drawing"] = new[] { "System.Drawing.Common" },
+
+        // Transactions
+        ["System.Transactions"] = new[] { "System.Transactions.Local" },
     };
 
     /// <summary>

@@ -29,7 +29,8 @@ const DOTNET_RUNTIME_PATH = process.env.DOTNET_RUNTIME_PATH ||
 
 // Assemblies that MUST use runtime path (not ref-pack)
 const RUNTIME_ONLY_ASSEMBLIES = [
-    'System.Private.CoreLib'  // Requires MetadataLoadContext, doesn't work from ref-pack
+    'System.Private.CoreLib',  // Requires MetadataLoadContext, doesn't work from ref-pack
+    'System.Private.Uri'       // Private implementation assembly, not in ref-pack
 ];
 
 const BCL_ASSEMBLIES = [
@@ -107,9 +108,27 @@ const BCL_ASSEMBLIES = [
     // Diagnostics
     'System.Diagnostics.Process',
     'System.Diagnostics.DiagnosticSource',
+    'System.Diagnostics.FileVersionInfo',
 
-    // Drawing (primitives only - no UI dependencies)
-    'System.Drawing.Primitives'
+    // Drawing
+    'System.Drawing.Primitives',
+    'System.Drawing',
+
+    // Transactions
+    'System.Transactions.Local',
+
+    // URI support (private implementation)
+    'System.Private.Uri',
+
+    // Numerics
+    'System.Numerics',
+
+    // Formats
+    'System.Formats.Asn1',
+    'System.Formats.Tar',
+
+    // Pipelines
+    'System.IO.Pipelines'
 ];
 
 const VALIDATION_DIR = path.join(os.tmpdir(), 'generatedts-validation');
