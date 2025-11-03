@@ -41,6 +41,19 @@ This applies to ANY question, even if it seems like part of a larger task or dis
 
 Automated scripts break syntax in unpredictable ways and destroy codebases.
 
+### NEVER USE GIT RESET
+
+**🚨 CRITICAL RULE: NEVER use git reset commands. 🚨**
+
+- **NEVER** use `git reset --soft`
+- **NEVER** use `git reset --mixed`
+- **NEVER** use `git reset --hard`
+- **NEVER** attempt to undo commits by resetting
+- **If a commit is wrong**: Create a new commit to fix it or use `git revert`
+- **If on wrong branch**: Create a new branch from current position and work from there
+
+Git reset can cause data loss and confusion. Always move forward with new commits.
+
 ### WORKING DIRECTORIES
 
 **IMPORTANT**: Never create temporary files in the project root or Src/ directories. Use dedicated gitignored directories for different purposes.
