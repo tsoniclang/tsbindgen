@@ -366,6 +366,12 @@ public sealed class AssemblyProcessor
             ((type.FullName ?? "").Contains("Enumerator") ||
              (type.FullName ?? "").Contains("MemoryManager"));
 
+        // P1: Check if this is an immutable/frozen collection type
+        // These types don't support mutating operations even though they implement the interfaces
+        var isImmutableCollection = (type.FullName ?? "").StartsWith("System.Collections.Immutable.Immutable") ||
+                                   (type.FullName ?? "").StartsWith("System.Collections.Immutable.Frozen") ||
+                                   (type.FullName ?? "").StartsWith("System.Collections.Frozen");
+
         // Add public wrappers for explicit interface implementations
         // BUT skip the ones we're hiding completely
         var explicitImplementations = GetExplicitInterfaceImplementations(type);
@@ -461,6 +467,28 @@ public sealed class AssemblyProcessor
                     {
                         return false;
                     }
+                }
+
+                // P1: Skip mutating collection interfaces for immutable types
+                // Immutable collections implement these explicitly but return new instances instead of mutating
+                // Keep IReadOnlyXxx variants, remove IXxx mutating variants
+                if (isImmutableCollection)
+                {
+                    var fullName = i.FullName ?? "";
+                    // Remove mutating interfaces - immutable types have readonly variants
+                    if (fullName == "System.Collections.ICollection" ||
+                        fullName == "System.Collections.IList" ||
+                        fullName == "System.Collections.IDictionary" ||
+                        fullName == "System.Collections.Generic.ICollection`1" ||
+                        fullName == "System.Collections.Generic.IList`1" ||
+                        fullName == "System.Collections.Generic.ISet`1" ||
+                        fullName == "System.Collections.Generic.IDictionary`2")
+                    {
+                        return false;
+                    }
+                    // Keep IReadOnlyCollection, IReadOnlyList, IReadOnlySet, IReadOnlyDictionary
+                    // Keep IEnumerable (non-mutating)
+                    // Keep IImmutableXxx (immutable-specific interfaces)
                 }
 
                 return true;
