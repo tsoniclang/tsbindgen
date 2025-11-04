@@ -10,6 +10,10 @@ public sealed class AssemblyProcessor
     private readonly SignatureFormatter _signatureFormatter = new();
     private DependencyTracker? _dependencyTracker;
 
+    // Phase 1: Track intersection type aliases for diamond interfaces
+    // Key: namespace name, Value: list of intersection aliases to add to that namespace
+    private Dictionary<string, List<IntersectionTypeAlias>> _intersectionAliases = new();
+
     /// <summary>
     /// TypeScript/JavaScript reserved keywords and special identifiers.
     /// </summary>
@@ -56,6 +60,9 @@ public sealed class AssemblyProcessor
         // Set context for TypeMapper to enable cross-assembly reference rewriting
         _typeMapper.SetContext(assembly, _dependencyTracker);
 
+        // Phase 1: Clear intersection aliases for this assembly
+        _intersectionAliases.Clear();
+
         var types = assembly.GetExportedTypes()
             .Where(ShouldIncludeType)
             .OrderBy(t => t.Namespace)
@@ -87,6 +94,12 @@ public sealed class AssemblyProcessor
                 {
                     _typeMapper.AddWarning($"Failed to process type {type.FullName}: {ex.Message}\nStack: {ex.StackTrace}");
                 }
+            }
+
+            // Phase 1: Add intersection aliases for this namespace (if any)
+            if (_intersectionAliases.TryGetValue(group.Key, out var aliases))
+            {
+                typeDeclarations.AddRange(aliases);
             }
 
             if (typeDeclarations.Count > 0)
@@ -281,8 +294,51 @@ public sealed class AssemblyProcessor
             .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
             .ToList();
 
+        // Phase 1 Investigation: Log the 8 interfaces with true diamonds
+        var diamondInterfaces = new[] {
+            "System.Numerics.INumber`1",
+            "System.Numerics.INumberBase`1",
+            "System.Data.IColumnMappingCollection",
+            "System.Data.IDataParameterCollection",
+            "System.Data.ITableMappingCollection",
+            "System.ComponentModel.IBindingListView",
+            "System.Collections.Concurrent.IProducerConsumerCollection`1",
+            "System.Collections.Generic.IDictionary`2"
+        };
+
+        if (diamondInterfaces.Contains(type.FullName))
+        {
+            Console.WriteLine($"\n[DIAMOND] Interface: {type.FullName}");
+            Console.WriteLine($"[DIAMOND] CLR reports {directInterfaces.Count} parent interfaces:");
+            foreach (var iface in directInterfaces)
+            {
+                var mapped = _typeMapper.MapType(iface);
+                Console.WriteLine($"  -> {iface.FullName ?? iface.Name} (TS: {mapped})");
+                // Show what THIS parent extends
+                var grandparents = iface.GetInterfaces().Where(i => i.FullName != "System.IDisposable").ToList();
+                if (grandparents.Count > 0)
+                {
+                    foreach (var gp in grandparents)
+                    {
+                        var gpMapped = _typeMapper.MapType(gp);
+                        Console.WriteLine($"     (via {gp.FullName ?? gp.Name} -> TS: {gpMapped})");
+                    }
+                }
+            }
+        }
+
         // Prune redundant extends (Phase 3: Interface Extension Diamonds)
         var prunedInterfaces = PruneRedundantInterfaceExtends(directInterfaces);
+
+        if (diamondInterfaces.Contains(type.FullName))
+        {
+            Console.WriteLine($"[DIAMOND] After pruning: {prunedInterfaces.Count} parents remain:");
+            foreach (var iface in prunedInterfaces)
+            {
+                Console.WriteLine($"  -> {iface.FullName}");
+            }
+            Console.WriteLine();
+        }
 
         // Map to TypeScript names
         var extends = prunedInterfaces
@@ -1505,6 +1561,75 @@ public sealed class AssemblyProcessor
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Phase 1: Detect if an interface has diamond inheritance.
+    /// Returns true if any ancestor is reachable via multiple paths.
+    /// General rule: Build graph of all parents and check if any parent has multiple reaching paths.
+    /// </summary>
+    private bool HasDiamondInheritance(Type interfaceType, out List<Type> diamondAncestors)
+    {
+        diamondAncestors = new List<Type>();
+
+        var directParents = interfaceType.GetInterfaces()
+            .Where(i => i.FullName != "System.IDisposable")
+            .ToList();
+
+        if (directParents.Count <= 1)
+            return false; // Can't have diamond with 0 or 1 parent
+
+        // For each ancestor, track which direct parents can reach it
+        var ancestorReachability = new Dictionary<string, HashSet<Type>>(); // key: ancestor FullName or Name
+
+        foreach (var directParent in directParents)
+        {
+            // This direct parent is reachable from itself
+            var key = directParent.FullName ?? directParent.Name;
+            if (!ancestorReachability.ContainsKey(key))
+                ancestorReachability[key] = new HashSet<Type>();
+            ancestorReachability[key].Add(directParent);
+
+            // Get all transitive parents of this direct parent
+            var transitiveParents = GetAllTransitiveInterfaces(directParent);
+
+            foreach (var transitive in transitiveParents)
+            {
+                var transitiveKey = transitive.FullName ?? transitive.Name;
+                if (!ancestorReachability.ContainsKey(transitiveKey))
+                    ancestorReachability[transitiveKey] = new HashSet<Type>();
+                ancestorReachability[transitiveKey].Add(directParent);
+            }
+        }
+
+        // Find ancestors reachable via multiple direct parents (diamond!)
+        var diamondKeys = ancestorReachability
+            .Where(kvp => kvp.Value.Count > 1)
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        // Map keys back to actual types
+        foreach (var key in diamondKeys)
+        {
+            // Find the type from our parent lists
+            var ancestor = directParents.FirstOrDefault(p => (p.FullName ?? p.Name) == key);
+            if (ancestor == null)
+            {
+                // Must be a transitive parent, find it
+                foreach (var parent in directParents)
+                {
+                    var transitives = parent.GetInterfaces();
+                    ancestor = transitives.FirstOrDefault(t => (t.FullName ?? t.Name) == key);
+                    if (ancestor != null)
+                        break;
+                }
+            }
+
+            if (ancestor != null)
+                diamondAncestors.Add(ancestor);
+        }
+
+        return diamondAncestors.Count > 0;
     }
 
     /// <summary>
