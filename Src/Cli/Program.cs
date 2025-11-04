@@ -6,6 +6,7 @@ using GenerateDts.Pipeline;
 using GenerateDts.Emit;
 using GenerateDts.Metadata;
 using GenerateDts.Diagnostics;
+using GenerateDts.Analysis;
 
 namespace GenerateDts.Cli;
 
@@ -37,30 +38,80 @@ public static class Program
             aliases: new[] { "--config", "-c" },
             description: "Path to configuration JSON file");
 
+        // Naming transform options
+        var namespaceNamesOption = new Option<string?>(
+            name: "--namespace-names",
+            description: "Transform namespace names (camelCase)");
+
+        var classNamesOption = new Option<string?>(
+            name: "--class-names",
+            description: "Transform class names (camelCase)");
+
+        var interfaceNamesOption = new Option<string?>(
+            name: "--interface-names",
+            description: "Transform interface names (camelCase)");
+
+        var methodNamesOption = new Option<string?>(
+            name: "--method-names",
+            description: "Transform method names (camelCase)");
+
+        var propertyNamesOption = new Option<string?>(
+            name: "--property-names",
+            description: "Transform property names (camelCase)");
+
+        var enumMemberNamesOption = new Option<string?>(
+            name: "--enum-member-names",
+            description: "Transform enum member names (camelCase)");
+
+        var bindingNamesOption = new Option<string?>(
+            name: "--binding-names",
+            description: "Transform binding names (camelCase, overrides class/method/property flags)");
+
         var rootCommand = new RootCommand("Generate TypeScript declarations from .NET assemblies")
         {
             assemblyPathArg,
             namespacesOption,
             outDirOption,
             logOption,
-            configOption
+            configOption,
+            namespaceNamesOption,
+            classNamesOption,
+            interfaceNamesOption,
+            methodNamesOption,
+            propertyNamesOption,
+            enumMemberNamesOption,
+            bindingNamesOption
         };
 
-        rootCommand.SetHandler(
-            async (assemblyPath, namespaces, outDir, logPath, configPath) =>
+        rootCommand.SetHandler(async (context) =>
             {
+                var assemblyPath = context.ParseResult.GetValueForArgument(assemblyPathArg);
+                var namespaces = context.ParseResult.GetValueForOption(namespacesOption) ?? Array.Empty<string>();
+                var outDir = context.ParseResult.GetValueForOption(outDirOption) ?? ".";
+                var logPath = context.ParseResult.GetValueForOption(logOption);
+                var configPath = context.ParseResult.GetValueForOption(configOption);
+                var namespaceNames = context.ParseResult.GetValueForOption(namespaceNamesOption);
+                var classNames = context.ParseResult.GetValueForOption(classNamesOption);
+                var interfaceNames = context.ParseResult.GetValueForOption(interfaceNamesOption);
+                var methodNames = context.ParseResult.GetValueForOption(methodNamesOption);
+                var propertyNames = context.ParseResult.GetValueForOption(propertyNamesOption);
+                var enumMemberNames = context.ParseResult.GetValueForOption(enumMemberNamesOption);
+                var bindingNames = context.ParseResult.GetValueForOption(bindingNamesOption);
+
                 await GenerateDeclarationsAsync(
                     assemblyPath,
                     namespaces,
                     outDir,
                     logPath,
-                    configPath);
-            },
-            assemblyPathArg,
-            namespacesOption,
-            outDirOption,
-            logOption,
-            configOption);
+                    configPath,
+                    namespaceNames,
+                    classNames,
+                    interfaceNames,
+                    methodNames,
+                    propertyNames,
+                    enumMemberNames,
+                    bindingNames);
+            });
 
         return await rootCommand.InvokeAsync(args);
     }
@@ -70,7 +121,14 @@ public static class Program
         string[] namespaces,
         string outDir,
         string? logPath,
-        string? configPath)
+        string? configPath,
+        string? namespaceNames,
+        string? classNames,
+        string? interfaceNames,
+        string? methodNames,
+        string? propertyNames,
+        string? enumMemberNames,
+        string? bindingNames)
     {
         try
         {
@@ -85,6 +143,15 @@ public static class Program
             var config = configPath != null && File.Exists(configPath)
                 ? await GeneratorConfig.LoadAsync(configPath)
                 : new GeneratorConfig();
+
+            // Apply naming transform options from CLI
+            config.NamespaceNames = ParseNameTransformOption(namespaceNames);
+            config.ClassNames = ParseNameTransformOption(classNames);
+            config.InterfaceNames = ParseNameTransformOption(interfaceNames);
+            config.MethodNames = ParseNameTransformOption(methodNames);
+            config.PropertyNames = ParseNameTransformOption(propertyNames);
+            config.EnumMemberNames = ParseNameTransformOption(enumMemberNames);
+            config.BindingNames = ParseNameTransformOption(bindingNames);
 
             // Load assembly
             Console.WriteLine($"Loading assembly: {assemblyPath}");
@@ -158,14 +225,28 @@ public static class Program
             {
                 // Process assembly
                 var processor = new AssemblyProcessor(config, namespaces);
-                var typeInfo = processor.ProcessAssembly(assembly);
+                var processedAssembly = processor.ProcessAssembly(assembly);
+
+                // Apply naming transforms if any are configured
+                Dictionary<string, BindingEntry>? bindings = null;
+                if (config.NamespaceNames != NameTransformOption.None ||
+                    config.ClassNames != NameTransformOption.None ||
+                    config.InterfaceNames != NameTransformOption.None ||
+                    config.MethodNames != NameTransformOption.None ||
+                    config.PropertyNames != NameTransformOption.None ||
+                    config.EnumMemberNames != NameTransformOption.None)
+                {
+                    var applicator = new NameTransformApplicator(config);
+                    processedAssembly = applicator.Apply(processedAssembly);
+                    bindings = applicator.GetBindings();
+                }
 
                 // Get dependency tracker for import generation
                 var dependencyTracker = processor.GetDependencyTracker();
 
                 // Render declarations with dependencies
                 var renderer = new DeclarationRenderer();
-                var declarations = renderer.RenderDeclarations(typeInfo, dependencyTracker);
+                var declarations = renderer.RenderDeclarations(processedAssembly, dependencyTracker);
 
                 // Process metadata
                 var metadata = processor.ProcessAssemblyMetadata(assembly);
@@ -201,11 +282,23 @@ public static class Program
                     Console.WriteLine($"Generated: {dependenciesPath}");
                 }
 
+                // Write bindings manifest if transforms were applied
+                if (bindings != null && bindings.Count > 0)
+                {
+                    var bindingsFileName = $"{assemblyName}.bindings.json";
+                    var bindingsPath = Path.Combine(outDir, bindingsFileName);
+                    var bindingsJson = System.Text.Json.JsonSerializer.Serialize(
+                        bindings,
+                        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                    await File.WriteAllTextAsync(bindingsPath, bindingsJson, System.Text.Encoding.UTF8);
+                    Console.WriteLine($"Generated: {bindingsPath}");
+                }
+
                 // Write log if requested
                 if (logPath != null)
                 {
                     var logger = new GenerationLogger();
-                    var logData = logger.CreateLog(typeInfo);
+                    var logData = logger.CreateLog(processedAssembly);
                     await File.WriteAllTextAsync(logPath, logData, System.Text.Encoding.UTF8);
                     Console.WriteLine($"Log written: {logPath}");
                 }
@@ -224,5 +317,21 @@ public static class Program
             }
             Environment.Exit(1);
         }
+    }
+
+    private static NameTransformOption ParseNameTransformOption(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return NameTransformOption.None;
+        }
+
+        return value.ToLowerInvariant() switch
+        {
+            "camelcase" => NameTransformOption.CamelCase,
+            "camel-case" => NameTransformOption.CamelCase,
+            "camel" => NameTransformOption.CamelCase,
+            _ => throw new ArgumentException($"Unknown naming transform: '{value}'. Supported values: camelCase")
+        };
     }
 }

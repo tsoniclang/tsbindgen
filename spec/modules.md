@@ -11,6 +11,7 @@ writing tests.
 | `Analysis/InterfaceAnalysis.cs` | Diamond detection, `_Base` interface creation, intersection aliases | `HasDiamondInheritance`, `GenerateBaseInterface`, `CreateIntersectionAlias`, `PruneRedundantInterfaceExtends` |
 | `Analysis/MemberFilters.cs` | Per-member include logic | `ShouldIncludeMember` |
 | `Analysis/OverloadBuilder.cs` | Adds interface/base overloads (instance + static) | `AddInterfaceCompatibleOverloads`, `AddBaseClassCompatibleOverloads` |
+| `Analysis/NameTransform.cs` | Applies CLI naming transforms to declarations | `Apply`, helper methods for camelCase |
 | `Analysis/TypeFilters.cs` | Type-level include logic | `ShouldIncludeType`, `IsStaticOnly`, `ShouldSkipInterfaceInImplementsClause` |
 | `Analysis/TypeReferenceChecker.cs` | Detect references to type parameters | `PropertyTypeReferencesTypeParams`, `TypeReferencesAnyTypeParam` |
 | `Cli/Program.cs` | CLI entry point | `Main`, `GenerateDeclarationsAsync` |
@@ -24,6 +25,7 @@ writing tests.
 | `Emit/MethodEmitter.cs` | Map methods & parameters | `ProcessMethod`, `ProcessParameter`, metadata helpers |
 | `Emit/PropertyEmitter.cs` | Map properties, apply covariance wrappers | `ProcessProperty`, `ApplyCovariantWrapperIfNeeded` |
 | `Emit/StaticNamespaceEmitter.cs` | Map static-only types | `ProcessStaticNamespace` |
+| `Emit/BindingWriter.cs` | Emits `<Assembly>.bindings.json` | `WriteBindings` |
 | `Emit/Writers/*` | Formatting helpers used by renderer | `ImportWriter`, `IntrinsicsWriter`, `MemberWriter`, `TypeWriter` |
 | `Mapping/ArrayMapping.cs` | Array mapping helper | used via `TypeMapper` |
 | `Mapping/DelegateMapping.cs` | Delegate mapping helper | `MapDelegateToFunctionType` |

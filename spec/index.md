@@ -10,8 +10,10 @@ implement it, and the observable output.
 | [pipeline.md](pipeline.md) | High level flow from CLI invocation to files on disk |
 | [mapping.md](mapping.md) | CLR → TypeScript mapping rules (primitives, generics, delegates, etc.) |
 | [analysis.md](analysis.md) | All semantic adjustments applied after reflection (covariance, diamonds, overloads…) |
+| [name-transform.md](name-transform.md) | CLI-controlled naming transforms and bindings generation |
 | [emit.md](emit.md) | How declaration text is produced from the analysed model |
 | [metadata.md](metadata.md) | Metadata JSON generation used by the Tsonic emitter |
+| [bindings-consumer.md](bindings-consumer.md) | How the runtime should consume `<Assembly>.bindings.json` |
 | [modules.md](modules.md) | One‑line responsibilities for every `.cs` file in `Src/` |
 | [validation.md](validation.md) | Validation/CI expectations |
 

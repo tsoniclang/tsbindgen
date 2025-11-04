@@ -62,12 +62,38 @@ static side of derived classes exposes the same signatures as the base class:
 injects any missing signatures into the class, covering covariant return types
 and explicitly-implemented methods.
 
+## Naming transforms
+
+`Analysis/NameTransformApplicator` applies naming convention transformations to
+the entire processed assembly **after** all emitters have run but **before**
+rendering the TypeScript declarations:
+
+- Takes CLI options (`--namespace-names camelCase`, `--class-names camelCase`,
+  `--interface-names camelCase`, `--method-names camelCase`,
+  `--property-names camelCase`, `--enum-member-names camelCase`)
+- Recursively transforms all names in the `ProcessedAssembly` model
+- Tracks all transformations in a binding manifest: `{ "selectMany": "SelectMany" }`
+- The binding manifest is written as `<Assembly>.bindings.json` alongside the
+  `.d.ts` and `.metadata.json` files
+- Metadata files **always** contain original CLR names (not transformed names)
+
+**Smart camelCase conversion** (`Analysis/NameTransform.ToCamelCase`):
+- Normal PascalCase: `SelectMany` → `selectMany`
+- Acronyms followed by PascalCase: `XMLParser` → `xmlParser`
+- All-caps acronyms: `XML` → `xml`
+- Already camelCase: `selectMany` → `selectMany` (unchanged)
+
+This happens in a **post-processing phase** after all declaration records have
+been created, keeping the transform logic separate from the emitters and
+analysis code.
+
 ## Dependency tracking
 
 - `Analysis/DependencyHelpers.TrackTypeDependency` records every external type
   reference (including generic arguments, array element types, by-ref/pointers).
-- The data is persisted by `Pipeline/DependencyTracker` and used by the renderer
-  to emit `import type` statements and `.dependencies.json`.
+- The data is persisted by `Pipeline/DependencyTracker` and is used during
+  rendering and bindings generation to produce both `import type` statements and
+  `<Assembly>.bindings.json`.
 
 Together, these transforms make the emit phase straightforward: by the time a
 type reaches an emitter it already models the CLR behaviour in a way TypeScript

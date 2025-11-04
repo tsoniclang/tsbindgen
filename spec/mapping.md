@@ -12,9 +12,9 @@ string representation while recording dependencies through
 | `TypeMapper.cs` | Orchestrates mapping, exposes `MapType` and `SetContext` | `MapType` |
 | `PrimitiveMapping.cs` | Primitive and “well known” system types | `MapPrimitiveType`, `MapSystemType`, `AddWarning` |
 | `GenericMapping.cs` | Handles open/closed generic types, `Task`/`Nullable` special cases | `MapGenericType` |
-| `ArrayMapping.cs` | Maps array/`Span` shapes to `ReadonlyArray<T>` | implicit via `MapType` branch |
+| `ArrayMapping.cs` | Maps array/`Span` shapes to `ReadonlyArray<T>` | handled inside `MapType` |
 | `DelegateMapping.cs` | Converts delegates to function signatures | `MapDelegateToFunctionType` |
-| `TypeNameHelpers.cs` / `TypeNameMapping.cs` | Canonical name/arity computation for CLR types | `GetFullTypeName`, `GetTypeNameWithArity` |
+| `TypeNameHelpers.cs` / `TypeNameMapping.cs` | Canonical name/arity computation for CLR types | `GetTypeName`, `GetFullTypeName` |
 
 ## Mapping behaviours
 
@@ -38,8 +38,8 @@ string representation while recording dependencies through
    - `ValueTuple` types retain CLR naming (processed by `TypeNameMapping`).
 7. **Dependency tracking**: every mapped CLR `Type` passes through
    `DependencyHelpers.TrackTypeDependency`, which records the defining assembly
-   and the full type name in `Pipeline/DependencyTracker`.  This data drives the
-   import list in the renderer and the diagnostic `.dependencies.json` file.
+   and full type name in `Pipeline/DependencyTracker`.  This data drives both the
+   import list during rendering and the `.bindings.json` file described later.
 
 ## Warnings
 
