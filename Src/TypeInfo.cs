@@ -33,7 +33,15 @@ public sealed record InterfaceDeclaration(
     IReadOnlyList<string> GenericParameters,
     IReadOnlyList<string> Extends,
     IReadOnlyList<TypeInfo.PropertyInfo> Properties,
-    IReadOnlyList<TypeInfo.MethodInfo> Methods) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+    IReadOnlyList<TypeInfo.MethodInfo> Methods,
+    bool IsDiamondBase = false) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+
+public sealed record IntersectionTypeAlias(
+    string Name,
+    string FullName,
+    bool IsGeneric,
+    IReadOnlyList<string> GenericParameters,
+    IReadOnlyList<string> IntersectedTypes) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
 
 public sealed record EnumDeclaration(
     string Name,

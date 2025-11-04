@@ -276,15 +276,23 @@ public sealed class AssemblyProcessor
             .OfType<TypeInfo.MethodInfo>() // Filter nulls and cast to non-nullable
             .ToList();
 
-        var extends = type.GetInterfaces()
+        // Phase 3: Collect direct interfaces and prune redundant ones
+        var directInterfaces = type.GetInterfaces()
             .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
+            .ToList();
+
+        // Prune redundant extends (Phase 3: Interface Extension Diamonds)
+        var prunedInterfaces = PruneRedundantInterfaceExtends(directInterfaces);
+
+        // Map to TypeScript names
+        var extends = prunedInterfaces
             .Select(i => _typeMapper.MapType(i))
             .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
             .Distinct() // Remove duplicates
             .ToList();
 
-        // Track base interface dependencies
-        foreach (var iface in type.GetInterfaces().Where(i => i.FullName != "System.IDisposable"))
+        // Track base interface dependencies (use pruned list)
+        foreach (var iface in prunedInterfaces)
         {
             TrackTypeDependency(iface);
         }
@@ -480,6 +488,13 @@ public sealed class AssemblyProcessor
         }
 
         var isStatic = prop.GetMethod?.IsStatic ?? prop.SetMethod?.IsStatic ?? false;
+
+        // Phase 4: Skip redundant property redeclarations
+        // If base class already declares this exact property, don't re-emit it
+        if (!isStatic && IsRedundantPropertyRedeclaration(prop))
+        {
+            return null!; // Will be filtered out - TypeScript will inherit from base
+        }
 
         // TypeScript: static properties cannot reference class type parameters
         // Skip static properties in generic classes to avoid TS2302 errors
@@ -1338,5 +1353,128 @@ public sealed class AssemblyProcessor
     public DependencyTracker? GetDependencyTracker()
     {
         return _dependencyTracker;
+    }
+
+    /// <summary>
+    /// Phase 4: Check if a property is redundantly redeclaring a base class property.
+    /// If base class already has this exact property (same name, same mapped type), skip it.
+    ///
+    /// General rule: Only re-emit properties when types differ (true covariance).
+    /// </summary>
+    private bool IsRedundantPropertyRedeclaration(System.Reflection.PropertyInfo prop)
+    {
+        var declaringType = prop.DeclaringType;
+        if (declaringType == null)
+            return false;
+
+        var baseType = declaringType.BaseType;
+        if (baseType == null ||
+            baseType.FullName == "System.Object" ||
+            baseType.FullName == "System.ValueType" ||
+            baseType.FullName == "System.MarshalByRefObject")
+        {
+            return false; // No base to check
+        }
+
+        try
+        {
+            // Look for property with same name in base class
+            var baseProperty = baseType.GetProperty(prop.Name, BindingFlags.Public | BindingFlags.Instance);
+            if (baseProperty == null)
+                return false; // Not in base class
+
+            // Map both types to TypeScript
+            var derivedMapped = _typeMapper.MapType(prop.PropertyType);
+            var baseMapped = _typeMapper.MapType(baseProperty.PropertyType);
+
+            // If types match exactly, this is a redundant redeclaration
+            if (derivedMapped == baseMapped)
+            {
+                return true; // Skip - TypeScript will inherit from base
+            }
+
+            // Types differ - this is true covariance, keep it (will be handled by Covariant wrapper)
+            return false;
+        }
+        catch
+        {
+            // Base class may not be accessible in MetadataLoadContext
+            return false; // Keep the property to be safe
+        }
+    }
+
+    /// <summary>
+    /// Phase 3: Get all interfaces reachable transitively from the given interface.
+    /// Used to detect redundant extends clauses.
+    /// </summary>
+    private HashSet<Type> GetAllTransitiveInterfaces(Type interfaceType)
+    {
+        var result = new HashSet<Type>();
+        var queue = new Queue<Type>();
+
+        // Start with direct parents
+        foreach (var parent in interfaceType.GetInterfaces())
+        {
+            queue.Enqueue(parent);
+        }
+
+        // BFS to find all transitive parents
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (result.Add(current)) // Returns false if already present
+            {
+                foreach (var parent in current.GetInterfaces())
+                {
+                    queue.Enqueue(parent);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Phase 3: Prune redundant interface extends.
+    /// Removes interfaces that are already inherited transitively through other interfaces.
+    ///
+    /// General rule: If interface A extends B, and B already extends C,
+    /// then "A extends B, C" is redundant - should be just "A extends B".
+    /// </summary>
+    private List<Type> PruneRedundantInterfaceExtends(List<Type> directInterfaces)
+    {
+        if (directInterfaces.Count <= 1)
+            return directInterfaces; // Nothing to prune
+
+        var result = new List<Type>();
+
+        foreach (var candidate in directInterfaces)
+        {
+            // Check if this candidate is transitively reachable from any OTHER interface in the list
+            bool isRedundant = false;
+
+            foreach (var other in directInterfaces)
+            {
+                if (candidate == other)
+                    continue; // Skip self
+
+                // Get all transitive parents of 'other'
+                var transitiveParents = GetAllTransitiveInterfaces(other);
+
+                // If 'candidate' is in the transitive parents of 'other', it's redundant
+                if (transitiveParents.Contains(candidate))
+                {
+                    isRedundant = true;
+                    break;
+                }
+            }
+
+            if (!isRedundant)
+            {
+                result.Add(candidate);
+            }
+        }
+
+        return result;
     }
 }
