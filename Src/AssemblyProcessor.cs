@@ -1345,12 +1345,17 @@ public sealed class AssemblyProcessor
         // Regular static methods are already available on the constructed type
         if (baseType.IsGenericType && !baseType.IsGenericTypeDefinition)
         {
-            foreach (var m in baseType.GetGenericTypeDefinition().GetMethods(binding))
+            var genericTypeDef = baseType.GetGenericTypeDefinition();
+            var methodsOnTypeDef = genericTypeDef.GetMethods(binding);
+
+            foreach (var m in methodsOnTypeDef)
             {
-                // Only include if it's a generic method (method-level generics)
-                // Skip non-generic methods as they're already on the constructed type
-                if (m.IsGenericMethod)
-                    yield return m;
+                // Include ALL static methods from the generic type definition because:
+                // 1. Methods with method-level generics (IsGenericMethod == true)
+                // 2. Methods using class type parameters (IsGenericMethod == false but become generic in TS)
+                // Both need to be added to derived classes to satisfy TypeScript's static side checking
+                // The deduplication happens later in AddBaseClassOverloadsRecursive
+                yield return m;
             }
         }
     }
@@ -1474,16 +1479,45 @@ public sealed class AssemblyProcessor
                     if (!hasExactMatch)
                     {
                         // Add base class-compatible static method signature
-                        var genericParams = baseStaticMethod.IsGenericMethod
-                            ? baseStaticMethod.GetGenericArguments().Select(t => t.Name).ToList()
-                            : new List<string>();
+                        // Use same logic as ProcessMethod for static methods in generic classes
+                        var genericParams = new List<string>();
+                        var isGeneric = baseStaticMethod.IsGenericMethod;
+
+                        // If this is a static method in a generic base class, add the class's type parameters
+                        // to make it generic in TypeScript (same as ProcessMethod lines 794-814)
+                        if (baseType.IsGenericType)
+                        {
+                            // IMPORTANT: Get type parameters from the DEFINITION, not the constructed type!
+                            // For EqualityComparer_1<byte>, we want "T", not "Byte"
+                            var baseTypeDef = baseType.IsGenericTypeDefinition ? baseType : baseType.GetGenericTypeDefinition();
+                            var classTypeParams = baseTypeDef.GetGenericArguments().Select(t => t.Name).ToList();
+
+                            if (baseStaticMethod.IsGenericMethod)
+                            {
+                                // Method already has its own type parameters - prepend class params
+                                var methodTypeParams = baseStaticMethod.GetGenericArguments().Select(t => t.Name).ToList();
+                                genericParams = classTypeParams.Concat(methodTypeParams).ToList();
+                            }
+                            else
+                            {
+                                // Method has no generic params - use class params
+                                genericParams = classTypeParams;
+                            }
+
+                            isGeneric = genericParams.Count > 0;
+                        }
+                        else if (baseStaticMethod.IsGenericMethod)
+                        {
+                            // Non-generic class, but method is generic
+                            genericParams = baseStaticMethod.GetGenericArguments().Select(t => t.Name).ToList();
+                        }
 
                         methods.Add(new TypeInfo.MethodInfo(
                             baseStaticMethod.Name,
                             baseReturnType,
                             baseParams,
                             true, // Static method
-                            baseStaticMethod.IsGenericMethod,
+                            isGeneric,
                             genericParams));
                     }
                 }
