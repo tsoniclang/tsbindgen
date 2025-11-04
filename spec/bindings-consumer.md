@@ -1,8 +1,8 @@
 # bindings.json Consumer Guide (Tsonic runtime)
 
-This document explains how the new `<Assembly>.bindings.json` files emitted by
-`generatedts` should be consumed by the Tsonic runtime.  The manifest maps the
-TypeScript-facing names to the original CLR members.
+The `<Assembly>.bindings.json` file maps the TypeScript-facing names produced by
+the naming transform back to their CLR counterparts.  The manifest is emitted by
+`generatedts` when any naming transform (camelCase, etc.) is active.
 
 ## File location
 
@@ -51,35 +51,21 @@ The runtime loader should look for the `.bindings.json` next to the `.metadata.j
 }
 ```
 
-Field meanings:
+- `name` is the identifier emitted in the `.d.ts`; `alias` is the CLR identifier.
+- `binding` contains the fully-qualified CLR target the runtime should call.
+- `signature` is optional and may be omitted when not needed.
 
-- `assembly`: CLR assembly name.
-- `namespaces[]`: hierarchy of namespaces.  `name` is the transformed identifier
-  that appears in `.d.ts`; `alias` is the CLR namespace.
-- `types[]`: per-type entries with transformed name (`name`), CLR alias (`alias`),
-  and `kind` (`class`, `interface`, `enum`, `struct`).
-- `members[]`: methods/properties recorded under the containing type.
-  - `name`: transformed JS/TS identifier.
-  - `alias`: CLR member name.
-  - `signature`: optional TypeScript signature (for tooling/debugging).
-  - `binding`: the CLR target `{ assembly, type, member }` the runtime should call.
-
-If no transform was applied for a particular category the `name` and `alias`
-values will match.
+The manifest mirrors the declaration hierarchy, making it straightforward for
+the runtime to map transformed TypeScript names back to CLR members.
 
 ## Usage from Tsonic runtime
 
 1. Load the manifest once per assembly alongside its metadata.
-2. When resolving a TypeScript identifier (e.g. `selectMany`), walk the manifest:
-   - Find the namespace/type by `name` (transformed form).
-   - Use `binding.type` + `binding.member` + `binding.assembly` when emitting C#.
-3. The runtime should fall back to CLR names when an entry is missing (in case no
-   transform was configured).
+2. When resolving a TypeScript identifier (e.g. `selectMany`), walk the
+   namespace/type/member structure to locate the entry and read the CLR binding
+   target.
+3. If a name is missing from the manifest, fall back to the CLR name (no transform).
 
-## Versioning
-
-The manifest is additive.  Future iterations may add new fields (e.g. overload
-disambiguators) but existing fields (`name`, `alias`, `binding`) will remain.
-
-This guide is intended for runtime developers so they know how to interpret the
-manifest and map JS-friendly names back to CLR members.
+The manifest is additive.  New fields (e.g. overload metadata) may appear in the
+future, but existing properties (`kind`, `originalName`, `fullName`) will remain
+stable.

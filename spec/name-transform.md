@@ -1,135 +1,43 @@
-# Name Transform Feature (generatedts implementation)
+# Name Transform Feature
 
-This document explains how `generatedts` must implement the optional naming
-transform that produces camelCase (or other conventions) in the emitted
-`.d.ts` while preserving CLR names for runtime consumption.
+The generator supports optional naming conventions so that the emitted
+`.d.ts` files can follow JavaScript / TypeScript style (e.g. camelCase) while the
+runtime still references CLR members by their original names.
 
-## Motivation
+## CLI support
 
-TypeScript developers often expect JS-style identifiers (e.g. `selectMany`
-instead of `SelectMany`).  We want to support this without losing the original
-CLR name, so the runtime emitter still knows which C# member to call.
+`Cli/Program.cs` recognises the following switches; each maps to a
+`NameTransformOption` stored in `GeneratorConfig`.
 
-## CLI additions
+| Option | Scope | Values |
+| --- | --- | --- |
+| `--namespace-names` | Namespace declarations | `none` (default), `camelCase` |
+| `--type-names` | Classes, structs, interfaces, enums | `none`, `camelCase` |
+| `--method-names` | Instance/static methods | `none`, `camelCase` |
+| `--property-names` | Properties | `none`, `camelCase` |
+| `--enum-member-names` | Enum members | `none`, `camelCase` |
+| `--binding-names` | Override for binding dictionary keys | `none`, `camelCase` |
 
-Extend `Cli/Program.cs` to accept the following optional switches.  Each switch
-maps to a `NameTransformOption` in `GeneratorConfig`.
+Unsupported values are rejected with a validation error.
 
-| Option | Applies to |
-| --- | --- |
-| `--namespace-names` | Namespace declarations/bindings |
-| `--type-names` | Classes, structs, interfaces, enums |
-| `--method-names` | Instance + static methods |
-| `--property-names` | Properties (instance + static) |
-| `--enum-member-names` | Enum members |
-| `--binding-names` | Overrides the key in bindings (optional) |
+## Transformation behaviour
 
-For the first iteration, support `camelCase` and `none` (default).  The CLI
-should reject unknown values and display a helpful message.
+- `Analysis/NameTransform.Apply` converts CLR identifiers to the requested
+  casing.  The current implementation handles common PascalCase, single-letter
+  identifiers, and leading acronyms (`XMLParser` → `xmlParser`).  Identifiers
+  already in camelCase are returned unchanged.
+- `Analysis/NameTransformApplicator` walks the `ProcessedAssembly` tree *after*
+  all other analysis steps (diamond handling, overload insertion, etc.).  It
+  rewrites namespace/type/member names in-place.
+- Every transformed identifier is recorded in a binding map so the runtime can
+  recover the CLR name.
 
-## Data model updates
+## Binding dictionary (`<Assembly>.bindings.json`)
 
-Add `DeclarationName` records in `Model/Declarations.cs`:
-
-```csharp
-public record DeclarationName(string Name, string? Alias = null);
-```
-
-Update the declaration models to store both CLR and transformed names, e.g.:
-
-```csharp
-public record MethodDeclaration(
-    DeclarationName Name,
-    IReadOnlyList<string> GenericParameters,
-    ...);
-```
-
-The CLR name becomes `Name.Alias` (optional), and the TypeScript-facing name is
-`Name.Name`.
-
-## Name transform module
-
-Create `Analysis/NameTransform.cs` with helper functions:
-
-```csharp
-public static class NameTransform
-{
-    public static string Apply(NameTransformOption option, string clrName)
-    {
-        return option switch
-        {
-            NameTransformOption.CamelCase => CamelCase(clrName),
-            _ => clrName,
-        };
-    }
-
-    private static string CamelCase(string value)
-    {
-        if (string.IsNullOrEmpty(value)) return value;
-        return char.ToLowerInvariant(value[0]) + value.Substring(1);
-    }
-}
-```
-
-The `CamelCase` helper can be expanded later to handle acronyms/underscores if
-needed.
-
-## Pipeline changes
-
-In `Pipeline/AssemblyProcessor.ProcessAssembly`:
-
-1. After the existing analysis (diamond handling, covariance, overloads), call a
-   new method `ApplyNameTransforms` that walks the `NamespaceInfo` tree and
-   updates each `DeclarationName` using `NameTransform.Apply` based on the CLI
-   options stored in `GeneratorConfig`.
-2. Ensure the original CLR name is preserved in `Alias` so metadata and bindings
-   can reference it.
-
-Pseudocode:
-
-```csharp
-private NamespaceInfo TransformNamespace(NamespaceInfo ns)
-{
-    var newName = new DeclarationName(
-        NameTransform.Apply(_config.NamespaceNameTransform, ns.Name.Name),
-        ns.Name.Alias ?? ns.Name.Name);
-
-    return ns with
-    {
-        Name = newName,
-        Types = ns.Types.Select(TransformType).ToList()
-    };
-}
-```
-
-## Renderer updates
-
-- Update emitters (`ClassEmitter`, `InterfaceEmitter`, etc.) to fill the new
-  `DeclarationName` structure when creating declarations.
-- Modify writers (e.g. `Emit/Writers/TypeWriter.cs`) to render
-  `Name.Name` instead of raw strings.
-- When referencing a type/member (implements clauses, intersection aliases), use
-  the transformed name.
-
-## Metadata
-
-- Metadata should continue to use the CLR names (`Name.Alias` when set).  No
-  change required in `MetadataProcessor` other than reading the alias where
-  available.
-
-## Bindings manifest
-
-- Create a new emitter `Emit/BindingWriter.cs` that walks the transformed
-  declaration model and produces `<Assembly>.bindings.json` per the structure
-  described in `spec/bindings-consumer.md`.
-- Each entry should include:
-  - `name`: the transformed identifier used in TypeScript
-  - `alias`: the CLR identifier (original name)
-  - `binding`: `{ "assembly": ..., "type": ..., "member": ... }`
-  - Optionally `kind` (`class`, `interface`, `method`, `property`, etc.) and
-    `signature` for tooling.
-
-Example snippet:
+`Cli/Program.GenerateDeclarationsAsync` serialises the collected bindings to
+`<Assembly>.bindings.json`.  The file mirrors the declaration hierarchy and
+includes both the transformed name (`name`) and the CLR identifier (`alias`).
+Example:
 
 ```json
 {
@@ -146,7 +54,7 @@ Example snippet:
           "members": [
             {
               "kind": "method",
-              "signature": "selectMany<TSource, TResult>(source: IEnumerable<TSource>, selector: (TSource) => IEnumerable<TResult>)",
+              "signature": "selectMany<...>",
               "name": "selectMany",
               "alias": "SelectMany",
               "binding": {
@@ -163,13 +71,18 @@ Example snippet:
 }
 ```
 
-## Validation
+When no transforms are requested the applicator returns no entries and the file
+is omitted.
 
-1. Extend `Scripts/validate.js` with a test run that enables one transform
-   (e.g. `--method-names camelCase`) so we have a golden baseline.
-2. Update unit tests or add new ones for `NameTransform.Apply` and the binding
-   writer.
-3. Document the new CLI options in `README.md` and `spec/cli.md` (if present).
+## Interaction with other artefacts
 
-Following this spec will allow callers to opt into JavaScript-style names while
-the runtime still calls the correct CLR methods.
+- Declaration emitters (`Emit/...`) operate on simple strings, so they
+  automatically pick up the transformed names once the applicator has run.
+- Metadata (`Metadata/MetadataProcessor`) is generated *before* the transform
+  phase and therefore retains CLR names.  The runtime uses metadata for
+  semantics and the bindings dictionary for name resolution.
+- Dependency tracking continues to use CLR names; the binding dictionary is
+  purely an alias map layered on top.
+
+This behaviour allows consumers to opt in to JS-style naming while the Tsonic
+runtime can always restore the original CLR identifiers when emitting C#.

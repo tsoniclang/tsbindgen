@@ -21,7 +21,7 @@ primary entry point is the CLI executable defined in `Src/Cli/Program.cs`.
 | `--method-names` | Transform method names (e.g., `camelCase`) |
 | `--property-names` | Transform property names (e.g., `camelCase`) |
 | `--enum-member-names` | Transform enum member names (e.g., `camelCase`) |
-| `--binding-names` | Override transform for binding manifest entries |
+| `--binding-names` | Reserved for custom binding key transforms (currently behaves like `none`) |
 
 The CLI loads configuration via `Config/GeneratorConfig.cs`, resolves type
 forwarders (`Reflection/TypeForwardingResolver.cs`), and loads the assembly
@@ -67,7 +67,7 @@ and dependency data.  It renders:
 | `<AssemblyName>.d.ts` | Result of `DeclarationRenderer.RenderDeclarations` |
 | `<AssemblyName>.metadata.json` | Serialised `MetadataWriter.WriteMetadataAsync` |
 | `<AssemblyName>.dependencies.json` | JSON emitted by `DependencyTracker.ToJson` |
-| `<AssemblyName>.bindings.json` | Binding manifest (only if naming transforms applied) |
+| `<AssemblyName>.bindings.json` | Binding map `{ "transformed": { "originalName": "...", "fullName": "..." } }` (only if naming transforms applied) |
 
 Logging (when requested) uses `Diagnostics/GenerationLogger.cs` to capture
 warnings emitted by `TypeMapper`.
