@@ -353,49 +353,12 @@ public sealed class AssemblyProcessor
             .OfType<TypeInfo.MethodInfo>() // Filter nulls and cast to non-nullable
             .ToList();
 
-        // Phase 8A: Interfaces that should be completely hidden (no wrappers, removed from implements)
-        var hiddenExplicitInterfaces = new HashSet<string>
-        {
-            "System.IConvertible",                              // Primitive type conversions
-            "System.Runtime.Serialization.ISerializable",       // Serialization internals
-            "System.Runtime.Serialization.IDeserializationCallback",  // Deserialization callback
-            "System.Runtime.CompilerServices.ITuple",           // Tuple implementation details
-            "System.Collections.IStructuralComparable",         // Structural comparison (Array, Tuples)
-            "System.Collections.IStructuralEquatable",          // Structural equality (Array, Tuples)
-            "System.IComparable",                               // Non-generic IComparable (Tuples)
-            "System.ISpanFormattable",                          // Span-based formatting (primitives)
-            "System.IUtf8SpanFormattable"                       // UTF-8 span formatting (primitives)
-        };
-
-        // Check if this is an enumerator/memory struct (hide IEnumerator/IDisposable)
-        var isEnumeratorOrMemoryStruct = type.IsValueType &&
-            ((type.FullName ?? "").Contains("Enumerator") ||
-             (type.FullName ?? "").Contains("MemoryManager"));
-
-        // P1: Check if this is an immutable/frozen collection type
-        // These types don't support mutating operations even though they implement the interfaces
-        var isImmutableCollection = (type.FullName ?? "").StartsWith("System.Collections.Immutable.Immutable") ||
-                                   (type.FullName ?? "").StartsWith("System.Collections.Immutable.Frozen") ||
-                                   (type.FullName ?? "").StartsWith("System.Collections.Frozen");
-
         // Add public wrappers for explicit interface implementations
-        // BUT skip the ones we're hiding completely
+        // These won't appear in TypeScript implements clause but are needed for metadata
         var explicitImplementations = GetExplicitInterfaceImplementations(type);
         foreach (var (interfaceType, interfaceMethod, implementation) in explicitImplementations)
         {
-            // Skip hidden interfaces - these will be removed from implements clause
-            if (hiddenExplicitInterfaces.Contains(interfaceType.FullName ?? ""))
-                continue;
-
-            // Skip IEnumerator/IDisposable for enumerator structs
-            if (isEnumeratorOrMemoryStruct)
-            {
-                var fullName = interfaceType.FullName ?? "";
-                if (fullName == "System.Collections.IEnumerator" ||
-                    fullName == "System.Collections.Generic.IEnumerator`1" ||
-                    fullName == "System.IDisposable")
-                    continue;
-            }
+            // All explicit implementations are kept for metadata, no filtering needed here
 
             // Check if this is a property getter/setter (special name)
             if (interfaceMethod.IsSpecialName && interfaceMethod.Name.StartsWith("get_"))
@@ -454,51 +417,11 @@ public sealed class AssemblyProcessor
             TrackTypeDependency(type.BaseType);
         }
 
-        // Phase 8A: Filter out hidden explicitly implemented interfaces from TypeScript implements clause
+        // Filter interfaces for TypeScript implements clause
+        // General rule: only include interfaces where ALL members are publicly implemented
         var interfaces = type.GetInterfaces()
             .Where(i => i.IsPublic)
-            .Where(i =>
-            {
-                // Skip interfaces that are always explicit (no public members)
-                if (hiddenExplicitInterfaces.Contains(i.FullName ?? ""))
-                    return false;
-
-                // Skip IEnumerator/IDisposable only for enumerator/memory structs
-                if (isEnumeratorOrMemoryStruct)
-                {
-                    var fullName = i.FullName ?? "";
-                    if (fullName == "System.Collections.IEnumerator" ||
-                        fullName.StartsWith("System.Collections.Generic.IEnumerator`1") ||
-                        fullName == "System.IDisposable")
-                    {
-                        return false;
-                    }
-                }
-
-                // P1: Skip mutating collection interfaces for immutable types
-                // Immutable collections implement these explicitly but return new instances instead of mutating
-                // Keep IReadOnlyXxx variants, remove IXxx mutating variants
-                if (isImmutableCollection)
-                {
-                    var fullName = i.FullName ?? "";
-                    // Remove mutating interfaces - immutable types have readonly variants
-                    if (fullName == "System.Collections.ICollection" ||
-                        fullName == "System.Collections.IList" ||
-                        fullName == "System.Collections.IDictionary" ||
-                        fullName == "System.Collections.Generic.ICollection`1" ||
-                        fullName == "System.Collections.Generic.IList`1" ||
-                        fullName == "System.Collections.Generic.ISet`1" ||
-                        fullName == "System.Collections.Generic.IDictionary`2")
-                    {
-                        return false;
-                    }
-                    // Keep IReadOnlyCollection, IReadOnlyList, IReadOnlySet, IReadOnlyDictionary
-                    // Keep IEnumerable (non-mutating)
-                    // Keep IImmutableXxx (immutable-specific interfaces)
-                }
-
-                return true;
-            })
+            .Where(i => !HasAnyExplicitImplementation(type, i)) // Skip explicitly implemented interfaces
             .Select(i => _typeMapper.MapType(i))
             .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
             .Distinct() // Remove duplicates
@@ -1084,6 +1007,38 @@ public sealed class AssemblyProcessor
         }
 
         return result;
+    }
+
+    private bool HasAnyExplicitImplementation(Type type, Type interfaceType)
+    {
+        // Check if the given interface has ANY members that are explicitly implemented (not public)
+        // This includes both methods and property accessors
+        try
+        {
+            var map = type.GetInterfaceMap(interfaceType);
+
+            // Check all methods
+            var allMethodsPublic = map.TargetMethods.All(m => m.IsPublic);
+            if (!allMethodsPublic)
+                return true;
+
+            // Check all property accessors
+            var allAccessorsPublic = interfaceType
+                .GetProperties()
+                .SelectMany(p => p.GetAccessors(nonPublic: true))
+                .All(a => a.IsPublic);
+
+            if (!allAccessorsPublic)
+                return true;
+
+            return false; // All members are public
+        }
+        catch
+        {
+            // GetInterfaceMap can fail for some types in MetadataLoadContext
+            // Be conservative: if we can't check, assume explicit to avoid TypeScript errors
+            return true;
+        }
     }
 
     private string GetAccessibility(MethodBase? method)
