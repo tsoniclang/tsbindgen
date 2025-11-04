@@ -24,7 +24,12 @@ public sealed record ClassDeclaration(
     IReadOnlyList<TypeInfo.ConstructorInfo> Constructors,
     IReadOnlyList<TypeInfo.PropertyInfo> Properties,
     IReadOnlyList<TypeInfo.MethodInfo> Methods,
-    bool IsStatic) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+    bool IsStatic,
+    CompanionNamespace? Companion = null) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+
+public sealed record CompanionNamespace(
+    IReadOnlyList<TypeInfo.PropertyInfo> Properties,
+    IReadOnlyList<TypeInfo.MethodInfo> Methods);
 
 public sealed record InterfaceDeclaration(
     string Name,
@@ -33,7 +38,15 @@ public sealed record InterfaceDeclaration(
     IReadOnlyList<string> GenericParameters,
     IReadOnlyList<string> Extends,
     IReadOnlyList<TypeInfo.PropertyInfo> Properties,
-    IReadOnlyList<TypeInfo.MethodInfo> Methods) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+    IReadOnlyList<TypeInfo.MethodInfo> Methods,
+    bool IsDiamondBase = false) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+
+public sealed record IntersectionTypeAlias(
+    string Name,
+    string FullName,
+    bool IsGeneric,
+    IReadOnlyList<string> GenericParameters,
+    IReadOnlyList<string> IntersectedTypes) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
 
 public sealed record EnumDeclaration(
     string Name,

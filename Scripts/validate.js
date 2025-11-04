@@ -10,10 +10,14 @@
  * 5. Reports any syntax or semantic errors
  */
 
-const { execSync, spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+import { execSync, spawn } from 'child_process';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Configuration
 const DOTNET_VERSION = '10.0.0-rc.1.25451.107';
@@ -140,7 +144,7 @@ const BCL_ASSEMBLIES = [
     'System.IO.Pipelines'
 ];
 
-const VALIDATION_DIR = path.join(os.tmpdir(), 'generatedts-validation');
+const VALIDATION_DIR = path.join(__dirname, '..', '.tests', 'validation');
 const TYPES_DIR = path.join(VALIDATION_DIR, 'types');
 
 function log(message) {
@@ -208,6 +212,7 @@ function createIntrinsicsFile() {
 // This file provides branded numeric type aliases used across all BCL declarations.
 // ESM module exports for full module support.
 
+// Branded numeric types
 export type int = number & { __brand: "int" };
 export type uint = number & { __brand: "uint" };
 export type byte = number & { __brand: "byte" };
@@ -219,6 +224,10 @@ export type ulong = number & { __brand: "ulong" };
 export type float = number & { __brand: "float" };
 export type double = number & { __brand: "double" };
 export type decimal = number & { __brand: "decimal" };
+
+// Phase 8B: Covariance helper for property type variance
+// Allows derived types to return more specific types than base/interface contracts
+export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };
 `;
 
     fs.writeFileSync(path.join(TYPES_DIR, '_intrinsics.d.ts'), intrinsicsContent);

@@ -41,6 +41,31 @@ This applies to ANY question, even if it seems like part of a larger task or dis
 
 Automated scripts break syntax in unpredictable ways and destroy codebases.
 
+### ALWAYS USE WRITE TOOL FOR FILE CREATION
+
+**🚨 CRITICAL RULE: Use the Write tool, NOT cat/heredocs for creating files. 🚨**
+
+- **ALWAYS** use the `Write` tool to create new files
+- **NEVER** use `cat > file << 'EOF'` or `cat << 'EOF' | tee file`
+- **NEVER** use bash heredocs for file creation
+- The Write tool is cleaner, safer, and designed for this purpose
+
+**Bad Example:**
+```bash
+cat > .analysis/report.md << 'EOF'
+# Report content here
+EOF
+```
+
+**Good Example:**
+```
+Use Write tool with:
+- file_path: "/absolute/path/to/.analysis/report.md"
+- content: "# Report content here"
+```
+
+**Exception:** Using `tee` to capture command output while also saving to file is acceptable (see .tests/ directory usage).
+
 ### NEVER USE GIT RESET
 
 **🚨 CRITICAL RULE: NEVER use git reset commands. 🚨**
@@ -71,7 +96,7 @@ mkdir -p .tests
 node Scripts/validate.js | tee .tests/validation-$(date +%s).txt
 
 # Run TypeScript compiler directly with tee
-npx tsc --project /tmp/generatedts-validation | tee .tests/tsc-$(date +%s).txt
+npx tsc --project .tests/validation | tee .tests/tsc-$(date +%s).txt
 
 # Analyze saved output later without re-running:
 grep "TS2416" .tests/validation-*.txt
@@ -310,8 +335,8 @@ node Scripts/validate.js | tee .tests/validation-$(date +%s).txt
 
 ### Validation Steps
 
-1. Cleans `/tmp/generatedts-validation`
-2. Generates all 55 BCL assemblies
+1. Cleans `.tests/validation/` directory
+2. Generates all 67 BCL assemblies
 3. Creates `index.d.ts` with triple-slash references
 4. Creates `tsconfig.json`
 5. Runs TypeScript compiler (`tsc`)

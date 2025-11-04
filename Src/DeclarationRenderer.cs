@@ -18,6 +18,7 @@ public sealed class DeclarationRenderer
         sb.AppendLine("// This file provides branded numeric type aliases used across all BCL declarations.");
         sb.AppendLine("// ESM module exports for full module support.");
         sb.AppendLine();
+        sb.AppendLine("// Branded numeric types");
         sb.AppendLine("export type int = number & { __brand: \"int\" };");
         sb.AppendLine("export type uint = number & { __brand: \"uint\" };");
         sb.AppendLine("export type byte = number & { __brand: \"byte\" };");
@@ -29,6 +30,10 @@ public sealed class DeclarationRenderer
         sb.AppendLine("export type float = number & { __brand: \"float\" };");
         sb.AppendLine("export type double = number & { __brand: \"double\" };");
         sb.AppendLine("export type decimal = number & { __brand: \"decimal\" };");
+        sb.AppendLine();
+        sb.AppendLine("// Phase 8B: Covariance helper for property type variance");
+        sb.AppendLine("// Allows derived types to return more specific types than base/interface contracts");
+        sb.AppendLine("export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };");
 
         return sb.ToString();
     }
@@ -42,7 +47,7 @@ public sealed class DeclarationRenderer
         sb.AppendLine();
 
         // ESM import for branded types from intrinsics
-        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal } from './_intrinsics.js';");
+        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal, Covariant } from './_intrinsics.js';");
         sb.AppendLine();
 
         // ESM imports for cross-assembly dependencies
@@ -112,6 +117,9 @@ public sealed class DeclarationRenderer
         {
             switch (type)
             {
+                case IntersectionTypeAlias alias:
+                    RenderIntersectionAlias(sb, alias, 1);
+                    break;
                 case StaticNamespaceDeclaration staticNs:
                     RenderStaticNamespace(sb, staticNs, 1);
                     break;
@@ -224,6 +232,48 @@ public sealed class DeclarationRenderer
         }
 
         sb.AppendLine($"{indent}}}");
+
+        // Phase 2: Render companion namespace for static members (if conflicts detected)
+        if (classDecl.Companion != null)
+        {
+            sb.AppendLine();
+            RenderCompanionNamespace(sb, classDecl.Name, classDecl.Companion, classDecl.GenericParameters, indentLevel);
+        }
+    }
+
+    /// <summary>
+    /// Phase 2: Renders a companion namespace for static members.
+    /// Used when static member names conflict with base class statics.
+    /// </summary>
+    private void RenderCompanionNamespace(StringBuilder sb, string className, CompanionNamespace companion,
+        IReadOnlyList<string> genericParams, int indentLevel)
+    {
+        var indent = new string(' ', indentLevel * 2);
+        var memberIndent = new string(' ', (indentLevel + 1) * 2);
+
+        // Namespace with same name as class (no generics on namespaces in TS)
+        sb.AppendLine($"{indent}namespace {className} {{");
+
+        // Static properties as const exports
+        foreach (var prop in companion.Properties)
+        {
+            // In namespaces, properties become exported constants
+            sb.AppendLine($"{memberIndent}export const {prop.Name}: {prop.Type};");
+        }
+
+        // Static methods as exported functions
+        foreach (var method in companion.Methods)
+        {
+            var genericParams2 = method.IsGeneric
+                ? $"<{string.Join(", ", method.GenericParameters)}>"
+                : "";
+
+            var parameters = RenderParameters(method.Parameters);
+
+            sb.AppendLine($"{memberIndent}export function {method.Name}{genericParams2}({parameters}): {method.ReturnType};");
+        }
+
+        sb.AppendLine($"{indent}}}");
     }
 
     private void RenderInterface(StringBuilder sb, InterfaceDeclaration interfaceDecl, int indentLevel)
@@ -257,6 +307,28 @@ public sealed class DeclarationRenderer
         }
 
         sb.AppendLine($"{indent}}}");
+    }
+
+    /// <summary>
+    /// Phase 1F: Render intersection type alias for diamond interfaces.
+    ///
+    /// Example output:
+    /// type INumber_1<TSelf> = INumber_1_Base<TSelf> & IComparable & IComparable_1<TSelf> & ...;
+    /// </summary>
+    private void RenderIntersectionAlias(StringBuilder sb, IntersectionTypeAlias alias, int indentLevel)
+    {
+        var indent = new string(' ', indentLevel * 2);
+
+        sb.Append($"{indent}type {alias.Name}");
+
+        if (alias.IsGeneric)
+        {
+            sb.Append($"<{string.Join(", ", alias.GenericParameters)}>");
+        }
+
+        sb.Append(" = ");
+        sb.Append(string.Join(" & ", alias.IntersectedTypes));
+        sb.AppendLine(";");
     }
 
     private void RenderEnum(StringBuilder sb, EnumDeclaration enumDecl, int indentLevel)

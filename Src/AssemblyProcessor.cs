@@ -10,6 +10,10 @@ public sealed class AssemblyProcessor
     private readonly SignatureFormatter _signatureFormatter = new();
     private DependencyTracker? _dependencyTracker;
 
+    // Phase 1: Track intersection type aliases for diamond interfaces
+    // Key: namespace name, Value: list of intersection aliases to add to that namespace
+    private Dictionary<string, List<IntersectionTypeAlias>> _intersectionAliases = new();
+
     /// <summary>
     /// TypeScript/JavaScript reserved keywords and special identifiers.
     /// </summary>
@@ -56,6 +60,9 @@ public sealed class AssemblyProcessor
         // Set context for TypeMapper to enable cross-assembly reference rewriting
         _typeMapper.SetContext(assembly, _dependencyTracker);
 
+        // Phase 1: Clear intersection aliases for this assembly
+        _intersectionAliases.Clear();
+
         var types = assembly.GetExportedTypes()
             .Where(ShouldIncludeType)
             .OrderBy(t => t.Namespace)
@@ -87,6 +94,12 @@ public sealed class AssemblyProcessor
                 {
                     _typeMapper.AddWarning($"Failed to process type {type.FullName}: {ex.Message}\nStack: {ex.StackTrace}");
                 }
+            }
+
+            // Phase 1: Add intersection aliases for this namespace (if any)
+            if (_intersectionAliases.TryGetValue(group.Key, out var aliases))
+            {
+                typeDeclarations.AddRange(aliases);
             }
 
             if (typeDeclarations.Count > 0)
@@ -262,6 +275,33 @@ public sealed class AssemblyProcessor
 
     private InterfaceDeclaration ProcessInterface(Type type)
     {
+        // Phase 3: Collect direct interfaces and prune redundant ones
+        var directInterfaces = type.GetInterfaces()
+            .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
+            .ToList();
+
+        // Prune redundant extends (Phase 3: Interface Extension Diamonds)
+        var prunedInterfaces = PruneRedundantInterfaceExtends(directInterfaces);
+
+        // Phase 1: Check for diamond inheritance AFTER pruning
+        // General rule: If multiple paths exist to same ancestor, generate _Base + intersection alias
+        if (HasDiamondInheritance(type, out var diamondAncestors))
+        {
+            Console.WriteLine($"[PHASE1] Diamond detected in {type.FullName}");
+            Console.WriteLine($"[PHASE1] Conflicting ancestors: {string.Join(", ", diamondAncestors.Select(a => a.FullName))}");
+
+            // Generate _Base interface (this becomes our return value)
+            var baseInterface = GenerateBaseInterface(type);
+
+            // Generate intersection alias (added to namespace later)
+            AddIntersectionAlias(type, prunedInterfaces);
+
+            Console.WriteLine($"[PHASE1] Generated {GetTypeName(type)}_Base interface + intersection alias");
+
+            return baseInterface;  // Return _Base, alias added separately to namespace
+        }
+
+        // Normal case: no diamond, proceed with standard interface generation
         var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(ShouldIncludeMember)
             .Select(ProcessProperty)
@@ -276,15 +316,14 @@ public sealed class AssemblyProcessor
             .OfType<TypeInfo.MethodInfo>() // Filter nulls and cast to non-nullable
             .ToList();
 
-        var extends = type.GetInterfaces()
-            .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
+        // Map to TypeScript names
+        var extends = prunedInterfaces
             .Select(i => _typeMapper.MapType(i))
-            .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
             .Distinct() // Remove duplicates
             .ToList();
 
-        // Track base interface dependencies
-        foreach (var iface in type.GetInterfaces().Where(i => i.FullName != "System.IDisposable"))
+        // Track base interface dependencies (use pruned list)
+        foreach (var iface in prunedInterfaces)
         {
             TrackTypeDependency(iface);
         }
@@ -354,10 +393,12 @@ public sealed class AssemblyProcessor
             .ToList();
 
         // Add public wrappers for explicit interface implementations
-        // This satisfies TS2420 errors where TypeScript expects public members
+        // These won't appear in TypeScript implements clause but are needed for metadata
         var explicitImplementations = GetExplicitInterfaceImplementations(type);
         foreach (var (interfaceType, interfaceMethod, implementation) in explicitImplementations)
         {
+            // All explicit implementations are kept for metadata, no filtering needed here
+
             // Check if this is a property getter/setter (special name)
             if (interfaceMethod.IsSpecialName && interfaceMethod.Name.StartsWith("get_"))
             {
@@ -368,7 +409,43 @@ public sealed class AssemblyProcessor
                 // Check if we already have this property (from public implementation)
                 if (!properties.Any(p => p.Name == propName))
                 {
-                    properties.Add(new TypeInfo.PropertyInfo(propName, propType, true, false));
+                    // Check if base class has this property with different type - apply Covariant wrapper
+                    var currentBase = type.BaseType;
+                    string finalPropType = propType;
+
+                    while (currentBase != null &&
+                           currentBase.FullName != "System.Object" &&
+                           currentBase.FullName != "System.ValueType" &&
+                           currentBase.FullName != "System.MarshalByRefObject")
+                    {
+                        try
+                        {
+                            var baseProp = currentBase.GetProperty(propName, BindingFlags.Public | BindingFlags.Instance);
+                            if (baseProp != null)
+                            {
+                                var baseTypeName = _typeMapper.MapType(baseProp.PropertyType);
+                                if (baseTypeName != propType)
+                                {
+                                    // Base class has different type - wrap with Covariant
+                                    // Covariant<TSpecific, TContract> where TSpecific is more specific than TContract
+                                    // baseTypeName is from base class (more specific), propType is from interface (contract)
+                                    TrackTypeDependency(interfaceMethod.ReturnType);
+                                    TrackTypeDependency(baseProp.PropertyType);
+                                    finalPropType = $"Covariant<{baseTypeName}, {propType}>";
+                                }
+                                break;
+                            }
+                        }
+                        catch (System.Reflection.AmbiguousMatchException)
+                        {
+                            // Multiple properties with same name (indexers) - skip Covariant wrapper check
+                            // The property will be added with its interface type
+                            break;
+                        }
+                        currentBase = currentBase.BaseType;
+                    }
+
+                    properties.Add(new TypeInfo.PropertyInfo(propName, finalPropType, true, false));
                 }
             }
             else if (interfaceMethod.IsSpecialName && interfaceMethod.Name.StartsWith("set_"))
@@ -415,10 +492,33 @@ public sealed class AssemblyProcessor
             TrackTypeDependency(type.BaseType);
         }
 
+        // Filter interfaces for TypeScript implements clause
+        // General rule: only include interfaces where ALL members are publicly implemented
+        // Phase 1E: If interface has diamond, use _Base variant in implements clause
         var interfaces = type.GetInterfaces()
             .Where(i => i.IsPublic)
-            .Select(i => _typeMapper.MapType(i))
-            .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
+            .Where(i => !HasAnyExplicitImplementation(type, i)) // Skip explicitly implemented interfaces
+            .Select(i =>
+            {
+                // Phase 1E: Use _Base variant for diamond interfaces
+                if (i.IsInterface && HasDiamondInheritance(i, out _))
+                {
+                    var mapped = _typeMapper.MapType(i);
+
+                    // Insert "_Base" before generic parameters or at end
+                    // Preserves full module path: Module.IFoo_1<T> -> Module.IFoo_1_Base<T>
+                    if (i.IsGenericType)
+                    {
+                        var genericStart = mapped.IndexOf('<');
+                        if (genericStart > 0)
+                        {
+                            return mapped.Substring(0, genericStart) + "_Base" + mapped.Substring(genericStart);
+                        }
+                    }
+                    return mapped + "_Base";
+                }
+                return _typeMapper.MapType(i);
+            })
             .Distinct() // Remove duplicates
             .ToList();
 
@@ -432,6 +532,10 @@ public sealed class AssemblyProcessor
             ? type.GetGenericArguments().Select(t => t.Name).ToList()
             : new List<string>();
 
+        // Phase 2: Detect but don't split statics yet (companion namespace approach makes TS2417 worse)
+        // TODO: Need different approach for classes in inheritance hierarchies
+        CompanionNamespace? companion = null;
+
         return new ClassDeclaration(
             GetTypeName(type),
             type.FullName!,
@@ -442,7 +546,8 @@ public sealed class AssemblyProcessor
             constructors,
             properties,
             methods,
-            type.IsAbstract && type.IsSealed); // Static class
+            type.IsAbstract && type.IsSealed, // Static class
+            companion);
     }
 
     private TypeInfo.ConstructorInfo ProcessConstructor(System.Reflection.ConstructorInfo ctor)
@@ -476,6 +581,13 @@ public sealed class AssemblyProcessor
 
         var isStatic = prop.GetMethod?.IsStatic ?? prop.SetMethod?.IsStatic ?? false;
 
+        // Phase 4: Skip redundant property redeclarations
+        // If base class already declares this exact property, don't re-emit it
+        if (!isStatic && IsRedundantPropertyRedeclaration(prop))
+        {
+            return null!; // Will be filtered out - TypeScript will inherit from base
+        }
+
         // TypeScript: static properties cannot reference class type parameters
         // Skip static properties in generic classes to avoid TS2302 errors
         if (isStatic && prop.DeclaringType != null && prop.DeclaringType.IsGenericType)
@@ -493,11 +605,96 @@ public sealed class AssemblyProcessor
         // Track property type dependency
         TrackTypeDependency(prop.PropertyType);
 
+        // P2: Apply Covariant wrapper for known property covariance patterns
+        var mappedType = _typeMapper.MapType(prop.PropertyType);
+        var propertyType = ApplyCovariantWrapperIfNeeded(prop, mappedType);
+
         return new TypeInfo.PropertyInfo(
             prop.Name,
-            _typeMapper.MapType(prop.PropertyType),
+            propertyType,
             !prop.CanWrite,
             isStatic);
+    }
+
+    /// <summary>
+    /// General covariance detection: Apply Covariant wrapper when a property returns
+    /// a more specific type than an interface contract requires.
+    ///
+    /// Uses GetInterfaceMap to compare concrete property types against interface contracts.
+    /// If they differ and the property is readonly, wraps with Covariant<TSpecific, TContract>.
+    ///
+    /// Fully general - no hardcoded property names or type checks.
+    /// </summary>
+    private string ApplyCovariantWrapperIfNeeded(System.Reflection.PropertyInfo prop, string mappedType)
+    {
+        var declaringType = prop.DeclaringType;
+        if (declaringType == null)
+            return mappedType;
+
+        // First, check base class for property hiding with "new" keyword
+        // Walk up the inheritance chain to find a base property with the same name
+        var baseType = declaringType.BaseType;
+        while (baseType != null &&
+               baseType.FullName != "System.Object" &&
+               baseType.FullName != "System.ValueType" &&
+               baseType.FullName != "System.MarshalByRefObject")
+        {
+            // Note: FlattenHierarchy only works for static members, not instance properties
+            var baseProp = baseType.GetProperty(prop.Name, BindingFlags.Public | BindingFlags.Instance);
+            if (baseProp != null)
+            {
+                // Found a base property with same name - compare mapped types
+                var baseTypeName = _typeMapper.MapType(baseProp.PropertyType);
+                var derivedTypeName = _typeMapper.MapType(prop.PropertyType);
+
+                if (baseTypeName != derivedTypeName)
+                {
+                    // Types differ - this is property hiding or covariance
+                    // Wrap with Covariant to satisfy base contract
+                    TrackTypeDependency(prop.PropertyType);
+                    TrackTypeDependency(baseProp.PropertyType);
+                    return $"Covariant<{derivedTypeName}, {baseTypeName}>";
+                }
+                // If types are identical, no need to check further - will be caught by IsRedundantPropertyRedeclaration
+                break;
+            }
+            baseType = baseType.BaseType;
+        }
+
+        // Only apply interface covariance checks to readonly properties (covariance is safe for readonly)
+        if (prop.CanWrite)
+            return mappedType;
+
+        // For each interface this type implements (that we kept in the .d.ts)
+        // check if the property type differs from the interface contract
+        foreach (var interfaceType in declaringType.GetInterfaces())
+        {
+            if (!interfaceType.IsPublic)
+                continue;
+
+            // Skip explicitly implemented interfaces (not in .d.ts implements list)
+            if (HasAnyExplicitImplementation(declaringType, interfaceType))
+                continue;
+
+            // Find the corresponding property in the interface
+            var interfaceProperty = interfaceType.GetProperty(prop.Name);
+            if (interfaceProperty == null)
+                continue; // Property not part of this interface
+
+            // Map both types
+            var contractType = _typeMapper.MapType(interfaceProperty.PropertyType);
+            var specificType = _typeMapper.MapType(prop.PropertyType);
+
+            // If they differ, we have covariance - wrap it
+            if (contractType != specificType)
+            {
+                TrackTypeDependency(prop.PropertyType);
+                TrackTypeDependency(interfaceProperty.PropertyType);
+                return $"Covariant<{specificType}, {contractType}>";
+            }
+        }
+
+        return mappedType;
     }
 
     private bool PropertyTypeReferencesTypeParams(Type propertyType, HashSet<string> classTypeParams)
@@ -525,6 +722,36 @@ public sealed class AssemblyProcessor
         if (propertyType.IsArray)
         {
             return PropertyTypeReferencesTypeParams(propertyType.GetElementType()!, classTypeParams);
+        }
+
+        return false;
+    }
+
+    private bool TypeReferencesAnyTypeParam(Type type, HashSet<Type> typeParams)
+    {
+        // Check if this type IS a type parameter
+        if (type.IsGenericParameter && typeParams.Contains(type))
+        {
+            return true;
+        }
+
+        // Check if this is a generic type that uses any of the type parameters
+        if (type.IsGenericType)
+        {
+            var typeArgs = type.GetGenericArguments();
+            foreach (var arg in typeArgs)
+            {
+                if (TypeReferencesAnyTypeParam(arg, typeParams))
+                {
+                    return true;
+                }
+            }
+        }
+
+        // Check arrays
+        if (type.IsArray)
+        {
+            return TypeReferencesAnyTypeParam(type.GetElementType()!, typeParams);
         }
 
         return false;
@@ -954,6 +1181,38 @@ public sealed class AssemblyProcessor
         return result;
     }
 
+    private bool HasAnyExplicitImplementation(Type type, Type interfaceType)
+    {
+        // Check if the given interface has ANY members that are explicitly implemented (not public)
+        // This includes both methods and property accessors
+        try
+        {
+            var map = type.GetInterfaceMap(interfaceType);
+
+            // Check all methods
+            var allMethodsPublic = map.TargetMethods.All(m => m.IsPublic);
+            if (!allMethodsPublic)
+                return true;
+
+            // Check all property accessors
+            var allAccessorsPublic = interfaceType
+                .GetProperties()
+                .SelectMany(p => p.GetAccessors(nonPublic: true))
+                .All(a => a.IsPublic);
+
+            if (!allAccessorsPublic)
+                return true;
+
+            return false; // All members are public
+        }
+        catch
+        {
+            // GetInterfaceMap can fail for some types in MetadataLoadContext
+            // Be conservative: if we can't check, assume explicit to avoid TypeScript errors
+            return true;
+        }
+    }
+
     private string GetAccessibility(MethodBase? method)
     {
         if (method == null) return "public";
@@ -1061,7 +1320,7 @@ public sealed class AssemblyProcessor
 
         try
         {
-            AddBaseClassOverloadsRecursive(type.BaseType, properties, methods);
+            AddBaseClassOverloadsRecursive(type, type.BaseType, properties, methods);
         }
         catch
         {
@@ -1070,9 +1329,41 @@ public sealed class AssemblyProcessor
     }
 
     /// <summary>
+    /// Enumerates static methods from a base type, including method-level generics from the generic type definition.
+    /// For constructed generic types like EqualityComparer&lt;byte&gt;, method-level generics like Create&lt;T&gt;()
+    /// are only visible on the generic type definition EqualityComparer&lt;T&gt;.
+    /// </summary>
+    private IEnumerable<System.Reflection.MethodInfo> EnumerateBaseStaticMethods(Type baseType)
+    {
+        var binding = BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly;
+
+        // Methods declared directly on this constructed type
+        foreach (var m in baseType.GetMethods(binding))
+            yield return m;
+
+        // If the type is generic, pull ONLY method-level generics from the type definition
+        // Regular static methods are already available on the constructed type
+        if (baseType.IsGenericType && !baseType.IsGenericTypeDefinition)
+        {
+            var genericTypeDef = baseType.GetGenericTypeDefinition();
+            var methodsOnTypeDef = genericTypeDef.GetMethods(binding);
+
+            foreach (var m in methodsOnTypeDef)
+            {
+                // Include ALL static methods from the generic type definition because:
+                // 1. Methods with method-level generics (IsGenericMethod == true)
+                // 2. Methods using class type parameters (IsGenericMethod == false but become generic in TS)
+                // Both need to be added to derived classes to satisfy TypeScript's static side checking
+                // The deduplication happens later in AddBaseClassOverloadsRecursive
+                yield return m;
+            }
+        }
+    }
+
+    /// <summary>
     /// Recursively adds base class overloads from the entire inheritance chain.
     /// </summary>
-    private void AddBaseClassOverloadsRecursive(Type baseType, List<TypeInfo.PropertyInfo> properties, List<TypeInfo.MethodInfo> methods)
+    private void AddBaseClassOverloadsRecursive(Type derivedType, Type baseType, List<TypeInfo.PropertyInfo> properties, List<TypeInfo.MethodInfo> methods)
     {
         if (baseType == null
             || baseType.FullName == "System.Object"
@@ -1134,6 +1425,108 @@ public sealed class AssemblyProcessor
                 }
             }
 
+            // Process base class static methods (for TS2417 static member conflicts)
+            // Need to check both the constructed type AND the generic type definition
+            // because method-level generics like Create<T>() live on the type definition
+            var baseStaticMethods = EnumerateBaseStaticMethods(baseType)
+                .Where(ShouldIncludeMember)
+                .Where(m => !m.IsSpecialName)
+                .Where(m => !m.Name.Contains('.')); // Skip explicit interface implementations
+
+            foreach (var baseStaticMethod in baseStaticMethods)
+            {
+                try
+                {
+                    // Track dependency for base static method return type and parameters
+                    TrackTypeDependency(baseStaticMethod.ReturnType);
+                    foreach (var param in baseStaticMethod.GetParameters())
+                    {
+                        TrackTypeDependency(param.ParameterType);
+                    }
+
+                    // TS2302: Skip if base static method uses DERIVED class type parameters
+                    // TypeScript doesn't allow static members to reference class type parameters
+                    // Check at reflection level before mapping
+                    if (derivedType.IsGenericType)
+                    {
+                        var derivedTypeParams = derivedType.GetGenericArguments().ToHashSet();
+
+                        // Check if return type references any derived class type parameter
+                        if (TypeReferencesAnyTypeParam(baseStaticMethod.ReturnType, derivedTypeParams))
+                        {
+                            continue; // Skip - would cause TS2302
+                        }
+
+                        // Check if any parameter type references derived class type parameters
+                        if (baseStaticMethod.GetParameters().Any(p => TypeReferencesAnyTypeParam(p.ParameterType, derivedTypeParams)))
+                        {
+                            continue; // Skip - would cause TS2302
+                        }
+                    }
+
+                    var baseReturnType = _typeMapper.MapType(baseStaticMethod.ReturnType);
+                    var baseParams = baseStaticMethod.GetParameters()
+                        .Select(ProcessParameter)
+                        .ToList();
+
+                    // Check if we already have this exact static method signature
+                    var hasExactMatch = methods.Any(m =>
+                        m.Name == baseStaticMethod.Name &&
+                        m.IsStatic &&
+                        m.ReturnType == baseReturnType &&
+                        ParameterListsMatch(m.Parameters, baseParams));
+
+                    if (!hasExactMatch)
+                    {
+                        // Add base class-compatible static method signature
+                        // Use same logic as ProcessMethod for static methods in generic classes
+                        var genericParams = new List<string>();
+                        var isGeneric = baseStaticMethod.IsGenericMethod;
+
+                        // If this is a static method in a generic base class, add the class's type parameters
+                        // to make it generic in TypeScript (same as ProcessMethod lines 794-814)
+                        if (baseType.IsGenericType)
+                        {
+                            // IMPORTANT: Get type parameters from the DEFINITION, not the constructed type!
+                            // For EqualityComparer_1<byte>, we want "T", not "Byte"
+                            var baseTypeDef = baseType.IsGenericTypeDefinition ? baseType : baseType.GetGenericTypeDefinition();
+                            var classTypeParams = baseTypeDef.GetGenericArguments().Select(t => t.Name).ToList();
+
+                            if (baseStaticMethod.IsGenericMethod)
+                            {
+                                // Method already has its own type parameters - prepend class params
+                                var methodTypeParams = baseStaticMethod.GetGenericArguments().Select(t => t.Name).ToList();
+                                genericParams = classTypeParams.Concat(methodTypeParams).ToList();
+                            }
+                            else
+                            {
+                                // Method has no generic params - use class params
+                                genericParams = classTypeParams;
+                            }
+
+                            isGeneric = genericParams.Count > 0;
+                        }
+                        else if (baseStaticMethod.IsGenericMethod)
+                        {
+                            // Non-generic class, but method is generic
+                            genericParams = baseStaticMethod.GetGenericArguments().Select(t => t.Name).ToList();
+                        }
+
+                        methods.Add(new TypeInfo.MethodInfo(
+                            baseStaticMethod.Name,
+                            baseReturnType,
+                            baseParams,
+                            true, // Static method
+                            isGeneric,
+                            genericParams));
+                    }
+                }
+                catch
+                {
+                    // Skip methods that can't be processed
+                }
+            }
+
             // Process base class properties (for covariant property return types)
             var baseProperties = baseType.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
                 .Where(ShouldIncludeMember);
@@ -1175,7 +1568,7 @@ public sealed class AssemblyProcessor
             // Recurse up the inheritance chain
             if (baseType.BaseType != null)
             {
-                AddBaseClassOverloadsRecursive(baseType.BaseType, properties, methods);
+                AddBaseClassOverloadsRecursive(derivedType, baseType.BaseType, properties, methods);
             }
         }
         catch
@@ -1246,5 +1639,367 @@ public sealed class AssemblyProcessor
     public DependencyTracker? GetDependencyTracker()
     {
         return _dependencyTracker;
+    }
+
+    /// <summary>
+    /// Phase 4: Check if a property is redundantly redeclared with same TypeScript type.
+    ///
+    /// General rule: Walk entire inheritance chain up to System.Object.
+    /// If ANY ancestor has a property with same name and same mapped TypeScript type, skip re-emitting.
+    ///
+    /// Handles edge cases like:
+    /// - DataAdapter.TableMappings : ITableMappingCollection
+    /// - DbDataAdapter.TableMappings : DataTableMappingCollection (both map to same TS type)
+    /// </summary>
+    private bool IsRedundantPropertyRedeclaration(System.Reflection.PropertyInfo prop)
+    {
+        var declaringType = prop.DeclaringType;
+        if (declaringType == null)
+            return false;
+
+        try
+        {
+            // Map derived property type to TypeScript
+            var derivedMapped = _typeMapper.MapType(prop.PropertyType);
+
+            // Walk entire inheritance chain
+            var currentBase = declaringType.BaseType;
+            while (currentBase != null &&
+                   currentBase.FullName != "System.Object" &&
+                   currentBase.FullName != "System.ValueType" &&
+                   currentBase.FullName != "System.MarshalByRefObject")
+            {
+                // Look for property with same name in this ancestor
+                // Note: FlattenHierarchy only works for static members, not instance properties
+                var ancestorProperty = currentBase.GetProperty(prop.Name,
+                    BindingFlags.Public | BindingFlags.Instance);
+                if (ancestorProperty != null)
+                {
+                    // Map ancestor property type to TypeScript
+                    var ancestorMapped = _typeMapper.MapType(ancestorProperty.PropertyType);
+
+                    // If mapped types match exactly, this is redundant
+                    if (derivedMapped == ancestorMapped)
+                    {
+                        return true; // Skip - TypeScript will inherit from ancestor
+                    }
+
+                    // Found property with different mapped type - NOT redundant
+                    // ApplyCovariantWrapperIfNeeded will handle wrapping it
+                    return false;
+                }
+
+                // Move up the inheritance chain
+                currentBase = currentBase.BaseType;
+            }
+
+            // No matching property found in any ancestor
+            return false;
+        }
+        catch
+        {
+            // Ancestor class may not be accessible in MetadataLoadContext
+            return false; // Keep the property to be safe
+        }
+    }
+
+    /// <summary>
+    /// Phase 2: Check if a class has static members that conflict with base class statics.
+    /// Returns true if ANY static member name exists in both derived and base class.
+    ///
+    /// General rule: Detect by comparing static member names declared on this type
+    /// versus static member names in base type hierarchy.
+    /// </summary>
+    private bool HasStaticMemberConflicts(Type type)
+    {
+        var baseType = type.BaseType;
+        if (baseType == null ||
+            baseType.FullName == "System.Object" ||
+            baseType.FullName == "System.ValueType" ||
+            baseType.FullName == "System.MarshalByRefObject")
+        {
+            return false; // No base to conflict with
+        }
+
+        try
+        {
+            // Get all static members declared on this type
+            var derivedStaticMembers = new HashSet<string>();
+
+            foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                if (!method.IsSpecialName) // Skip property accessors
+                    derivedStaticMembers.Add(method.Name);
+            }
+
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                derivedStaticMembers.Add(prop.Name);
+            }
+
+            if (derivedStaticMembers.Count == 0)
+                return false; // No static members to conflict
+
+            // Check if any of these names exist in base type static members
+            var currentBase = baseType;
+            while (currentBase != null &&
+                   currentBase.FullName != "System.Object" &&
+                   currentBase.FullName != "System.ValueType" &&
+                   currentBase.FullName != "System.MarshalByRefObject")
+            {
+                foreach (var method in currentBase.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                {
+                    if (!method.IsSpecialName && derivedStaticMembers.Contains(method.Name))
+                        return true; // Conflict found
+                }
+
+                foreach (var prop in currentBase.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                {
+                    if (derivedStaticMembers.Contains(prop.Name))
+                        return true; // Conflict found
+                }
+
+                currentBase = currentBase.BaseType;
+            }
+
+            return false; // No conflicts
+        }
+        catch
+        {
+            // Base class may not be accessible in MetadataLoadContext
+            return false; // Assume no conflict to be safe
+        }
+    }
+
+    /// <summary>
+    /// Phase 3: Get all interfaces reachable transitively from the given interface.
+    /// Used to detect redundant extends clauses.
+    /// </summary>
+    private HashSet<Type> GetAllTransitiveInterfaces(Type interfaceType)
+    {
+        var result = new HashSet<Type>();
+        var queue = new Queue<Type>();
+
+        // Start with direct parents
+        foreach (var parent in interfaceType.GetInterfaces())
+        {
+            queue.Enqueue(parent);
+        }
+
+        // BFS to find all transitive parents
+        while (queue.Count > 0)
+        {
+            var current = queue.Dequeue();
+            if (result.Add(current)) // Returns false if already present
+            {
+                foreach (var parent in current.GetInterfaces())
+                {
+                    queue.Enqueue(parent);
+                }
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Phase 1: Detect if an interface has diamond inheritance.
+    /// Returns true if any ancestor is reachable via multiple paths.
+    /// General rule: Build graph of all parents and check if any parent has multiple reaching paths.
+    /// </summary>
+    private bool HasDiamondInheritance(Type interfaceType, out List<Type> diamondAncestors)
+    {
+        diamondAncestors = new List<Type>();
+
+        var directParents = interfaceType.GetInterfaces()
+            .Where(i => i.FullName != "System.IDisposable")
+            .ToList();
+
+        if (directParents.Count <= 1)
+            return false; // Can't have diamond with 0 or 1 parent
+
+        // For each ancestor, track which direct parents can reach it
+        var ancestorReachability = new Dictionary<string, HashSet<Type>>(); // key: ancestor FullName or Name
+
+        foreach (var directParent in directParents)
+        {
+            // This direct parent is reachable from itself
+            var key = directParent.FullName ?? directParent.Name;
+            if (!ancestorReachability.ContainsKey(key))
+                ancestorReachability[key] = new HashSet<Type>();
+            ancestorReachability[key].Add(directParent);
+
+            // Get all transitive parents of this direct parent
+            var transitiveParents = GetAllTransitiveInterfaces(directParent);
+
+            foreach (var transitive in transitiveParents)
+            {
+                var transitiveKey = transitive.FullName ?? transitive.Name;
+                if (!ancestorReachability.ContainsKey(transitiveKey))
+                    ancestorReachability[transitiveKey] = new HashSet<Type>();
+                ancestorReachability[transitiveKey].Add(directParent);
+            }
+        }
+
+        // Find ancestors reachable via multiple direct parents (diamond!)
+        var diamondKeys = ancestorReachability
+            .Where(kvp => kvp.Value.Count > 1)
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        // Map keys back to actual types
+        foreach (var key in diamondKeys)
+        {
+            // Find the type from our parent lists
+            var ancestor = directParents.FirstOrDefault(p => (p.FullName ?? p.Name) == key);
+            if (ancestor == null)
+            {
+                // Must be a transitive parent, find it
+                foreach (var parent in directParents)
+                {
+                    var transitives = parent.GetInterfaces();
+                    ancestor = transitives.FirstOrDefault(t => (t.FullName ?? t.Name) == key);
+                    if (ancestor != null)
+                        break;
+                }
+            }
+
+            if (ancestor != null)
+                diamondAncestors.Add(ancestor);
+        }
+
+        return diamondAncestors.Count > 0;
+    }
+
+    /// <summary>
+    /// Phase 1B: Generate _Base interface containing only members declared directly on this type.
+    ///
+    /// General rule: Use BindingFlags.DeclaredOnly to extract unique members declared on this interface,
+    /// create interface with no extends clause to avoid diamond conflicts.
+    ///
+    /// Example: INumber_1<TSelf> has 23 parent interfaces causing diamond conflicts.
+    /// Solution: Generate INumber_1_Base<TSelf> with ONLY members unique to INumber_1 (Clamp, CopySign, Max, etc.)
+    /// The full type hierarchy is preserved via intersection type alias: type INumber_1<TSelf> = INumber_1_Base<TSelf> & Parent1 & Parent2...
+    /// </summary>
+    private InterfaceDeclaration GenerateBaseInterface(Type type)
+    {
+        // Extract ONLY properties declared directly on this interface (not inherited)
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(ShouldIncludeMember)
+            .Select(ProcessProperty)
+            .Where(p => p != null)
+            .ToList();
+
+        // Extract ONLY methods declared directly on this interface (not inherited)
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(ShouldIncludeMember)
+            .Where(m => !m.IsSpecialName)
+            .Where(m => !m.Name.Contains('.')) // Skip explicit interface implementations
+            .Select(m => ProcessMethod(m, type))
+            .OfType<TypeInfo.MethodInfo>()
+            .ToList();
+
+        var genericParams = type.IsGenericType
+            ? type.GetGenericArguments().Select(t => t.Name).ToList()
+            : new List<string>();
+
+        return new InterfaceDeclaration(
+            GetTypeName(type) + "_Base",  // Add _Base suffix
+            type.FullName + "_Base",
+            type.IsGenericType,
+            genericParams,
+            Extends: new List<string>(),  // NO extends clause - this breaks the diamond!
+            properties,
+            methods,
+            IsDiamondBase: true  // Mark as diamond base interface
+        );
+    }
+
+    /// <summary>
+    /// Phase 1C: Generate intersection type alias for diamond interface.
+    ///
+    /// General rule: Create type alias that intersects _Base with all parent interfaces.
+    /// This preserves full CLR type hierarchy while avoiding diamond conflict in interface declaration.
+    ///
+    /// Example: type INumber_1<TSelf> = INumber_1_Base<TSelf> & IComparable & IComparable_1<TSelf> & ...
+    ///
+    /// The alias is added to _intersectionAliases dictionary and merged into namespace later.
+    /// </summary>
+    private void AddIntersectionAlias(Type type, List<Type> parents)
+    {
+        var genericParamString = type.IsGenericType
+            ? $"<{string.Join(", ", type.GetGenericArguments().Select(t => t.Name))}>"
+            : "";
+
+        var intersectedTypes = new List<string>();
+
+        // Start with _Base interface (contains unique members)
+        intersectedTypes.Add(GetTypeName(type) + "_Base" + genericParamString);
+
+        // Add all direct parent interfaces (already pruned to remove redundancies)
+        foreach (var parent in parents)
+        {
+            var mapped = _typeMapper.MapType(parent);
+            intersectedTypes.Add(mapped);
+            TrackTypeDependency(parent);  // Important for cross-assembly references
+        }
+
+        var alias = new IntersectionTypeAlias(
+            GetTypeName(type),
+            type.FullName!,
+            type.IsGenericType,
+            type.IsGenericType ? type.GetGenericArguments().Select(t => t.Name).ToList() : new List<string>(),
+            intersectedTypes
+        );
+
+        // Add to namespace's alias collection (merged into namespace in ProcessAssembly)
+        var ns = type.Namespace ?? "";
+        if (!_intersectionAliases.ContainsKey(ns))
+            _intersectionAliases[ns] = new List<IntersectionTypeAlias>();
+        _intersectionAliases[ns].Add(alias);
+    }
+
+    /// <summary>
+    /// Phase 3: Prune redundant interface extends.
+    /// Removes interfaces that are already inherited transitively through other interfaces.
+    ///
+    /// General rule: If interface A extends B, and B already extends C,
+    /// then "A extends B, C" is redundant - should be just "A extends B".
+    /// </summary>
+    private List<Type> PruneRedundantInterfaceExtends(List<Type> directInterfaces)
+    {
+        if (directInterfaces.Count <= 1)
+            return directInterfaces; // Nothing to prune
+
+        var result = new List<Type>();
+
+        foreach (var candidate in directInterfaces)
+        {
+            // Check if this candidate is transitively reachable from any OTHER interface in the list
+            bool isRedundant = false;
+
+            foreach (var other in directInterfaces)
+            {
+                if (candidate == other)
+                    continue; // Skip self
+
+                // Get all transitive parents of 'other'
+                var transitiveParents = GetAllTransitiveInterfaces(other);
+
+                // If 'candidate' is in the transitive parents of 'other', it's redundant
+                if (transitiveParents.Contains(candidate))
+                {
+                    isRedundant = true;
+                    break;
+                }
+            }
+
+            if (!isRedundant)
+            {
+                result.Add(candidate);
+            }
+        }
+
+        return result;
     }
 }

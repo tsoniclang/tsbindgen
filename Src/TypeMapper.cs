@@ -170,15 +170,6 @@ public sealed class TypeMapper
         // Note: List<T>, Dictionary<K,V>, HashSet<T> are handled by the generic logic below
         // We use fully qualified names for .d.ts files to avoid TS2304 errors
 
-        // Handle IEnumerable<T> and similar
-        if (fullName.StartsWith("System.Collections.Generic.IEnumerable") ||
-            fullName.StartsWith("System.Collections.Generic.IReadOnlyList") ||
-            fullName.StartsWith("System.Collections.Generic.IReadOnlyCollection"))
-        {
-            var elementType = MapType(type.GenericTypeArguments[0]);
-            return $"ReadonlyArray<{elementType}>";
-        }
-
         // Generic type with parameters
         var sb = new StringBuilder();
         sb.Append(GetFullTypeName(genericTypeDef));
