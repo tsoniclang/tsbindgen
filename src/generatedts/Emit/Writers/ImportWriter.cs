@@ -10,10 +10,11 @@ public static class ImportWriter
 {
     /// <summary>
     /// Renders the standard intrinsics import that all declaration files need.
+    /// Imports from the published @tsonic/types package.
     /// </summary>
     public static void RenderIntrinsicsImport(StringBuilder sb)
     {
-        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal, Covariant } from './_intrinsics.js';");
+        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal, Covariant } from '@tsonic/types/intrinsics.js';");
         sb.AppendLine();
     }
 
@@ -36,7 +37,7 @@ public static class ImportWriter
         {
             var alias = DependencyTracker.GetModuleAlias(assemblyName);
 
-            // Import entire namespace with alias
+            // Import entire namespace with alias (ESM requires .js extension)
             // Example: import type * as System_Private_CoreLib from './System.Private.CoreLib.js';
             sb.AppendLine($"import type * as {alias} from './{assemblyName}.js';");
         }
