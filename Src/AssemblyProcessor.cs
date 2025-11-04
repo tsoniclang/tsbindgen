@@ -83,50 +83,7 @@ public sealed class AssemblyProcessor
 
     private bool ShouldIncludeType(Type type)
     {
-        // Skip if not public
-        if (!type.IsPublic && !type.IsNestedPublic)
-        {
-            return false;
-        }
-
-        // Skip compiler-generated types
-        if (type.Name.Contains('<') || type.Name.Contains('>'))
-        {
-            return false;
-        }
-
-        // Skip if namespace is in skip list
-        if (_config.SkipNamespaces.Contains(type.Namespace ?? ""))
-        {
-            return false;
-        }
-
-        // Apply whitelist if provided
-        if (_namespaceWhitelist != null)
-        {
-            if (type.Namespace == null)
-            {
-                return false;
-            }
-
-            // Check if namespace or any parent namespace is in whitelist
-            var ns = type.Namespace;
-            while (!string.IsNullOrEmpty(ns))
-            {
-                if (_namespaceWhitelist.Contains(ns))
-                {
-                    return true;
-                }
-
-                var lastDot = ns.LastIndexOf('.');
-                if (lastDot < 0) break;
-                ns = ns.Substring(0, lastDot);
-            }
-
-            return false;
-        }
-
-        return true;
+        return MemberFilters.ShouldIncludeType(type, _config, _namespaceWhitelist);
     }
 
     private TypeDeclaration? ProcessType(Type type)
@@ -211,62 +168,12 @@ public sealed class AssemblyProcessor
 
     private bool PropertyTypeReferencesTypeParams(Type propertyType, HashSet<string> classTypeParams)
     {
-        // Check if this type is a generic parameter
-        if (propertyType.IsGenericParameter && classTypeParams.Contains(propertyType.Name))
-        {
-            return true;
-        }
-
-        // Check if this is a generic type that uses the class's type parameters
-        if (propertyType.IsGenericType)
-        {
-            var typeArgs = propertyType.GetGenericArguments();
-            foreach (var arg in typeArgs)
-            {
-                if (PropertyTypeReferencesTypeParams(arg, classTypeParams))
-                {
-                    return true;
-                }
-            }
-        }
-
-        // Check arrays
-        if (propertyType.IsArray)
-        {
-            return PropertyTypeReferencesTypeParams(propertyType.GetElementType()!, classTypeParams);
-        }
-
-        return false;
+        return TypeReferenceChecker.PropertyTypeReferencesTypeParams(propertyType, classTypeParams);
     }
 
     private bool TypeReferencesAnyTypeParam(Type type, HashSet<Type> typeParams)
     {
-        // Check if this type IS a type parameter
-        if (type.IsGenericParameter && typeParams.Contains(type))
-        {
-            return true;
-        }
-
-        // Check if this is a generic type that uses any of the type parameters
-        if (type.IsGenericType)
-        {
-            var typeArgs = type.GetGenericArguments();
-            foreach (var arg in typeArgs)
-            {
-                if (TypeReferencesAnyTypeParam(arg, typeParams))
-                {
-                    return true;
-                }
-            }
-        }
-
-        // Check arrays
-        if (type.IsArray)
-        {
-            return TypeReferencesAnyTypeParam(type.GetElementType()!, typeParams);
-        }
-
-        return false;
+        return TypeReferenceChecker.TypeReferencesAnyTypeParam(type, typeParams);
     }
 
     private TypeInfo.MethodInfo? ProcessMethod(System.Reflection.MethodInfo method, Type declaringType)
@@ -286,20 +193,7 @@ public sealed class AssemblyProcessor
 
     private bool ShouldIncludeMember(MemberInfo member)
     {
-        var fullMemberName = $"{member.DeclaringType?.FullName}::{member.Name}";
-
-        if (_config.SkipMembers.Contains(fullMemberName))
-        {
-            return false;
-        }
-
-        // Skip common Object methods unless explicitly needed
-        if (member.Name is "Equals" or "GetHashCode" or "GetType" or "ToString" or "ReferenceEquals")
-        {
-            return false;
-        }
-
-        return true;
+        return MemberFilters.ShouldIncludeMember(member, _config);
     }
 
     private string GetTypeName(Type type)
@@ -432,76 +326,12 @@ public sealed class AssemblyProcessor
 
     private List<(Type interfaceType, System.Reflection.MethodInfo interfaceMethod, System.Reflection.MethodInfo implementation)> GetExplicitInterfaceImplementations(Type type)
     {
-        var result = new List<(Type, System.Reflection.MethodInfo, System.Reflection.MethodInfo)>();
-
-        try
-        {
-            var interfaces = type.GetInterfaces();
-            foreach (var iface in interfaces)
-            {
-                try
-                {
-                    var map = type.GetInterfaceMap(iface);
-                    for (int i = 0; i < map.TargetMethods.Length; i++)
-                    {
-                        var targetMethod = map.TargetMethods[i];
-                        var interfaceMethod = map.InterfaceMethods[i];
-
-                        // Explicit implementation = not public
-                        // For classes: private + virtual
-                        // For structs: private (can't be virtual)
-                        // Method name will be like "System.IDisposable.Dispose"
-                        if (!targetMethod.IsPublic)
-                        {
-                            result.Add((iface, interfaceMethod, targetMethod));
-                        }
-                    }
-                }
-                catch
-                {
-                    // GetInterfaceMap can fail for some types in MetadataLoadContext
-                    // Skip and continue
-                }
-            }
-        }
-        catch
-        {
-            // Type may not support interface mapping
-        }
-
-        return result;
+        return InterfaceImplementationAnalyzer.GetExplicitInterfaceImplementations(type);
     }
 
     private bool HasAnyExplicitImplementation(Type type, Type interfaceType)
     {
-        // Check if the given interface has ANY members that are explicitly implemented (not public)
-        // This includes both methods and property accessors
-        try
-        {
-            var map = type.GetInterfaceMap(interfaceType);
-
-            // Check all methods
-            var allMethodsPublic = map.TargetMethods.All(m => m.IsPublic);
-            if (!allMethodsPublic)
-                return true;
-
-            // Check all property accessors
-            var allAccessorsPublic = interfaceType
-                .GetProperties()
-                .SelectMany(p => p.GetAccessors(nonPublic: true))
-                .All(a => a.IsPublic);
-
-            if (!allAccessorsPublic)
-                return true;
-
-            return false; // All members are public
-        }
-        catch
-        {
-            // GetInterfaceMap can fail for some types in MetadataLoadContext
-            // Be conservative: if we can't check, assume explicit to avoid TypeScript errors
-            return true;
-        }
+        return InterfaceImplementationAnalyzer.HasAnyExplicitImplementation(type, interfaceType);
     }
 
     /// <summary>
