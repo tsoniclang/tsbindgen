@@ -4,8 +4,8 @@
  * Usage: node Scripts/parse-errors.js < tsc-output.txt > errors.json
  */
 
-const fs = require('fs');
-const readline = require('readline');
+import fs from 'fs';
+import readline from 'readline';
 
 async function parseErrors(input) {
     const errors = [];

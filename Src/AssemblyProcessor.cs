@@ -510,45 +510,50 @@ public sealed class AssemblyProcessor
     }
 
     /// <summary>
-    /// P2: Apply Covariant wrapper for property covariance patterns.
-    /// Dictionary Keys/Values properties return more specific types than interfaces require.
-    /// Use Covariant<TSpecific, TContract> to satisfy both runtime and interface contracts.
+    /// General covariance detection: Apply Covariant wrapper when a property returns
+    /// a more specific type than an interface contract requires.
+    ///
+    /// Uses GetInterfaceMap to compare concrete property types against interface contracts.
+    /// If they differ and the property is readonly, wraps with Covariant<TSpecific, TContract>.
+    ///
+    /// Fully general - no hardcoded property names or type checks.
     /// </summary>
     private string ApplyCovariantWrapperIfNeeded(System.Reflection.PropertyInfo prop, string mappedType)
     {
-        // Only apply to readonly properties
+        // Only apply to readonly properties (covariance is safe for readonly)
         if (prop.CanWrite)
             return mappedType;
 
-        // P2: Dictionary Keys/Values covariance
-        // Pattern: Keys property returns ICollection_1<TKey> but interface expects ICollection
-        if (prop.Name == "Keys" || prop.Name == "Values")
+        var declaringType = prop.DeclaringType;
+        if (declaringType == null)
+            return mappedType;
+
+        // For each interface this type implements (that we kept in the .d.ts)
+        // check if the property type differs from the interface contract
+        foreach (var interfaceType in declaringType.GetInterfaces())
         {
-            var declaringType = prop.DeclaringType;
-            if (declaringType == null)
-                return mappedType;
+            if (!interfaceType.IsPublic)
+                continue;
 
-            // Check if this is a dictionary-like type
-            var isDictionary = declaringType.GetInterfaces().Any(i =>
-                i.FullName == "System.Collections.IDictionary" ||
-                i.FullName == "System.Collections.Generic.IDictionary`2" ||
-                i.FullName == "System.Collections.Generic.IReadOnlyDictionary`2");
+            // Skip explicitly implemented interfaces (not in .d.ts implements list)
+            if (HasAnyExplicitImplementation(declaringType, interfaceType))
+                continue;
 
-            if (isDictionary)
+            // Find the corresponding property in the interface
+            var interfaceProperty = interfaceType.GetProperty(prop.Name);
+            if (interfaceProperty == null)
+                continue; // Property not part of this interface
+
+            // Map both types
+            var contractType = _typeMapper.MapType(interfaceProperty.PropertyType);
+            var specificType = _typeMapper.MapType(prop.PropertyType);
+
+            // If they differ, we have covariance - wrap it
+            if (contractType != specificType)
             {
-                // Keys property: wrap specific type with non-generic contract
-                if (prop.Name == "Keys" && mappedType.Contains("ICollection_1<"))
-                {
-                    // Specific: ICollection_1<TKey>, Contract: ICollection
-                    return $"Covariant<{mappedType}, System_Private_CoreLib.System.Collections.ICollection>";
-                }
-
-                // Values property: wrap specific type with non-generic contract
-                if (prop.Name == "Values" && mappedType.Contains("ICollection_1<"))
-                {
-                    // Specific: ICollection_1<TValue>, Contract: ICollection
-                    return $"Covariant<{mappedType}, System_Private_CoreLib.System.Collections.ICollection>";
-                }
+                TrackTypeDependency(prop.PropertyType);
+                TrackTypeDependency(interfaceProperty.PropertyType);
+                return $"Covariant<{specificType}, {contractType}>";
             }
         }
 
