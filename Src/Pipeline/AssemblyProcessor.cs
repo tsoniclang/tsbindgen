@@ -96,7 +96,7 @@ public sealed class AssemblyProcessor
 
     private TypeDeclaration? ProcessType(Type type)
     {
-        return TypeProcessing.ProcessType(
+        return TypeDispatcher.ProcessType(
             type,
             ProcessEnum,
             ProcessInterface,
@@ -247,12 +247,12 @@ public sealed class AssemblyProcessor
 
     private List<(Type interfaceType, System.Reflection.MethodInfo interfaceMethod, System.Reflection.MethodInfo implementation)> GetExplicitInterfaceImplementations(Type type)
     {
-        return InterfaceImplementationAnalyzer.GetExplicitInterfaceImplementations(type);
+        return ExplicitInterfaceAnalyzer.GetExplicitInterfaceImplementations(type);
     }
 
     private bool HasAnyExplicitImplementation(Type type, Type interfaceType)
     {
-        return InterfaceImplementationAnalyzer.HasAnyExplicitImplementation(type, interfaceType);
+        return ExplicitInterfaceAnalyzer.HasAnyExplicitImplementation(type, interfaceType);
     }
 
     /// <summary>

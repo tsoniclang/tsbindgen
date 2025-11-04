@@ -2,7 +2,7 @@ using System.Reflection;
 
 namespace GenerateDts.Analysis;
 
-public static class InterfaceImplementationAnalyzer
+public static class ExplicitInterfaceAnalyzer
 {
     public static List<(Type interfaceType, System.Reflection.MethodInfo interfaceMethod, System.Reflection.MethodInfo implementation)> GetExplicitInterfaceImplementations(Type type)
     {
