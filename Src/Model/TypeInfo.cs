@@ -1,72 +1,8 @@
 namespace GenerateDts.Model;
 
-public sealed record ProcessedAssembly(
-    IReadOnlyList<NamespaceInfo> Namespaces,
-    IReadOnlyList<string> Warnings);
-
-public sealed record NamespaceInfo(
-    string Name,
-    IReadOnlyList<TypeDeclaration> Types);
-
-public abstract record TypeDeclaration(
-    string Name,
-    string FullName,
-    bool IsGeneric,
-    IReadOnlyList<string> GenericParameters);
-
-public sealed record ClassDeclaration(
-    string Name,
-    string FullName,
-    bool IsGeneric,
-    IReadOnlyList<string> GenericParameters,
-    string? BaseType,
-    IReadOnlyList<string> Interfaces,
-    IReadOnlyList<TypeInfo.ConstructorInfo> Constructors,
-    IReadOnlyList<TypeInfo.PropertyInfo> Properties,
-    IReadOnlyList<TypeInfo.MethodInfo> Methods,
-    bool IsStatic,
-    CompanionNamespace? Companion = null) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
-
-public sealed record CompanionNamespace(
-    IReadOnlyList<TypeInfo.PropertyInfo> Properties,
-    IReadOnlyList<TypeInfo.MethodInfo> Methods);
-
-public sealed record InterfaceDeclaration(
-    string Name,
-    string FullName,
-    bool IsGeneric,
-    IReadOnlyList<string> GenericParameters,
-    IReadOnlyList<string> Extends,
-    IReadOnlyList<TypeInfo.PropertyInfo> Properties,
-    IReadOnlyList<TypeInfo.MethodInfo> Methods,
-    bool IsDiamondBase = false) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
-
-public sealed record IntersectionTypeAlias(
-    string Name,
-    string FullName,
-    bool IsGeneric,
-    IReadOnlyList<string> GenericParameters,
-    IReadOnlyList<string> IntersectedTypes) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
-
-public sealed record EnumDeclaration(
-    string Name,
-    string FullName,
-    bool IsGeneric,
-    IReadOnlyList<string> GenericParameters,
-    IReadOnlyList<EnumMember> Members) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
-
-public sealed record EnumMember(
-    string Name,
-    object Value);
-
-public sealed record StaticNamespaceDeclaration(
-    string Name,
-    string FullName,
-    bool IsGeneric,
-    IReadOnlyList<string> GenericParameters,
-    IReadOnlyList<TypeInfo.PropertyInfo> Properties,
-    IReadOnlyList<TypeInfo.MethodInfo> Methods) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
-
+/// <summary>
+/// Contains record types for class/interface/enum members (constructors, properties, methods, parameters).
+/// </summary>
 public static class TypeInfo
 {
     public sealed record ConstructorInfo(
