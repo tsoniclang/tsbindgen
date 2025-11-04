@@ -96,7 +96,7 @@ public sealed class AssemblyProcessor
 
     private TypeDeclaration? ProcessType(Type type)
     {
-        return TypeProcessing.ProcessType(
+        return TypeDispatcher.ProcessType(
             type,
             ProcessEnum,
             ProcessInterface,
@@ -106,7 +106,7 @@ public sealed class AssemblyProcessor
 
     private EnumDeclaration ProcessEnum(Type type)
     {
-        return EnumEmitter.ProcessEnum(type, GetTypeName);
+        return EnumEmitter.ProcessEnum(type, TypeNameHelpers.GetTypeName);
     }
 
     private InterfaceDeclaration ProcessInterface(Type type)
@@ -119,14 +119,14 @@ public sealed class AssemblyProcessor
             ProcessMethod,
             TrackTypeDependency,
             _intersectionAliases,
-            GetTypeName);
+            TypeNameHelpers.GetTypeName);
     }
 
     private StaticNamespaceDeclaration ProcessStaticNamespace(Type type)
     {
         return StaticNamespaceEmitter.ProcessStaticNamespace(
             type,
-            GetTypeName,
+            TypeNameHelpers.GetTypeName,
             ShouldIncludeMember,
             ProcessProperty,
             ProcessMethod);
@@ -151,7 +151,7 @@ public sealed class AssemblyProcessor
             AddBaseClassCompatibleOverloads,
             TrackTypeDependency,
             _typeMapper,
-            GetTypeName);
+            TypeNameHelpers.GetTypeName);
     }
 
     private TypeInfo.ConstructorInfo ProcessConstructor(System.Reflection.ConstructorInfo ctor)
@@ -204,93 +204,6 @@ public sealed class AssemblyProcessor
         return MemberFilters.ShouldIncludeMember(member, _config);
     }
 
-    private string GetTypeName(Type type)
-    {
-        var baseName = type.Name;
-        var arity = 0;
-
-        // Handle generic types - extract arity and strip the `N suffix
-        if (type.IsGenericType)
-        {
-            var backtickIndex = baseName.IndexOf('`');
-            if (backtickIndex > 0)
-            {
-                // Extract arity (e.g., "Tuple`3" -> arity = 3)
-                if (int.TryParse(baseName.Substring(backtickIndex + 1), out var parsedArity))
-                {
-                    arity = parsedArity;
-                }
-                baseName = baseName.Substring(0, backtickIndex);
-            }
-        }
-
-        // Handle nested types - build full ancestry chain to avoid conflicts
-        // For deeply nested types like Dictionary<K,V>.KeyCollection.Enumerator,
-        // we need to include the top-level type's arity to distinguish from other variants
-        if (type.IsNested && type.DeclaringType != null)
-        {
-            // Walk up the nesting chain to find the top-level type
-            var ancestorChain = new List<(string name, int arity)>();
-            var current = type.DeclaringType;
-
-            while (current != null)
-            {
-                var ancestorName = current.Name;
-                var ancestorArity = 0;
-
-                var backtickIndex = ancestorName.IndexOf('`');
-                if (backtickIndex > 0)
-                {
-                    if (int.TryParse(ancestorName.Substring(backtickIndex + 1), out var parsedArity))
-                    {
-                        ancestorArity = parsedArity;
-                    }
-                    ancestorName = ancestorName.Substring(0, backtickIndex);
-                }
-
-                ancestorChain.Insert(0, (ancestorName, ancestorArity));
-                current = current.DeclaringType;
-            }
-
-            // Build name from ancestor chain
-            var nameBuilder = new System.Text.StringBuilder();
-            foreach (var (ancestorName, ancestorArity) in ancestorChain)
-            {
-                if (nameBuilder.Length > 0)
-                {
-                    nameBuilder.Append('_');
-                }
-
-                nameBuilder.Append(ancestorName);
-                if (ancestorArity > 0)
-                {
-                    nameBuilder.Append('_');
-                    nameBuilder.Append(ancestorArity);
-                }
-            }
-
-            // Append the current type
-            nameBuilder.Append('_');
-            nameBuilder.Append(baseName);
-            if (arity > 0)
-            {
-                nameBuilder.Append('_');
-                nameBuilder.Append(arity);
-            }
-
-            return nameBuilder.ToString();
-        }
-
-        // For top-level generic types, include arity to distinguish Tuple<T1> from Tuple<T1,T2>
-        // Example: Tuple`1 becomes Tuple_1, Tuple`2 becomes Tuple_2
-        if (arity > 0)
-        {
-            return $"{baseName}_{arity}";
-        }
-
-        return baseName;
-    }
-
     /// <summary>
     /// Processes assembly and extracts metadata for all types and members.
     /// </summary>
@@ -334,12 +247,12 @@ public sealed class AssemblyProcessor
 
     private List<(Type interfaceType, System.Reflection.MethodInfo interfaceMethod, System.Reflection.MethodInfo implementation)> GetExplicitInterfaceImplementations(Type type)
     {
-        return InterfaceImplementationAnalyzer.GetExplicitInterfaceImplementations(type);
+        return ExplicitInterfaceAnalyzer.GetExplicitInterfaceImplementations(type);
     }
 
     private bool HasAnyExplicitImplementation(Type type, Type interfaceType)
     {
-        return InterfaceImplementationAnalyzer.HasAnyExplicitImplementation(type, interfaceType);
+        return ExplicitInterfaceAnalyzer.HasAnyExplicitImplementation(type, interfaceType);
     }
 
     /// <summary>

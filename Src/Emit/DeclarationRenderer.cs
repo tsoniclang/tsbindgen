@@ -1,43 +1,23 @@
 using System.Text;
 using GenerateDts.Model;
 using GenerateDts.Pipeline;
+using GenerateDts.Emit.Writers;
 
 namespace GenerateDts.Emit;
 
+/// <summary>
+/// Orchestrates the rendering of TypeScript declaration files.
+/// Delegates to specialized writer modules for specific rendering tasks.
+/// </summary>
 public sealed class DeclarationRenderer
 {
-    private const string Indent = "  ";
-
     /// <summary>
     /// Generates the content for the _intrinsics.d.ts file containing branded numeric types.
     /// This file should be created once in the output directory and referenced by all other declarations.
     /// </summary>
     public static string RenderIntrinsics()
     {
-        var sb = new StringBuilder();
-
-        sb.AppendLine("// Intrinsic type definitions for .NET numeric types");
-        sb.AppendLine("// This file provides branded numeric type aliases used across all BCL declarations.");
-        sb.AppendLine("// ESM module exports for full module support.");
-        sb.AppendLine();
-        sb.AppendLine("// Branded numeric types");
-        sb.AppendLine("export type int = number & { __brand: \"int\" };");
-        sb.AppendLine("export type uint = number & { __brand: \"uint\" };");
-        sb.AppendLine("export type byte = number & { __brand: \"byte\" };");
-        sb.AppendLine("export type sbyte = number & { __brand: \"sbyte\" };");
-        sb.AppendLine("export type short = number & { __brand: \"short\" };");
-        sb.AppendLine("export type ushort = number & { __brand: \"ushort\" };");
-        sb.AppendLine("export type long = number & { __brand: \"long\" };");
-        sb.AppendLine("export type ulong = number & { __brand: \"ulong\" };");
-        sb.AppendLine("export type float = number & { __brand: \"float\" };");
-        sb.AppendLine("export type double = number & { __brand: \"double\" };");
-        sb.AppendLine("export type decimal = number & { __brand: \"decimal\" };");
-        sb.AppendLine();
-        sb.AppendLine("// Phase 8B: Covariance helper for property type variance");
-        sb.AppendLine("// Allows derived types to return more specific types than base/interface contracts");
-        sb.AppendLine("export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };");
-
-        return sb.ToString();
+        return IntrinsicsWriter.RenderIntrinsics();
     }
 
     public string RenderDeclarations(ProcessedAssembly assembly, DependencyTracker? dependencyTracker = null)
@@ -49,13 +29,12 @@ public sealed class DeclarationRenderer
         sb.AppendLine();
 
         // ESM import for branded types from intrinsics
-        sb.AppendLine("import type { int, uint, byte, sbyte, short, ushort, long, ulong, float, double, decimal, Covariant } from './_intrinsics.js';");
-        sb.AppendLine();
+        ImportWriter.RenderIntrinsicsImport(sb);
 
         // ESM imports for cross-assembly dependencies
         if (dependencyTracker != null)
         {
-            RenderDependencyImports(sb, dependencyTracker);
+            ImportWriter.RenderDependencyImports(sb, dependencyTracker);
         }
 
         // Namespaces
@@ -68,49 +47,6 @@ public sealed class DeclarationRenderer
         return sb.ToString();
     }
 
-    /// <summary>
-    /// Generates import statements for cross-assembly dependencies.
-    /// Uses namespace imports with aliases to avoid naming conflicts.
-    /// </summary>
-    private void RenderDependencyImports(StringBuilder sb, DependencyTracker dependencyTracker)
-    {
-        var dependentAssemblies = dependencyTracker.GetDependentAssemblies();
-
-        if (dependentAssemblies.Count == 0)
-        {
-            return; // No external dependencies
-        }
-
-        sb.AppendLine("// Cross-assembly type imports");
-
-        foreach (var assemblyName in dependentAssemblies)
-        {
-            var alias = DependencyTracker.GetModuleAlias(assemblyName);
-            var fileName = assemblyName.Replace(".", "_"); // Safe filename
-
-            // Import entire namespace with alias
-            // Example: import type * as System_Private_CoreLib from './System.Private.CoreLib.js';
-            sb.AppendLine($"import type * as {alias} from './{assemblyName}.js';");
-        }
-
-        sb.AppendLine();
-    }
-
-    private void RenderBrandedTypes(StringBuilder sb)
-    {
-        sb.AppendLine("type int = number & { __brand: \"int\" };");
-        sb.AppendLine("type uint = number & { __brand: \"uint\" };");
-        sb.AppendLine("type byte = number & { __brand: \"byte\" };");
-        sb.AppendLine("type sbyte = number & { __brand: \"sbyte\" };");
-        sb.AppendLine("type short = number & { __brand: \"short\" };");
-        sb.AppendLine("type ushort = number & { __brand: \"ushort\" };");
-        sb.AppendLine("type long = number & { __brand: \"long\" };");
-        sb.AppendLine("type ulong = number & { __brand: \"ulong\" };");
-        sb.AppendLine("type float = number & { __brand: \"float\" };");
-        sb.AppendLine("type double = number & { __brand: \"double\" };");
-        sb.AppendLine("type decimal = number & { __brand: \"decimal\" };");
-    }
-
     private void RenderNamespace(StringBuilder sb, NamespaceInfo ns)
     {
         sb.AppendLine($"export declare namespace {ns.Name} {{");
@@ -120,19 +56,19 @@ public sealed class DeclarationRenderer
             switch (type)
             {
                 case IntersectionTypeAlias alias:
-                    RenderIntersectionAlias(sb, alias, 1);
+                    TypeWriter.RenderIntersectionAlias(sb, alias, 1);
                     break;
                 case StaticNamespaceDeclaration staticNs:
-                    RenderStaticNamespace(sb, staticNs, 1);
+                    TypeWriter.RenderStaticNamespace(sb, staticNs, 1);
                     break;
                 case ClassDeclaration classDecl:
-                    RenderClass(sb, classDecl, 1);
+                    TypeWriter.RenderClass(sb, classDecl, 1);
                     break;
                 case InterfaceDeclaration interfaceDecl:
-                    RenderInterface(sb, interfaceDecl, 1);
+                    TypeWriter.RenderInterface(sb, interfaceDecl, 1);
                     break;
                 case EnumDeclaration enumDecl:
-                    RenderEnum(sb, enumDecl, 1);
+                    TypeWriter.RenderEnum(sb, enumDecl, 1);
                     break;
             }
 
@@ -142,292 +78,4 @@ public sealed class DeclarationRenderer
         sb.AppendLine("}");
     }
 
-    private void RenderStaticNamespace(StringBuilder sb, StaticNamespaceDeclaration staticNs, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-
-        // Render as namespace with exported members
-        sb.AppendLine($"{indent}namespace {staticNs.Name} {{");
-
-        // Properties as exported constants
-        foreach (var prop in staticNs.Properties)
-        {
-            if (prop.IsReadOnly)
-            {
-                sb.AppendLine($"{indent}{Indent}export const {prop.Name}: {prop.Type};");
-            }
-            else
-            {
-                sb.AppendLine($"{indent}{Indent}export let {prop.Name}: {prop.Type};");
-            }
-        }
-
-        // Methods as exported functions
-        foreach (var method in staticNs.Methods)
-        {
-            var genericParams = method.IsGeneric
-                ? $"<{string.Join(", ", method.GenericParameters)}>"
-                : "";
-
-            var parameters = RenderParameters(method.Parameters);
-
-            sb.AppendLine($"{indent}{Indent}export function {method.Name}{genericParams}({parameters}): {method.ReturnType};");
-        }
-
-        sb.AppendLine($"{indent}}}");
-    }
-
-    private void RenderClass(StringBuilder sb, ClassDeclaration classDecl, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-
-        // Class declaration
-        var classKeyword = classDecl.IsStatic ? "class" : "class";
-        sb.Append($"{indent}{classKeyword} {classDecl.Name}");
-
-        if (classDecl.IsGeneric)
-        {
-            sb.Append($"<{string.Join(", ", classDecl.GenericParameters)}>");
-        }
-
-        var extends = new List<string>();
-        if (classDecl.BaseType != null)
-        {
-            extends.Add(classDecl.BaseType);
-        }
-        extends.AddRange(classDecl.Interfaces);
-
-        if (extends.Count > 0)
-        {
-            if (classDecl.BaseType != null)
-            {
-                sb.Append($" extends {classDecl.BaseType}");
-                if (classDecl.Interfaces.Count > 0)
-                {
-                    sb.Append($" implements {string.Join(", ", classDecl.Interfaces)}");
-                }
-            }
-            else
-            {
-                sb.Append($" implements {string.Join(", ", classDecl.Interfaces)}");
-            }
-        }
-
-        sb.AppendLine(" {");
-
-        // Constructors
-        foreach (var ctor in classDecl.Constructors)
-        {
-            RenderConstructor(sb, ctor, indentLevel + 1);
-        }
-
-        // Properties
-        foreach (var prop in classDecl.Properties)
-        {
-            RenderProperty(sb, prop, indentLevel + 1);
-        }
-
-        // Methods
-        foreach (var method in classDecl.Methods)
-        {
-            RenderMethod(sb, method, indentLevel + 1);
-        }
-
-        sb.AppendLine($"{indent}}}");
-
-        // Phase 2: Render companion namespace for static members (if conflicts detected)
-        if (classDecl.Companion != null)
-        {
-            sb.AppendLine();
-            RenderCompanionNamespace(sb, classDecl.Name, classDecl.Companion, classDecl.GenericParameters, indentLevel);
-        }
-    }
-
-    /// <summary>
-    /// Phase 2: Renders a companion namespace for static members.
-    /// Used when static member names conflict with base class statics.
-    /// </summary>
-    private void RenderCompanionNamespace(StringBuilder sb, string className, CompanionNamespace companion,
-        IReadOnlyList<string> genericParams, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-        var memberIndent = new string(' ', (indentLevel + 1) * 2);
-
-        // Namespace with same name as class (no generics on namespaces in TS)
-        sb.AppendLine($"{indent}namespace {className} {{");
-
-        // Static properties as const exports
-        foreach (var prop in companion.Properties)
-        {
-            // In namespaces, properties become exported constants
-            sb.AppendLine($"{memberIndent}export const {prop.Name}: {prop.Type};");
-        }
-
-        // Static methods as exported functions
-        foreach (var method in companion.Methods)
-        {
-            var genericParams2 = method.IsGeneric
-                ? $"<{string.Join(", ", method.GenericParameters)}>"
-                : "";
-
-            var parameters = RenderParameters(method.Parameters);
-
-            sb.AppendLine($"{memberIndent}export function {method.Name}{genericParams2}({parameters}): {method.ReturnType};");
-        }
-
-        sb.AppendLine($"{indent}}}");
-    }
-
-    private void RenderInterface(StringBuilder sb, InterfaceDeclaration interfaceDecl, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-
-        sb.Append($"{indent}interface {interfaceDecl.Name}");
-
-        if (interfaceDecl.IsGeneric)
-        {
-            sb.Append($"<{string.Join(", ", interfaceDecl.GenericParameters)}>");
-        }
-
-        if (interfaceDecl.Extends.Count > 0)
-        {
-            sb.Append($" extends {string.Join(", ", interfaceDecl.Extends)}");
-        }
-
-        sb.AppendLine(" {");
-
-        // Properties
-        foreach (var prop in interfaceDecl.Properties)
-        {
-            RenderProperty(sb, prop, indentLevel + 1);
-        }
-
-        // Methods
-        foreach (var method in interfaceDecl.Methods)
-        {
-            RenderMethod(sb, method, indentLevel + 1);
-        }
-
-        sb.AppendLine($"{indent}}}");
-    }
-
-    /// <summary>
-    /// Phase 1F: Render intersection type alias for diamond interfaces.
-    ///
-    /// Example output:
-    /// type INumber_1<TSelf> = INumber_1_Base<TSelf> & IComparable & IComparable_1<TSelf> & ...;
-    /// </summary>
-    private void RenderIntersectionAlias(StringBuilder sb, IntersectionTypeAlias alias, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-
-        sb.Append($"{indent}type {alias.Name}");
-
-        if (alias.IsGeneric)
-        {
-            sb.Append($"<{string.Join(", ", alias.GenericParameters)}>");
-        }
-
-        sb.Append(" = ");
-        sb.Append(string.Join(" & ", alias.IntersectedTypes));
-        sb.AppendLine(";");
-    }
-
-    private void RenderEnum(StringBuilder sb, EnumDeclaration enumDecl, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-
-        sb.AppendLine($"{indent}enum {enumDecl.Name} {{");
-
-        for (int i = 0; i < enumDecl.Members.Count; i++)
-        {
-            var member = enumDecl.Members[i];
-            var comma = i < enumDecl.Members.Count - 1 ? "," : "";
-            sb.AppendLine($"{indent}{Indent}{member.Name} = {member.Value}{comma}");
-        }
-
-        sb.AppendLine($"{indent}}}");
-    }
-
-    private void RenderConstructor(StringBuilder sb, TypeInfo.ConstructorInfo ctor, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-        var parameters = RenderParameters(ctor.Parameters);
-        sb.AppendLine($"{indent}constructor({parameters});");
-    }
-
-    private void RenderProperty(StringBuilder sb, TypeInfo.PropertyInfo prop, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-        var modifiers = new List<string>();
-
-        if (prop.IsStatic)
-        {
-            modifiers.Add("static");
-        }
-
-        if (prop.IsReadOnly)
-        {
-            modifiers.Add("readonly");
-        }
-
-        var modifierStr = modifiers.Count > 0 ? string.Join(" ", modifiers) + " " : "";
-        sb.AppendLine($"{indent}{modifierStr}{prop.Name}: {prop.Type};");
-    }
-
-    private void RenderMethod(StringBuilder sb, TypeInfo.MethodInfo method, int indentLevel)
-    {
-        var indent = new string(' ', indentLevel * 2);
-        var modifiers = method.IsStatic ? "static " : "";
-
-        var genericParams = method.IsGeneric
-            ? $"<{string.Join(", ", method.GenericParameters)}>"
-            : "";
-
-        var parameters = RenderParameters(method.Parameters);
-
-        sb.AppendLine($"{indent}{modifiers}{method.Name}{genericParams}({parameters}): {method.ReturnType};");
-    }
-
-    private string RenderParameters(IReadOnlyList<TypeInfo.ParameterInfo> parameters)
-    {
-        if (parameters.Count == 0)
-        {
-            return "";
-        }
-
-        var parts = new List<string>();
-
-        foreach (var param in parameters)
-        {
-            var sb = new StringBuilder();
-
-            if (param.IsParams)
-            {
-                sb.Append("...");
-            }
-
-            sb.Append(param.Name);
-
-            if (param.IsOptional && !param.IsParams)
-            {
-                sb.Append("?");
-            }
-
-            sb.Append(": ");
-
-            if (param.IsParams)
-            {
-                sb.Append($"ReadonlyArray<{param.Type}>");
-            }
-            else
-            {
-                sb.Append(param.Type);
-            }
-
-            parts.Add(sb.ToString());
-        }
-
-        return string.Join(", ", parts);
-    }
 }

@@ -6,7 +6,7 @@ namespace GenerateDts.Reflection;
 /// <summary>
 /// Dispatches type processing to appropriate emitter based on type kind.
 /// </summary>
-public static class TypeProcessing
+public static class TypeDispatcher
 {
     public static TypeDeclaration? ProcessType(
         Type type,
