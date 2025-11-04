@@ -275,6 +275,33 @@ public sealed class AssemblyProcessor
 
     private InterfaceDeclaration ProcessInterface(Type type)
     {
+        // Phase 3: Collect direct interfaces and prune redundant ones
+        var directInterfaces = type.GetInterfaces()
+            .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
+            .ToList();
+
+        // Prune redundant extends (Phase 3: Interface Extension Diamonds)
+        var prunedInterfaces = PruneRedundantInterfaceExtends(directInterfaces);
+
+        // Phase 1: Check for diamond inheritance AFTER pruning
+        // General rule: If multiple paths exist to same ancestor, generate _Base + intersection alias
+        if (HasDiamondInheritance(type, out var diamondAncestors))
+        {
+            Console.WriteLine($"[PHASE1] Diamond detected in {type.FullName}");
+            Console.WriteLine($"[PHASE1] Conflicting ancestors: {string.Join(", ", diamondAncestors.Select(a => a.FullName))}");
+
+            // Generate _Base interface (this becomes our return value)
+            var baseInterface = GenerateBaseInterface(type);
+
+            // Generate intersection alias (added to namespace later)
+            AddIntersectionAlias(type, prunedInterfaces);
+
+            Console.WriteLine($"[PHASE1] Generated {GetTypeName(type)}_Base interface + intersection alias");
+
+            return baseInterface;  // Return _Base, alias added separately to namespace
+        }
+
+        // Normal case: no diamond, proceed with standard interface generation
         var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
             .Where(ShouldIncludeMember)
             .Select(ProcessProperty)
@@ -288,57 +315,6 @@ public sealed class AssemblyProcessor
             .Select(m => ProcessMethod(m, type))
             .OfType<TypeInfo.MethodInfo>() // Filter nulls and cast to non-nullable
             .ToList();
-
-        // Phase 3: Collect direct interfaces and prune redundant ones
-        var directInterfaces = type.GetInterfaces()
-            .Where(i => i.FullName != "System.IDisposable") // Often not needed in TS (name-based for MetadataLoadContext)
-            .ToList();
-
-        // Phase 1 Investigation: Log the 8 interfaces with true diamonds
-        var diamondInterfaces = new[] {
-            "System.Numerics.INumber`1",
-            "System.Numerics.INumberBase`1",
-            "System.Data.IColumnMappingCollection",
-            "System.Data.IDataParameterCollection",
-            "System.Data.ITableMappingCollection",
-            "System.ComponentModel.IBindingListView",
-            "System.Collections.Concurrent.IProducerConsumerCollection`1",
-            "System.Collections.Generic.IDictionary`2"
-        };
-
-        if (diamondInterfaces.Contains(type.FullName))
-        {
-            Console.WriteLine($"\n[DIAMOND] Interface: {type.FullName}");
-            Console.WriteLine($"[DIAMOND] CLR reports {directInterfaces.Count} parent interfaces:");
-            foreach (var iface in directInterfaces)
-            {
-                var mapped = _typeMapper.MapType(iface);
-                Console.WriteLine($"  -> {iface.FullName ?? iface.Name} (TS: {mapped})");
-                // Show what THIS parent extends
-                var grandparents = iface.GetInterfaces().Where(i => i.FullName != "System.IDisposable").ToList();
-                if (grandparents.Count > 0)
-                {
-                    foreach (var gp in grandparents)
-                    {
-                        var gpMapped = _typeMapper.MapType(gp);
-                        Console.WriteLine($"     (via {gp.FullName ?? gp.Name} -> TS: {gpMapped})");
-                    }
-                }
-            }
-        }
-
-        // Prune redundant extends (Phase 3: Interface Extension Diamonds)
-        var prunedInterfaces = PruneRedundantInterfaceExtends(directInterfaces);
-
-        if (diamondInterfaces.Contains(type.FullName))
-        {
-            Console.WriteLine($"[DIAMOND] After pruning: {prunedInterfaces.Count} parents remain:");
-            foreach (var iface in prunedInterfaces)
-            {
-                Console.WriteLine($"  -> {iface.FullName}");
-            }
-            Console.WriteLine();
-        }
 
         // Map to TypeScript names
         var extends = prunedInterfaces
@@ -483,10 +459,33 @@ public sealed class AssemblyProcessor
 
         // Filter interfaces for TypeScript implements clause
         // General rule: only include interfaces where ALL members are publicly implemented
+        // Phase 1E: If interface has diamond, use _Base variant in implements clause
         var interfaces = type.GetInterfaces()
             .Where(i => i.IsPublic)
             .Where(i => !HasAnyExplicitImplementation(type, i)) // Skip explicitly implemented interfaces
-            .Select(i => _typeMapper.MapType(i))
+            .Select(i =>
+            {
+                // Check if this interface has a diamond pattern
+                if (i.IsInterface && HasDiamondInheritance(i, out _))
+                {
+                    // Use _Base variant for diamond interfaces
+                    var mapped = _typeMapper.MapType(i);
+                    var typeName = GetTypeName(i);
+
+                    // Replace the interface name with _Base variant
+                    // Handle generic types: IFoo_1<T> -> IFoo_1_Base<T>
+                    if (i.IsGenericType)
+                    {
+                        var genericArgs = mapped.Substring(mapped.IndexOf('<'));
+                        return typeName + "_Base" + genericArgs;
+                    }
+                    else
+                    {
+                        return typeName + "_Base";
+                    }
+                }
+                return _typeMapper.MapType(i);
+            })
             .Where(mapped => !mapped.StartsWith("ReadonlyArray<")) // Skip interfaces that map to ReadonlyArray<T>
             .Distinct() // Remove duplicates
             .ToList();
@@ -1630,6 +1629,94 @@ public sealed class AssemblyProcessor
         }
 
         return diamondAncestors.Count > 0;
+    }
+
+    /// <summary>
+    /// Phase 1B: Generate _Base interface containing only members declared directly on this type.
+    ///
+    /// General rule: Use BindingFlags.DeclaredOnly to extract unique members declared on this interface,
+    /// create interface with no extends clause to avoid diamond conflicts.
+    ///
+    /// Example: INumber_1<TSelf> has 23 parent interfaces causing diamond conflicts.
+    /// Solution: Generate INumber_1_Base<TSelf> with ONLY members unique to INumber_1 (Clamp, CopySign, Max, etc.)
+    /// The full type hierarchy is preserved via intersection type alias: type INumber_1<TSelf> = INumber_1_Base<TSelf> & Parent1 & Parent2...
+    /// </summary>
+    private InterfaceDeclaration GenerateBaseInterface(Type type)
+    {
+        // Extract ONLY properties declared directly on this interface (not inherited)
+        var properties = type.GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(ShouldIncludeMember)
+            .Select(ProcessProperty)
+            .Where(p => p != null)
+            .ToList();
+
+        // Extract ONLY methods declared directly on this interface (not inherited)
+        var methods = type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(ShouldIncludeMember)
+            .Where(m => !m.IsSpecialName)
+            .Where(m => !m.Name.Contains('.')) // Skip explicit interface implementations
+            .Select(m => ProcessMethod(m, type))
+            .OfType<TypeInfo.MethodInfo>()
+            .ToList();
+
+        var genericParams = type.IsGenericType
+            ? type.GetGenericArguments().Select(t => t.Name).ToList()
+            : new List<string>();
+
+        return new InterfaceDeclaration(
+            GetTypeName(type) + "_Base",  // Add _Base suffix
+            type.FullName + "_Base",
+            type.IsGenericType,
+            genericParams,
+            Extends: new List<string>(),  // NO extends clause - this breaks the diamond!
+            properties,
+            methods,
+            IsDiamondBase: true  // Mark as diamond base interface
+        );
+    }
+
+    /// <summary>
+    /// Phase 1C: Generate intersection type alias for diamond interface.
+    ///
+    /// General rule: Create type alias that intersects _Base with all parent interfaces.
+    /// This preserves full CLR type hierarchy while avoiding diamond conflict in interface declaration.
+    ///
+    /// Example: type INumber_1<TSelf> = INumber_1_Base<TSelf> & IComparable & IComparable_1<TSelf> & ...
+    ///
+    /// The alias is added to _intersectionAliases dictionary and merged into namespace later.
+    /// </summary>
+    private void AddIntersectionAlias(Type type, List<Type> parents)
+    {
+        var genericParamString = type.IsGenericType
+            ? $"<{string.Join(", ", type.GetGenericArguments().Select(t => t.Name))}>"
+            : "";
+
+        var intersectedTypes = new List<string>();
+
+        // Start with _Base interface (contains unique members)
+        intersectedTypes.Add(GetTypeName(type) + "_Base" + genericParamString);
+
+        // Add all direct parent interfaces (already pruned to remove redundancies)
+        foreach (var parent in parents)
+        {
+            var mapped = _typeMapper.MapType(parent);
+            intersectedTypes.Add(mapped);
+            TrackTypeDependency(parent);  // Important for cross-assembly references
+        }
+
+        var alias = new IntersectionTypeAlias(
+            GetTypeName(type),
+            type.FullName!,
+            type.IsGenericType,
+            type.IsGenericType ? type.GetGenericArguments().Select(t => t.Name).ToList() : new List<string>(),
+            intersectedTypes
+        );
+
+        // Add to namespace's alias collection (merged into namespace in ProcessAssembly)
+        var ns = type.Namespace ?? "";
+        if (!_intersectionAliases.ContainsKey(ns))
+            _intersectionAliases[ns] = new List<IntersectionTypeAlias>();
+        _intersectionAliases[ns].Add(alias);
     }
 
     /// <summary>

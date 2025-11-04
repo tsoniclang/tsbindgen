@@ -117,6 +117,9 @@ public sealed class DeclarationRenderer
         {
             switch (type)
             {
+                case IntersectionTypeAlias alias:
+                    RenderIntersectionAlias(sb, alias, 1);
+                    break;
                 case StaticNamespaceDeclaration staticNs:
                     RenderStaticNamespace(sb, staticNs, 1);
                     break;
@@ -304,6 +307,28 @@ public sealed class DeclarationRenderer
         }
 
         sb.AppendLine($"{indent}}}");
+    }
+
+    /// <summary>
+    /// Phase 1F: Render intersection type alias for diamond interfaces.
+    ///
+    /// Example output:
+    /// type INumber_1<TSelf> = INumber_1_Base<TSelf> & IComparable & IComparable_1<TSelf> & ...;
+    /// </summary>
+    private void RenderIntersectionAlias(StringBuilder sb, IntersectionTypeAlias alias, int indentLevel)
+    {
+        var indent = new string(' ', indentLevel * 2);
+
+        sb.Append($"{indent}type {alias.Name}");
+
+        if (alias.IsGeneric)
+        {
+            sb.Append($"<{string.Join(", ", alias.GenericParameters)}>");
+        }
+
+        sb.Append(" = ");
+        sb.Append(string.Join(" & ", alias.IntersectedTypes));
+        sb.AppendLine(";");
     }
 
     private void RenderEnum(StringBuilder sb, EnumDeclaration enumDecl, int indentLevel)
