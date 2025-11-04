@@ -445,6 +445,10 @@ public sealed class AssemblyProcessor
             ? type.GetGenericArguments().Select(t => t.Name).ToList()
             : new List<string>();
 
+        // Phase 2: Detect but don't split statics yet (companion namespace approach makes TS2417 worse)
+        // TODO: Need different approach for classes in inheritance hierarchies
+        CompanionNamespace? companion = null;
+
         return new ClassDeclaration(
             GetTypeName(type),
             type.FullName!,
@@ -455,7 +459,8 @@ public sealed class AssemblyProcessor
             constructors,
             properties,
             methods,
-            type.IsAbstract && type.IsSealed); // Static class
+            type.IsAbstract && type.IsSealed, // Static class
+            companion);
     }
 
     private TypeInfo.ConstructorInfo ProcessConstructor(System.Reflection.ConstructorInfo ctor)
@@ -1400,6 +1405,74 @@ public sealed class AssemblyProcessor
         {
             // Base class may not be accessible in MetadataLoadContext
             return false; // Keep the property to be safe
+        }
+    }
+
+    /// <summary>
+    /// Phase 2: Check if a class has static members that conflict with base class statics.
+    /// Returns true if ANY static member name exists in both derived and base class.
+    ///
+    /// General rule: Detect by comparing static member names declared on this type
+    /// versus static member names in base type hierarchy.
+    /// </summary>
+    private bool HasStaticMemberConflicts(Type type)
+    {
+        var baseType = type.BaseType;
+        if (baseType == null ||
+            baseType.FullName == "System.Object" ||
+            baseType.FullName == "System.ValueType" ||
+            baseType.FullName == "System.MarshalByRefObject")
+        {
+            return false; // No base to conflict with
+        }
+
+        try
+        {
+            // Get all static members declared on this type
+            var derivedStaticMembers = new HashSet<string>();
+
+            foreach (var method in type.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                if (!method.IsSpecialName) // Skip property accessors
+                    derivedStaticMembers.Add(method.Name);
+            }
+
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+            {
+                derivedStaticMembers.Add(prop.Name);
+            }
+
+            if (derivedStaticMembers.Count == 0)
+                return false; // No static members to conflict
+
+            // Check if any of these names exist in base type static members
+            var currentBase = baseType;
+            while (currentBase != null &&
+                   currentBase.FullName != "System.Object" &&
+                   currentBase.FullName != "System.ValueType" &&
+                   currentBase.FullName != "System.MarshalByRefObject")
+            {
+                foreach (var method in currentBase.GetMethods(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                {
+                    if (!method.IsSpecialName && derivedStaticMembers.Contains(method.Name))
+                        return true; // Conflict found
+                }
+
+                foreach (var prop in currentBase.GetProperties(BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly))
+                {
+                    if (derivedStaticMembers.Contains(prop.Name))
+                        return true; // Conflict found
+                }
+
+                currentBase = currentBase.BaseType;
+            }
+
+            return false; // No conflicts
+        }
+        catch
+        {
+            // Base class may not be accessible in MetadataLoadContext
+            return false; // Assume no conflict to be safe
         }
     }
 

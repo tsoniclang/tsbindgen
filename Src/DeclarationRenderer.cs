@@ -229,6 +229,48 @@ public sealed class DeclarationRenderer
         }
 
         sb.AppendLine($"{indent}}}");
+
+        // Phase 2: Render companion namespace for static members (if conflicts detected)
+        if (classDecl.Companion != null)
+        {
+            sb.AppendLine();
+            RenderCompanionNamespace(sb, classDecl.Name, classDecl.Companion, classDecl.GenericParameters, indentLevel);
+        }
+    }
+
+    /// <summary>
+    /// Phase 2: Renders a companion namespace for static members.
+    /// Used when static member names conflict with base class statics.
+    /// </summary>
+    private void RenderCompanionNamespace(StringBuilder sb, string className, CompanionNamespace companion,
+        IReadOnlyList<string> genericParams, int indentLevel)
+    {
+        var indent = new string(' ', indentLevel * 2);
+        var memberIndent = new string(' ', (indentLevel + 1) * 2);
+
+        // Namespace with same name as class (no generics on namespaces in TS)
+        sb.AppendLine($"{indent}namespace {className} {{");
+
+        // Static properties as const exports
+        foreach (var prop in companion.Properties)
+        {
+            // In namespaces, properties become exported constants
+            sb.AppendLine($"{memberIndent}export const {prop.Name}: {prop.Type};");
+        }
+
+        // Static methods as exported functions
+        foreach (var method in companion.Methods)
+        {
+            var genericParams2 = method.IsGeneric
+                ? $"<{string.Join(", ", method.GenericParameters)}>"
+                : "";
+
+            var parameters = RenderParameters(method.Parameters);
+
+            sb.AppendLine($"{memberIndent}export function {method.Name}{genericParams2}({parameters}): {method.ReturnType};");
+        }
+
+        sb.AppendLine($"{indent}}}");
     }
 
     private void RenderInterface(StringBuilder sb, InterfaceDeclaration interfaceDecl, int indentLevel)

@@ -24,7 +24,12 @@ public sealed record ClassDeclaration(
     IReadOnlyList<TypeInfo.ConstructorInfo> Constructors,
     IReadOnlyList<TypeInfo.PropertyInfo> Properties,
     IReadOnlyList<TypeInfo.MethodInfo> Methods,
-    bool IsStatic) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+    bool IsStatic,
+    CompanionNamespace? Companion = null) : TypeDeclaration(Name, FullName, IsGeneric, GenericParameters);
+
+public sealed record CompanionNamespace(
+    IReadOnlyList<TypeInfo.PropertyInfo> Properties,
+    IReadOnlyList<TypeInfo.MethodInfo> Methods);
 
 public sealed record InterfaceDeclaration(
     string Name,
