@@ -1,0 +1,395 @@
+using System.Reflection;
+using GenerateDts.Config;
+using GenerateDts.Mapping;
+using GenerateDts.Metadata;
+using GenerateDts.Reflection;
+using GenerateDts.Analysis;
+using GenerateDts.Emit;
+using GenerateDts.Model;
+using TypeInfo = GenerateDts.Model.TypeInfo;
+
+namespace GenerateDts.Pipeline;
+
+public sealed class AssemblyProcessor
+{
+    private readonly GeneratorConfig _config;
+    private readonly HashSet<string>? _namespaceWhitelist;
+    private readonly TypeMapper _typeMapper = new();
+    private readonly SignatureFormatter _signatureFormatter = new();
+    private DependencyTracker? _dependencyTracker;
+
+    // Phase 1: Track intersection type aliases for diamond interfaces
+    // Key: namespace name, Value: list of intersection aliases to add to that namespace
+    private Dictionary<string, List<IntersectionTypeAlias>> _intersectionAliases = new();
+
+    public AssemblyProcessor(GeneratorConfig config, string[] namespaces)
+    {
+        _config = config;
+        _namespaceWhitelist = namespaces.Length > 0
+            ? new HashSet<string>(namespaces)
+            : null;
+    }
+
+    public ProcessedAssembly ProcessAssembly(Assembly assembly)
+    {
+        // Initialize dependency tracker for this assembly
+        _dependencyTracker = new DependencyTracker(assembly);
+
+        // Set context for TypeMapper to enable cross-assembly reference rewriting
+        _typeMapper.SetContext(assembly, _dependencyTracker);
+
+        // Phase 1: Clear intersection aliases for this assembly
+        _intersectionAliases.Clear();
+
+        var types = assembly.GetExportedTypes()
+            .Where(ShouldIncludeType)
+            .OrderBy(t => t.Namespace)
+            .ThenBy(t => t.Name)
+            .ToList();
+
+        var namespaceGroups = types
+            .GroupBy(t => t.Namespace ?? "")
+            .Where(g => !string.IsNullOrEmpty(g.Key))
+            .OrderBy(g => g.Key);
+
+        var namespaces = new List<NamespaceInfo>();
+
+        foreach (var group in namespaceGroups)
+        {
+            var typeDeclarations = new List<TypeDeclaration>();
+
+            foreach (var type in group)
+            {
+                try
+                {
+                    var declaration = ProcessType(type);
+                    if (declaration != null)
+                    {
+                        typeDeclarations.Add(declaration);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _typeMapper.AddWarning($"Failed to process type {type.FullName}: {ex.Message}\nStack: {ex.StackTrace}");
+                }
+            }
+
+            // Phase 1: Add intersection aliases for this namespace (if any)
+            if (_intersectionAliases.TryGetValue(group.Key, out var aliases))
+            {
+                typeDeclarations.AddRange(aliases);
+            }
+
+            if (typeDeclarations.Count > 0)
+            {
+                namespaces.Add(new NamespaceInfo(group.Key, typeDeclarations));
+            }
+        }
+
+        return new ProcessedAssembly(namespaces, _typeMapper.Warnings.ToList());
+    }
+
+    private bool ShouldIncludeType(Type type)
+    {
+        return MemberFilters.ShouldIncludeType(type, _config, _namespaceWhitelist);
+    }
+
+    private TypeDeclaration? ProcessType(Type type)
+    {
+        return TypeProcessing.ProcessType(
+            type,
+            ProcessEnum,
+            ProcessInterface,
+            ProcessStaticNamespace,
+            ProcessClass);
+    }
+
+    private EnumDeclaration ProcessEnum(Type type)
+    {
+        return EnumEmitter.ProcessEnum(type, GetTypeName);
+    }
+
+    private InterfaceDeclaration ProcessInterface(Type type)
+    {
+        return InterfaceEmitter.ProcessInterface(
+            type,
+            _typeMapper,
+            ShouldIncludeMember,
+            ProcessProperty,
+            ProcessMethod,
+            TrackTypeDependency,
+            _intersectionAliases,
+            GetTypeName);
+    }
+
+    private StaticNamespaceDeclaration ProcessStaticNamespace(Type type)
+    {
+        return StaticNamespaceEmitter.ProcessStaticNamespace(
+            type,
+            GetTypeName,
+            ShouldIncludeMember,
+            ProcessProperty,
+            ProcessMethod);
+    }
+
+    private ClassDeclaration ProcessClass(Type type)
+    {
+        return ClassEmitter.ProcessClass(
+            type,
+            ProcessConstructor,
+            ProcessProperty,
+            ProcessMethod,
+            ShouldIncludeMember,
+            GetExplicitInterfaceImplementations,
+            HasAnyExplicitImplementation,
+            interfaceType =>
+            {
+                var hasDiamond = InterfaceAnalysis.HasDiamondInheritance(interfaceType, out var ancestors);
+                return (hasDiamond, ancestors);
+            },
+            AddInterfaceCompatibleOverloads,
+            AddBaseClassCompatibleOverloads,
+            TrackTypeDependency,
+            _typeMapper,
+            GetTypeName);
+    }
+
+    private TypeInfo.ConstructorInfo ProcessConstructor(System.Reflection.ConstructorInfo ctor)
+    {
+        return ConstructorEmitter.ProcessConstructor(ctor, ProcessParameter, TrackTypeDependency);
+    }
+
+    private TypeInfo.PropertyInfo ProcessProperty(System.Reflection.PropertyInfo prop)
+    {
+        return PropertyEmitter.ProcessProperty(
+            prop,
+            _typeMapper,
+            propertyType => PropertyEmitter.ApplyCovariantWrapperIfNeeded(
+                prop,
+                _typeMapper.MapType(propertyType),
+                _typeMapper,
+                TrackTypeDependency,
+                HasAnyExplicitImplementation),
+            TrackTypeDependency,
+            p => PropertyEmitter.IsRedundantPropertyRedeclaration(p, _typeMapper))!;
+    }
+
+    private bool PropertyTypeReferencesTypeParams(Type propertyType, HashSet<string> classTypeParams)
+    {
+        return TypeReferenceChecker.PropertyTypeReferencesTypeParams(propertyType, classTypeParams);
+    }
+
+    private bool TypeReferencesAnyTypeParam(Type type, HashSet<Type> typeParams)
+    {
+        return TypeReferenceChecker.TypeReferencesAnyTypeParam(type, typeParams);
+    }
+
+    private TypeInfo.MethodInfo? ProcessMethod(System.Reflection.MethodInfo method, Type declaringType)
+    {
+        return MethodEmitter.ProcessMethod(
+            method,
+            declaringType,
+            _typeMapper,
+            ProcessParameter,
+            TrackTypeDependency);
+    }
+
+    private TypeInfo.ParameterInfo ProcessParameter(System.Reflection.ParameterInfo param)
+    {
+        return MethodEmitter.ProcessParameter(param, _typeMapper);
+    }
+
+    private bool ShouldIncludeMember(MemberInfo member)
+    {
+        return MemberFilters.ShouldIncludeMember(member, _config);
+    }
+
+    private string GetTypeName(Type type)
+    {
+        var baseName = type.Name;
+        var arity = 0;
+
+        // Handle generic types - extract arity and strip the `N suffix
+        if (type.IsGenericType)
+        {
+            var backtickIndex = baseName.IndexOf('`');
+            if (backtickIndex > 0)
+            {
+                // Extract arity (e.g., "Tuple`3" -> arity = 3)
+                if (int.TryParse(baseName.Substring(backtickIndex + 1), out var parsedArity))
+                {
+                    arity = parsedArity;
+                }
+                baseName = baseName.Substring(0, backtickIndex);
+            }
+        }
+
+        // Handle nested types - build full ancestry chain to avoid conflicts
+        // For deeply nested types like Dictionary<K,V>.KeyCollection.Enumerator,
+        // we need to include the top-level type's arity to distinguish from other variants
+        if (type.IsNested && type.DeclaringType != null)
+        {
+            // Walk up the nesting chain to find the top-level type
+            var ancestorChain = new List<(string name, int arity)>();
+            var current = type.DeclaringType;
+
+            while (current != null)
+            {
+                var ancestorName = current.Name;
+                var ancestorArity = 0;
+
+                var backtickIndex = ancestorName.IndexOf('`');
+                if (backtickIndex > 0)
+                {
+                    if (int.TryParse(ancestorName.Substring(backtickIndex + 1), out var parsedArity))
+                    {
+                        ancestorArity = parsedArity;
+                    }
+                    ancestorName = ancestorName.Substring(0, backtickIndex);
+                }
+
+                ancestorChain.Insert(0, (ancestorName, ancestorArity));
+                current = current.DeclaringType;
+            }
+
+            // Build name from ancestor chain
+            var nameBuilder = new System.Text.StringBuilder();
+            foreach (var (ancestorName, ancestorArity) in ancestorChain)
+            {
+                if (nameBuilder.Length > 0)
+                {
+                    nameBuilder.Append('_');
+                }
+
+                nameBuilder.Append(ancestorName);
+                if (ancestorArity > 0)
+                {
+                    nameBuilder.Append('_');
+                    nameBuilder.Append(ancestorArity);
+                }
+            }
+
+            // Append the current type
+            nameBuilder.Append('_');
+            nameBuilder.Append(baseName);
+            if (arity > 0)
+            {
+                nameBuilder.Append('_');
+                nameBuilder.Append(arity);
+            }
+
+            return nameBuilder.ToString();
+        }
+
+        // For top-level generic types, include arity to distinguish Tuple<T1> from Tuple<T1,T2>
+        // Example: Tuple`1 becomes Tuple_1, Tuple`2 becomes Tuple_2
+        if (arity > 0)
+        {
+            return $"{baseName}_{arity}";
+        }
+
+        return baseName;
+    }
+
+    /// <summary>
+    /// Processes assembly and extracts metadata for all types and members.
+    /// </summary>
+    public AssemblyMetadata ProcessAssemblyMetadata(Assembly assembly)
+    {
+        var types = assembly.GetExportedTypes()
+            .Where(ShouldIncludeType)
+            .OrderBy(t => t.Namespace)
+            .ThenBy(t => t.Name)
+            .ToList();
+
+        var typeMetadataDict = new Dictionary<string, TypeMetadata>();
+
+        foreach (var type in types)
+        {
+            try
+            {
+                var metadata = ProcessTypeMetadata(type);
+                if (metadata != null)
+                {
+                    var fullName = type.FullName!.Replace('+', '.');
+                    typeMetadataDict[fullName] = metadata;
+                }
+            }
+            catch (Exception ex)
+            {
+                _typeMapper.AddWarning($"Failed to process metadata for type {type.FullName}: {ex.Message}");
+            }
+        }
+
+        return new AssemblyMetadata(
+            assembly.GetName().Name ?? assembly.FullName ?? "Unknown",
+            assembly.GetName().Version?.ToString() ?? "0.0.0.0",
+            typeMetadataDict);
+    }
+
+    private TypeMetadata? ProcessTypeMetadata(Type type)
+    {
+        return MetadataProcessor.ProcessTypeMetadata(type, _signatureFormatter, ShouldIncludeMember);
+    }
+
+    private List<(Type interfaceType, System.Reflection.MethodInfo interfaceMethod, System.Reflection.MethodInfo implementation)> GetExplicitInterfaceImplementations(Type type)
+    {
+        return InterfaceImplementationAnalyzer.GetExplicitInterfaceImplementations(type);
+    }
+
+    private bool HasAnyExplicitImplementation(Type type, Type interfaceType)
+    {
+        return InterfaceImplementationAnalyzer.HasAnyExplicitImplementation(type, interfaceType);
+    }
+
+    /// <summary>
+    /// Adds interface-compatible overloads for methods to handle covariant return types.
+    /// This fixes TS2416 (method not assignable) and TS2420 (incorrectly implements interface) errors.
+    ///
+    /// Note: Properties with covariant types are NOT handled here because TypeScript doesn't allow
+    /// multiple property declarations with different types (TS2717). Property type variance is
+    /// typically acceptable in TypeScript when the concrete type is more specific than the interface.
+    /// </summary>
+    private void AddInterfaceCompatibleOverloads(Type type, List<TypeInfo.PropertyInfo> properties, List<TypeInfo.MethodInfo> methods)
+    {
+        OverloadBuilder.AddInterfaceCompatibleOverloads(type, properties, methods, _typeMapper, ProcessParameter);
+    }
+
+    /// <summary>
+    /// Adds base class-compatible method and property overloads for TS2416 covariance issues.
+    /// When a derived class overrides a base method with a more specific return type,
+    /// TypeScript requires both signatures to be present.
+    /// </summary>
+    private void AddBaseClassCompatibleOverloads(Type type, List<TypeInfo.PropertyInfo> properties, List<TypeInfo.MethodInfo> methods)
+    {
+        OverloadBuilder.AddBaseClassCompatibleOverloads(type, properties, methods, _typeMapper, ShouldIncludeMember, ProcessParameter, TypeReferencesAnyTypeParam, TrackTypeDependency);
+    }
+
+    /// <summary>
+    /// Tracks a type dependency for cross-assembly import generation.
+    /// Recursively tracks generic type arguments.
+    /// </summary>
+    private void TrackTypeDependency(Type type)
+    {
+        DependencyHelpers.TrackTypeDependency(_dependencyTracker, type);
+    }
+
+    /// <summary>
+    /// Gets the dependency tracker for this assembly processing session.
+    /// </summary>
+    public DependencyTracker? GetDependencyTracker()
+    {
+        return _dependencyTracker;
+    }
+
+    /// <summary>
+    /// Phase 4: Check if a property is redundantly redeclared with same TypeScript type.
+    ///
+    /// General rule: Walk entire inheritance chain up to System.Object.
+    /// If ANY ancestor has a property with same name and same mapped TypeScript type, skip re-emitting.
+    ///
+    /// Handles edge cases like:
+    /// - DataAdapter.TableMappings : ITableMappingCollection
+    /// - DbDataAdapter.TableMappings : DataTableMappingCollection (both map to same TS type)
+    /// </summary>
+}
