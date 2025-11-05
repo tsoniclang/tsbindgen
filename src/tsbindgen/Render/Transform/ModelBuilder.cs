@@ -166,17 +166,22 @@ public static class ModelBuilder
     {
         var tsAlias = NameTransformation.Apply(snapshot.ClrName, config.PropertyNames);
 
+        var contractTsType = snapshot.ContractType != null
+            ? RewriteTypeReference(snapshot.ContractType.ClrType, currentNamespace, importAliases)
+            : null;
+
         return new PropertyModel(
             snapshot.ClrName,
             tsAlias,
-            snapshot.ClrType,
-            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
+            snapshot.Type.ClrType,
+            RewriteTypeReference(snapshot.Type.ClrType, currentNamespace, importAliases),
             snapshot.IsReadOnly,
             snapshot.IsStatic,
             snapshot.IsVirtual,
             snapshot.IsOverride,
             snapshot.Visibility,
-            snapshot.Binding);
+            snapshot.Binding,
+            contractTsType);
     }
 
     private static FieldModel BuildField(FieldSnapshot snapshot, GeneratorConfig config, string currentNamespace, HashSet<string> importAliases)
@@ -186,8 +191,8 @@ public static class ModelBuilder
         return new FieldModel(
             snapshot.ClrName,
             tsAlias,
-            snapshot.ClrType,
-            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
+            snapshot.Type.ClrType,
+            RewriteTypeReference(snapshot.Type.ClrType, currentNamespace, importAliases),
             snapshot.IsReadOnly,
             snapshot.IsStatic,
             snapshot.Visibility,
@@ -212,8 +217,8 @@ public static class ModelBuilder
     {
         return new ParameterModel(
             snapshot.Name,
-            snapshot.ClrType,
-            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
+            snapshot.Type.ClrType,
+            RewriteTypeReference(snapshot.Type.ClrType, currentNamespace, importAliases),
             snapshot.Kind,
             snapshot.IsOptional,
             snapshot.DefaultValue,
@@ -300,16 +305,20 @@ public static class ModelBuilder
             return baseType + arraySuffix;
         }
 
-        // All namespace-qualified types should use the $ separator for TypeScript
-        // This includes types in the current namespace (e.g., System.ValueType -> System$ValueType)
-        // because we're generating flat modules, not ambient namespaces
-
-        // Replace . with $ in the namespace portion (everything before the last .)
+        // Extract namespace and type name
         var lastDot = baseType.LastIndexOf('.');
         if (lastDot > 0)
         {
             var namespacePart = baseType.Substring(0, lastDot);
             var typePart = baseType.Substring(lastDot + 1);
+
+            // If type is from the current namespace, use unqualified name
+            if (namespacePart == currentNamespace)
+            {
+                return typePart + arraySuffix;
+            }
+
+            // Cross-namespace reference: use $ separator and namespace alias
             return namespacePart.Replace(".", "$") + "." + typePart + arraySuffix;
         }
 

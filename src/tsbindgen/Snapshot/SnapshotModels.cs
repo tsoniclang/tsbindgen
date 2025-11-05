@@ -96,9 +96,11 @@ public sealed record PropertySnapshot(
     string Visibility,
     MemberBinding Binding)
 {
-    // Backward compatibility property
-    [JsonIgnore]
-    public string ClrType => Type.ClrType;
+    /// <summary>
+    /// Contract type if this property has covariant return type (more specific than base/interface).
+    /// If not null, the property type should be wrapped with Covariant&lt;Type, ContractType&gt;.
+    /// </summary>
+    public TypeReference? ContractType { get; init; }
 };
 
 /// <summary>
@@ -113,7 +115,7 @@ public sealed record ConstructorSnapshot(
 /// </summary>
 public sealed record FieldSnapshot(
     string ClrName,
-    string ClrType,
+    TypeReference Type,
     bool IsReadOnly,
     bool IsStatic,
     string Visibility,
@@ -245,12 +247,7 @@ public sealed record ParameterSnapshot(
     ParameterKind Kind,
     bool IsOptional,
     string? DefaultValue,
-    bool IsParams)
-{
-    // Backward compatibility property
-    [JsonIgnore]
-    public string ClrType => Type.ClrType;
-};
+    bool IsParams);
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum ParameterKind

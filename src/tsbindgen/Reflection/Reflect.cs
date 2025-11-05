@@ -79,8 +79,8 @@ public static class Reflect
             }
         }
 
-        // Extract cross-assembly dependencies
-        var imports = ExtractDependencies(typeSnapshots);
+        // Extract namespace dependencies (both same-assembly and cross-assembly)
+        var imports = ExtractDependencies(typeSnapshots, namespaceName);
 
         return new NamespaceSnapshot(
             namespaceName,
@@ -269,6 +269,9 @@ public static class Reflect
 
         var typeRef = CreateTypeReference(property.PropertyType, assembly!);
 
+        // Detect property covariance (more specific return type than base/interface)
+        var contractType = DetectPropertyCovariance(property, assembly!);
+
         return new PropertySnapshot(
             property.Name,
             typeRef,
@@ -280,7 +283,10 @@ public static class Reflect
             new MemberBinding(
                 assembly?.GetName().Name ?? "",
                 property.DeclaringType?.FullName ?? "",
-                property.Name));
+                property.Name))
+        {
+            ContractType = contractType
+        };
     }
 
     /// <summary>
@@ -293,7 +299,7 @@ public static class Reflect
 
         return new FieldSnapshot(
             field.Name,
-            typeRef.ClrType,
+            typeRef,
             field.IsInitOnly,
             field.IsStatic,
             DetermineVisibility(field),
@@ -540,28 +546,33 @@ public static class Reflect
     /// Extracts cross-assembly dependencies from type snapshots.
     /// Recursively extracts from all TypeReferences including generic arguments.
     /// </summary>
-    private static IReadOnlyList<DependencyRef> ExtractDependencies(List<TypeSnapshot> types)
+    private static IReadOnlyList<DependencyRef> ExtractDependencies(List<TypeSnapshot> types, string currentNamespace)
     {
         var deps = new HashSet<(string Assembly, string Namespace)>();
 
         foreach (var type in types)
         {
-            ExtractTypeReferenceDependencies(type.BaseType, deps);
+            ExtractTypeReferenceDependencies(type.BaseType, currentNamespace, deps);
             foreach (var iface in type.Implements)
-                ExtractTypeReferenceDependencies(iface, deps);
+                ExtractTypeReferenceDependencies(iface, currentNamespace, deps);
 
             foreach (var method in type.Members.Methods)
             {
-                ExtractTypeReferenceDependencies(method.ReturnType, deps);
+                ExtractTypeReferenceDependencies(method.ReturnType, currentNamespace, deps);
                 foreach (var param in method.Parameters)
                 {
-                    ExtractTypeReferenceDependencies(param.Type, deps);
+                    ExtractTypeReferenceDependencies(param.Type, currentNamespace, deps);
                 }
             }
 
             foreach (var prop in type.Members.Properties)
             {
-                ExtractTypeReferenceDependencies(prop.Type, deps);
+                ExtractTypeReferenceDependencies(prop.Type, currentNamespace, deps);
+            }
+
+            foreach (var field in type.Members.Fields)
+            {
+                ExtractTypeReferenceDependencies(field.Type, currentNamespace, deps);
             }
         }
 
@@ -571,23 +582,27 @@ public static class Reflect
     /// <summary>
     /// Recursively extracts namespace dependencies from a TypeReference.
     /// Handles generic arguments recursively.
+    /// Extracts dependencies for ALL types from different namespaces (both same-assembly and cross-assembly).
     /// </summary>
     private static void ExtractTypeReferenceDependencies(
         TypeReference? typeRef,
+        string currentNamespace,
         HashSet<(string, string)> deps)
     {
         if (typeRef == null) return;
+        if (typeRef.Namespace == null) return;  // Skip types without namespace (primitives, markers)
 
-        // Extract namespace dependency for this type
-        if (typeRef.Assembly != null && typeRef.Namespace != null)
+        // Extract dependency if type is from a different namespace
+        // Include both same-assembly and cross-assembly references
+        if (typeRef.Namespace != currentNamespace)
         {
-            deps.Add((typeRef.Assembly, typeRef.Namespace));
+            deps.Add((typeRef.Assembly ?? "", typeRef.Namespace));
         }
 
         // Recursively extract dependencies from generic arguments
         foreach (var genericArg in typeRef.GenericArgs)
         {
-            ExtractTypeReferenceDependencies(genericArg, deps);
+            ExtractTypeReferenceDependencies(genericArg, currentNamespace, deps);
         }
     }
 
@@ -676,5 +691,75 @@ public static class Reflect
         if ((attributes & GenericParameterAttributes.Contravariant) != 0)
             return Variance.In;
         return Variance.None;
+    }
+
+    /// <summary>
+    /// Detects if a property has a covariant return type (more specific than base/interface).
+    /// Returns the contract type (base/interface type) if covariance is detected, null otherwise.
+    /// Only applies to classes and structs (not interfaces) - interface covariance is handled natively by TypeScript.
+    /// </summary>
+    private static TypeReference? DetectPropertyCovariance(PropertyInfo property, Assembly assembly)
+    {
+        var declaringType = property.DeclaringType;
+        if (declaringType == null) return null;
+        if (property.GetMethod?.IsStatic ?? property.SetMethod?.IsStatic ?? false) return null;
+
+        // Only detect covariance for classes and structs, not interfaces
+        // Interface-to-interface covariance is handled natively by TypeScript
+        if (declaringType.IsInterface) return null;
+
+        // Check base class for property hiding
+        var baseType = declaringType.BaseType;
+        while (baseType != null &&
+               baseType.FullName != "System.Object" &&
+               baseType.FullName != "System.ValueType" &&
+               baseType.FullName != "System.MarshalByRefObject")
+        {
+            try
+            {
+                var baseProp = baseType.GetProperty(property.Name, BindingFlags.Public | BindingFlags.Instance);
+                if (baseProp != null && baseProp.PropertyType != property.PropertyType)
+                {
+                    // Found base property with different type - covariance detected
+                    return CreateTypeReference(baseProp.PropertyType, assembly);
+                }
+            }
+            catch
+            {
+                // Property lookup can fail in some cases
+            }
+            baseType = baseType.BaseType;
+        }
+
+        // Check interface properties (only for readonly properties)
+        if (property.CanWrite) return null;
+
+        try
+        {
+            foreach (var interfaceType in declaringType.GetInterfaces())
+            {
+                if (!interfaceType.IsPublic && !interfaceType.IsNestedPublic) continue;
+
+                try
+                {
+                    var interfaceProp = interfaceType.GetProperty(property.Name);
+                    if (interfaceProp != null && interfaceProp.PropertyType != property.PropertyType)
+                    {
+                        // Found interface property with different type - covariance detected
+                        return CreateTypeReference(interfaceProp.PropertyType, assembly);
+                    }
+                }
+                catch
+                {
+                    // Property lookup can fail in some cases
+                }
+            }
+        }
+        catch
+        {
+            // GetInterfaces can fail in some cases
+        }
+
+        return null;
     }
 }

@@ -38,7 +38,8 @@ public sealed record PropertyModel(
     bool IsVirtual,
     bool IsOverride,
     string Visibility,
-    MemberBinding Binding);
+    MemberBinding Binding,
+    string? ContractTsType);  // If not null, wrap TsType with Covariant<TsType, ContractTsType>
 
 /// <summary>
 /// Field model with both CLR and TS names.

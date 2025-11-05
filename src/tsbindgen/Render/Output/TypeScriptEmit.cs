@@ -18,6 +18,11 @@ public static class TypeScriptEmit
         builder.AppendLine($"// Generated from {model.SourceAssemblies.Count} assembly(ies)");
         builder.AppendLine();
 
+        // Covariance helper type for property type variance
+        builder.AppendLine("// Helper type for property covariance - allows derived types to return more specific types");
+        builder.AppendLine("export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };");
+        builder.AppendLine();
+
         // Imports - collect all unique namespaces from all assemblies
         if (model.Imports.Count > 0)
         {
@@ -181,7 +186,12 @@ public static class TypeScriptEmit
             var modifiers = prop.IsStatic ? "static " : "";
             var readonlyModifier = prop.IsReadonly ? "readonly " : "";
 
-            builder.AppendLine($"{indent}{modifiers}{readonlyModifier}{prop.TsAlias}: {prop.TsType};");
+            // Wrap with Covariant<> if property has covariant return type
+            var propertyType = prop.ContractTsType != null
+                ? $"Covariant<{prop.TsType}, {prop.ContractTsType}>"
+                : prop.TsType;
+
+            builder.AppendLine($"{indent}{modifiers}{readonlyModifier}{prop.TsAlias}: {propertyType};");
         }
 
         // Fields
