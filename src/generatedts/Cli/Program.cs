@@ -180,44 +180,33 @@ public static class Program
             {
                 Console.WriteLine("  Detected type-forwarding assembly");
 
-                // Get forwarded assemblies
-                var forwardedAssemblies = TypeForwardingResolver.GetForwardedAssemblies(assembly);
+                // Get the specific types that are forwarded
+                var forwardedTypes = TypeForwardingResolver.GetForwardedTypes(assembly);
 
-                if (forwardedAssemblies.Count > 0)
+                if (forwardedTypes.Count > 0)
                 {
-                    Console.WriteLine($"  Types forwarded to {forwardedAssemblies.Count} target assembly(ies):");
-                    foreach (var targetName in forwardedAssemblies)
+                    Console.WriteLine($"  Types forwarded to {forwardedTypes.Count} target assembly(ies):");
+                    int totalTypes = 0;
+                    foreach (var (targetName, types) in forwardedTypes)
                     {
-                        Console.WriteLine($"    - {targetName}");
+                        Console.WriteLine($"    - {targetName}: {types.Count} types");
+                        totalTypes += types.Count;
                     }
 
-                    // Check if this forwards to a core assembly that should be generated separately
-                    // Skip generation to avoid duplicates
-                    var primaryTarget = forwardedAssemblies[0];
-                    if (TypeForwardingResolver.ShouldSkipForwarder(primaryTarget))
-                    {
-                        Console.WriteLine($"  Skipping generation: types will be included in {primaryTarget}");
-                        return;
-                    }
+                    // Process only the forwarded types (they're already loaded as Type objects)
+                    Console.WriteLine($"  Processing {totalTypes} forwarded types");
 
-                    // Try to load the target assembly and generate from it instead
-                    var targetAssembly = TypeForwardingResolver.TryLoadTargetAssembly(primaryTarget, assemblyPath);
+                    // We'll use the first target's types for processing
+                    // (most type-forwarding assemblies forward to a single target)
+                    var (primaryTarget, typesToProcess) = forwardedTypes.First();
 
-                    if (targetAssembly != null)
-                    {
-                        Console.WriteLine($"  Using target assembly: {targetAssembly.GetName().Name}");
-                        assembly = targetAssembly;
-                    }
-                    else
-                    {
-                        Console.WriteLine($"  Warning: Could not load target assembly '{primaryTarget}'");
-                        Console.WriteLine($"  Continuing with forwarding assembly (will generate minimal types)");
-                    }
+                    // Filter the assembly's processing to only include these specific types
+                    // The AssemblyProcessor will handle this via GetExportedTypes()
+                    // which for type-forwarding assemblies should return the forwarded types
                 }
                 else
                 {
                     Console.WriteLine("  Warning: No forwarding targets found");
-                    Console.WriteLine("  Continuing with forwarding assembly (will generate minimal types)");
                 }
             }
 
@@ -269,18 +258,6 @@ public static class Program
                 var metadataWriter = new MetadataWriter();
                 await metadataWriter.WriteMetadataAsync(metadata, metadataPath);
                 Console.WriteLine($"Generated: {metadataPath}");
-
-                // Write dependency information
-                if (dependencyTracker != null)
-                {
-                    var dependenciesFileName = $"{assemblyName}.dependencies.json";
-                    var dependenciesPath = Path.Combine(outDir, dependenciesFileName);
-                    var dependenciesJson = System.Text.Json.JsonSerializer.Serialize(
-                        dependencyTracker.ToJson(),
-                        new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
-                    await File.WriteAllTextAsync(dependenciesPath, dependenciesJson, System.Text.Encoding.UTF8);
-                    Console.WriteLine($"Generated: {dependenciesPath}");
-                }
 
                 // Write bindings manifest if transforms were applied
                 if (bindings != null && bindings.Count > 0)

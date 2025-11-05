@@ -19,7 +19,8 @@ public static class PropertyEmitter
         var indexParams = prop.GetIndexParameters();
         if (indexParams.Length > 0)
         {
-            typeMapper.AddWarning($"Skipped indexer {prop.DeclaringType?.Name}.{prop.Name} - " +
+            var location = prop.DeclaringType?.FullName ?? prop.DeclaringType?.Name ?? "Unknown";
+            typeMapper.AddWarning($"[{location}.{prop.Name}] Skipped indexer - " +
                 $"indexers with parameters cannot be represented as TypeScript properties (TS2300)");
             return null;
         }
@@ -38,7 +39,8 @@ public static class PropertyEmitter
             var classTypeParams = prop.DeclaringType.GetGenericArguments().Select(t => t.Name).ToHashSet();
             if (PropertyTypeReferencesTypeParams(prop.PropertyType, classTypeParams))
             {
-                typeMapper.AddWarning($"Skipped static property {prop.DeclaringType.Name}.{prop.Name} - " +
+                var location = prop.DeclaringType.FullName ?? prop.DeclaringType.Name;
+                typeMapper.AddWarning($"[{location}.{prop.Name}] Skipped static property - " +
                     $"references class type parameters (TS2302: Static members cannot reference class type parameters)");
                 return null;
             }
@@ -139,6 +141,19 @@ public static class PropertyEmitter
                 {
                     trackTypeDependency(prop.PropertyType);
                     trackTypeDependency(baseProp.PropertyType);
+
+                    // Skip Covariant wrapper for enum-to-enum covariance (TypeScript doesn't handle it well)
+                    // Use base type instead to avoid TS2416 errors
+                    if (prop.PropertyType.IsEnum && baseProp.PropertyType.IsEnum)
+                    {
+                        var location = declaringType.FullName ?? declaringType.Name;
+                        typeMapper.AddWarning($"[{location}.{prop.Name}] Enum covariance detected - " +
+                            $"returns {prop.PropertyType.FullName ?? prop.PropertyType.Name} " +
+                            $"(base expects {baseProp.PropertyType.FullName ?? baseProp.PropertyType.Name}). " +
+                            $"Using base type to avoid TypeScript error (TS2416)");
+                        return baseTypeName;
+                    }
+
                     return $"Covariant<{derivedTypeName}, {baseTypeName}>";
                 }
                 break;

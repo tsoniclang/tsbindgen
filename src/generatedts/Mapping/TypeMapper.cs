@@ -28,7 +28,8 @@ public sealed class TypeMapper
         // Handle pointer types
         if (type.IsPointer)
         {
-            AddWarning($"Pointer type {type.Name} mapped to 'any' (TypeScript doesn't support pointers)");
+            var location = type.FullName ?? type.Name;
+            AddWarning($"[{location}] Pointer type mapped to 'any' - TypeScript doesn't support pointers");
             return "any";
         }
 
@@ -76,7 +77,8 @@ public sealed class TypeMapper
         var fullTypeName = GetFullTypeName(type);
         if (string.IsNullOrWhiteSpace(fullTypeName))
         {
-            AddWarning($"Type {type} has no name - mapped to 'any'");
+            var location = type.FullName ?? type.Name ?? type.ToString();
+            AddWarning($"[{location}] Type has no name - mapped to 'any'");
             return "any";
         }
         return fullTypeName;

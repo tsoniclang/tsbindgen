@@ -18,6 +18,12 @@ public static class OverloadBuilder
             var interfaces = type.GetInterfaces();
             foreach (var iface in interfaces)
             {
+                // Skip non-public interfaces (e.g., IAsyncStateMachineBox)
+                if (!iface.IsPublic && !iface.IsNestedPublic)
+                {
+                    continue;
+                }
+
                 try
                 {
                     var map = type.GetInterfaceMap(iface);
@@ -33,6 +39,27 @@ public static class OverloadBuilder
 
                         // Skip explicit interface implementations (method name contains dot)
                         if (interfaceMethod.Name.Contains('.'))
+                        {
+                            continue;
+                        }
+
+                        // Skip methods with non-public parameter or return types
+                        if (!interfaceMethod.ReturnType.IsPublic && !interfaceMethod.ReturnType.IsNestedPublic && interfaceMethod.ReturnType != typeof(void))
+                        {
+                            continue;
+                        }
+
+                        bool hasNonPublicParam = false;
+                        foreach (var param in interfaceMethod.GetParameters())
+                        {
+                            if (!param.ParameterType.IsPublic && !param.ParameterType.IsNestedPublic)
+                            {
+                                hasNonPublicParam = true;
+                                break;
+                            }
+                        }
+
+                        if (hasNonPublicParam)
                         {
                             continue;
                         }

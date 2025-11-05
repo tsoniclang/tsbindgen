@@ -45,6 +45,29 @@ runtime knows the implementation exists.
 3. `PropertyEmitter.IsRedundantPropertyRedeclaration` skips duplicate
    declarations when a base property already produces the same mapped type.
 
+### Enum covariance fallback
+
+TypeScript treats enums as numeric literal unions, so intersecting an enum with
+the `Covariant<TSpecific, TContract>` helper collapses to `never`. When a
+derived property overrides a base property and both return enums with different
+declaring types (for example `HttpRequestCachePolicy.Level` overriding
+`RequestCachePolicy.Level`), the generator emits the **base** enum in the `.d.ts`
+file and logs a warning. The metadata sidecar still records the CLR-specific
+enum so the runtime can call through to `HttpRequestCacheLevel`.
+
+```ts
+// Emitted declaration (simplified)
+class HttpRequestCachePolicy extends System.Net.Cache.RequestCachePolicy {
+    readonly Level: System.Net.Cache.RequestCacheLevel;
+}
+
+// Metadata keeps the derived return type so the runtime knows the CLR shape
+"Level": { "kind": "property", "returnType": "System.Net.Cache.HttpRequestCacheLevel", ... }
+```
+
+Consumers get a TypeScript-safe type (`RequestCacheLevel`) while the runtime
+still sees the more specific CLR enum via metadata.
+
 ## Static member compatibility
 
 `Analysis/OverloadBuilder.AddBaseClassCompatibleOverloads` ensures that the
@@ -55,6 +78,27 @@ static side of derived classes exposes the same signatures as the base class:
 - Filters out signatures that reference the derived class’s type parameters via
   `TypeReferenceChecker.TypeReferencesAnyTypeParam` (avoids TS2302).
 - Adds both generic and non-generic overloads to the derived class.
+
+### Static property/method name collisions
+
+When a class declares both a static property and a static method with the same
+identifier (e.g. `Vector<T>.Count` in the BCL) TypeScript reports a duplicate
+identifier. The emitter keeps the static **method** on the class and promotes
+the colliding static properties into the companion namespace so that class/namespace
+merging provides both call sites without a clash.
+
+```ts
+class Vector_1<T> {
+    static Count<T>(vector: System.Numerics.Vector_1<T>, value: T): int;
+}
+
+namespace Vector_1 {
+    export const Count: int; // formerly the static property on the class
+}
+```
+
+Metadata still records both members against the class so the runtime knows the
+CLR surface; the namespace export only affects the `.d.ts` shape.
 
 ## Interface-compatible overloads
 

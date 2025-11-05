@@ -185,9 +185,36 @@ public static class ClassEmitter
             ? type.GetGenericArguments().Select(t => t.Name).ToList()
             : new List<string>();
 
-        // Phase 2: Detect but don't split statics yet (companion namespace approach makes TS2417 worse)
-        // TODO: Need different approach for classes in inheritance hierarchies
+        // Detect static property/method name collisions (TS2300)
+        // Remove conflicting static properties (keep methods, they're more important)
         CompanionNamespace? companion = null;
+        var nonNullProperties = properties.Where(p => p != null).Cast<TypeInfo.PropertyInfo>().ToList();
+        var staticPropertyNames = nonNullProperties.Where(p => p.IsStatic).Select(p => p.Name).ToHashSet();
+        var staticMethodNames = methods.Where(m => m.IsStatic).Select(m => m.Name).ToHashSet();
+        var nameCollisions = staticPropertyNames.Intersect(staticMethodNames).ToHashSet();
+
+        if (nameCollisions.Count > 0)
+        {
+            // Remove conflicting properties (TypeScript cannot disambiguate static property from static method)
+            var removedProperties = nonNullProperties
+                .Where(p => p.IsStatic && nameCollisions.Contains(p.Name))
+                .ToList();
+
+            // Keep only non-conflicting properties
+            var nonConflictingProperties = properties
+                .Where(p => p != null && !(p.IsStatic && nameCollisions.Contains(p.Name)))
+                .ToList();
+
+            properties.Clear();
+            properties.AddRange(nonConflictingProperties);
+
+            foreach (var prop in removedProperties)
+            {
+                var location = type.FullName ?? type.Name;
+                typeMapper.AddWarning($"[{location}.{prop.Name}] Removed static property - " +
+                    $"name collision with static method (TS2300)");
+            }
+        }
 
         return new ClassDeclaration(
             getTypeName(type),

@@ -29,8 +29,6 @@ public static class InterfaceEmitter
         // Phase 1: Check for diamond inheritance AFTER pruning
         if (InterfaceAnalysis.HasDiamondInheritance(type, out var diamondAncestors))
         {
-            Console.WriteLine($"[PHASE1] Diamond detected in {type.FullName}");
-            Console.WriteLine($"[PHASE1] Conflicting ancestors: {string.Join(", ", diamondAncestors.Select(a => a.FullName))}");
 
             // Generate _Base interface
             var baseInterface = InterfaceAnalysis.GenerateBaseInterface(
@@ -57,8 +55,6 @@ public static class InterfaceEmitter
             if (!intersectionAliases.ContainsKey(ns))
                 intersectionAliases[ns] = new List<IntersectionTypeAlias>();
             intersectionAliases[ns].Add(alias);
-
-            Console.WriteLine($"[PHASE1] Generated {getTypeName(type)}_Base interface + intersection alias");
 
             return baseInterface;
         }

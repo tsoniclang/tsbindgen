@@ -33,9 +33,10 @@ const DOTNET_RUNTIME_PATH = process.env.DOTNET_RUNTIME_PATH ||
 
 // Assemblies that MUST use runtime path (not ref-pack)
 const RUNTIME_ONLY_ASSEMBLIES = [
-    'System.Private.CoreLib',  // Requires MetadataLoadContext, doesn't work from ref-pack
-    'System.Private.Uri',      // Private implementation assembly, not in ref-pack
-    'System.Private.Xml'       // Private implementation assembly, not in ref-pack
+    'System.Private.CoreLib',     // Requires MetadataLoadContext, doesn't work from ref-pack
+    'System.Private.Uri',         // Private implementation assembly, not in ref-pack
+    'System.Private.Xml',         // Private implementation assembly, not in ref-pack
+    'System.Private.Xml.Linq'     // Private implementation assembly, not in ref-pack
 ];
 
 const BCL_ASSEMBLIES = [
@@ -51,6 +52,7 @@ const BCL_ASSEMBLIES = [
     'System.ComponentModel',
     'System.ComponentModel.Primitives',
     'System.ComponentModel.TypeConverter',
+    'System.ComponentModel.EventBasedAsync',
     'System.ObjectModel',
     'System.Reflection',
     'System.Memory',
@@ -87,6 +89,8 @@ const BCL_ASSEMBLIES = [
     'System.Net.Primitives',
     'System.Net.Http',
     'System.Net.Http.Json',
+    'System.Net.Requests',
+    'System.Net.WebHeaderCollection',
     'System.Net.Sockets',
     'System.Net.WebSockets',
     'System.Net.Security',
@@ -108,6 +112,7 @@ const BCL_ASSEMBLIES = [
     'System.Xml.Serialization',
     'System.Xml.XPath',
     'System.Private.Xml',
+    'System.Private.Xml.Linq',
 
     // Security
     'System.Security.Cryptography',
@@ -203,36 +208,8 @@ function generateTypes() {
     }
 }
 
-// NOTE: No longer copying hand-written core types - System.Private.CoreLib is now generated
-
-function createIntrinsicsFile() {
-    log('Creating _intrinsics.d.ts with branded numeric types...');
-
-    const intrinsicsContent = `// Intrinsic type definitions for .NET numeric types
-// This file provides branded numeric type aliases used across all BCL declarations.
-// ESM module exports for full module support.
-
-// Branded numeric types
-export type int = number & { __brand: "int" };
-export type uint = number & { __brand: "uint" };
-export type byte = number & { __brand: "byte" };
-export type sbyte = number & { __brand: "sbyte" };
-export type short = number & { __brand: "short" };
-export type ushort = number & { __brand: "ushort" };
-export type long = number & { __brand: "long" };
-export type ulong = number & { __brand: "ulong" };
-export type float = number & { __brand: "float" };
-export type double = number & { __brand: "double" };
-export type decimal = number & { __brand: "decimal" };
-
-// Phase 8B: Covariance helper for property type variance
-// Allows derived types to return more specific types than base/interface contracts
-export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };
-`;
-
-    fs.writeFileSync(path.join(TYPES_DIR, '_intrinsics.d.ts'), intrinsicsContent);
-    log('Created _intrinsics.d.ts');
-}
+// NOTE: @tsonic/types package must be installed for validation
+// Generated files import from '@tsonic/types/intrinsics.js'
 
 function createIndexFile() {
     log('Creating index.d.ts with ESM re-exports...');
@@ -288,6 +265,35 @@ function createTsConfig() {
     );
 }
 
+function installTsonicTypes() {
+    log('Installing @tsonic/types package...');
+
+    // Create a minimal package.json in validation directory
+    const packageJson = {
+        name: 'validation-temp',
+        version: '1.0.0',
+        private: true,
+        dependencies: {
+            '@tsonic/types': '^0.1.0'
+        }
+    };
+
+    fs.writeFileSync(
+        path.join(VALIDATION_DIR, 'package.json'),
+        JSON.stringify(packageJson, null, 2)
+    );
+
+    try {
+        execSync('npm install', {
+            cwd: VALIDATION_DIR,
+            stdio: 'pipe'
+        });
+        log('  ✓ @tsonic/types installed successfully');
+    } catch (err) {
+        throw new Error(`Failed to install @tsonic/types: ${err.message}`);
+    }
+}
+
 function runTypeScriptCompiler() {
     log('Running TypeScript compiler...');
     log('');
@@ -316,19 +322,24 @@ function runTypeScriptCompiler() {
             // Count different error types
             const syntaxErrors = (output.match(/error TS1\d{3}:/g) || []).length;
             const duplicateTypeErrors = (output.match(/error TS6200:/g) || []).length;
-            const semanticErrors = (output.match(/error TS2\d{3}:/g) || []).length;
+            const moduleErrors = (output.match(/error TS2307:/g) || []).length;
+            const semanticErrors = (output.match(/error TS2\d{3}:/g) || []).length - moduleErrors;
 
             const result = {
                 code,
                 output,
                 syntaxErrors,
                 duplicateTypeErrors,
+                moduleErrors,
                 semanticErrors,
-                totalErrors: syntaxErrors + duplicateTypeErrors + semanticErrors
+                totalErrors: syntaxErrors + duplicateTypeErrors + moduleErrors + semanticErrors
             };
 
             if (syntaxErrors > 0) {
                 // Syntax errors are CRITICAL - means our generator is broken
+                reject(result);
+            } else if (moduleErrors > 0) {
+                // Module resolution errors are CRITICAL - means dependencies are missing
                 reject(result);
             } else {
                 // Semantic/duplicate errors are expected when validating individual assemblies
@@ -381,24 +392,24 @@ async function main() {
         // Step 1: Clean and prepare
         cleanValidationDir();
 
-        // Step 2: Generate all types
+        // Step 2: Install @tsonic/types package (before generating types)
+        installTsonicTypes();
+
+        // Step 3: Generate all types
         generateTypes();
 
-        // Step 2.5: Create intrinsics file with branded types
-        createIntrinsicsFile();
-
-        // Step 3: Create index file
+        // Step 4: Create index file
         // SKIP: index.d.ts causes TS2308 namespace merging warnings (49 errors)
         // Users should import from specific assemblies instead of using barrel export
         // createIndexFile();
 
-        // Step 4: Create tsconfig
+        // Step 5: Create tsconfig
         createTsConfig();
 
-        // Step 5: Validate metadata files
+        // Step 6: Validate metadata files
         validateMetadataFiles();
 
-        // Step 6: Run TypeScript compiler
+        // Step 7: Run TypeScript compiler
         console.log('');
         log('Running TypeScript validation...');
         log('─'.repeat(64));
@@ -413,9 +424,11 @@ async function main() {
         console.log(`  All ${BCL_ASSEMBLIES.length} BCL assemblies generated successfully`);
         console.log('  All metadata files present');
         console.log('  ✓ No TypeScript syntax errors (TS1xxx)');
+        console.log('  ✓ No module resolution errors (TS2307)');
         console.log('');
         console.log('  Error breakdown:');
         console.log(`    - Syntax errors (TS1xxx): ${result.syntaxErrors} ✓`);
+        console.log(`    - Module errors (TS2307): ${result.moduleErrors} ✓`);
         console.log(`    - Duplicate types (TS6200): ${result.duplicateTypeErrors} (expected)`);
         console.log(`    - Semantic errors (TS2xxx): ${result.semanticErrors} (expected - missing cross-assembly refs)`);
         console.log('');
@@ -437,6 +450,7 @@ async function main() {
             },
             errors: {
                 syntax: result.syntaxErrors,
+                module: result.moduleErrors,
                 duplicate: result.duplicateTypeErrors,
                 semantic: result.semanticErrors,
                 total: result.totalErrors
@@ -457,7 +471,26 @@ async function main() {
         console.log('================================================================');
         console.log('');
 
-        if (err.syntaxErrors !== undefined) {
+        if (err.moduleErrors !== undefined && err.moduleErrors > 0) {
+            // TypeScript validation failed with module resolution errors
+            console.log(`  ✗ ${err.moduleErrors} TypeScript module resolution errors (TS2307) found`);
+            console.log('');
+            console.log('  These are CRITICAL errors that indicate required dependencies');
+            console.log('  are missing. Install @tsonic/types package to resolve.');
+            console.log('');
+            console.log('  First few module errors:');
+            console.log('');
+
+            const moduleErrorLines = err.output.split('\n')
+                .filter(line => line.includes('error TS2307'))
+                .slice(0, 10);
+
+            moduleErrorLines.forEach(line => console.log(`    ${line}`));
+
+            if (moduleErrorLines.length < err.moduleErrors) {
+                console.log(`    ... and ${err.moduleErrors - moduleErrorLines.length} more`);
+            }
+        } else if (err.syntaxErrors !== undefined && err.syntaxErrors > 0) {
             // TypeScript validation failed with syntax errors
             console.log(`  ✗ ${err.syntaxErrors} TypeScript syntax errors (TS1xxx) found`);
             console.log('');

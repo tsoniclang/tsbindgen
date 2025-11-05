@@ -5,9 +5,12 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "validate": "node Scripts/validate.js"
+    "validate": "node scripts/validate.js"
   },
   "devDependencies": {
     "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@tsonic/types": "^0.1.0"
   }
 }

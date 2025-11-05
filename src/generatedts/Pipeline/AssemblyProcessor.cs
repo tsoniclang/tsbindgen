@@ -41,7 +41,25 @@ public sealed class AssemblyProcessor
         // Phase 1: Clear intersection aliases for this assembly
         _intersectionAliases.Clear();
 
-        var types = assembly.GetExportedTypes()
+        // Get both exported types (assembly's own types) and forwarded types
+        var exportedTypes = assembly.GetExportedTypes();
+
+        Type[] forwardedTypes;
+        try
+        {
+            forwardedTypes = assembly.GetForwardedTypes();
+        }
+        catch (System.Reflection.ReflectionTypeLoadException ex)
+        {
+            // Some forwarded types couldn't be loaded due to missing dependencies
+            // (e.g., System.Security.Permissions not in ref pack)
+            // Use the types that DID load successfully
+            forwardedTypes = ex.Types.Where(t => t != null).ToArray()!;
+        }
+
+        var allTypes = exportedTypes.Concat(forwardedTypes).Distinct();
+
+        var types = allTypes
             .Where(ShouldIncludeType)
             .OrderBy(t => t.Namespace)
             .ThenBy(t => t.Name)
@@ -70,7 +88,8 @@ public sealed class AssemblyProcessor
                 }
                 catch (Exception ex)
                 {
-                    _typeMapper.AddWarning($"Failed to process type {type.FullName}: {ex.Message}\nStack: {ex.StackTrace}");
+                    var location = $"{assembly.GetName().Name}::{type.FullName}";
+                    _typeMapper.AddWarning($"[{location}] Failed to process type: {ex.Message}");
                 }
             }
 
@@ -209,7 +228,25 @@ public sealed class AssemblyProcessor
     /// </summary>
     public AssemblyMetadata ProcessAssemblyMetadata(Assembly assembly)
     {
-        var types = assembly.GetExportedTypes()
+        // Get both exported types (assembly's own types) and forwarded types
+        var exportedTypes = assembly.GetExportedTypes();
+
+        Type[] forwardedTypes;
+        try
+        {
+            forwardedTypes = assembly.GetForwardedTypes();
+        }
+        catch (System.Reflection.ReflectionTypeLoadException ex)
+        {
+            // Some forwarded types couldn't be loaded due to missing dependencies
+            // (e.g., System.Security.Permissions not in ref pack)
+            // Use the types that DID load successfully
+            forwardedTypes = ex.Types.Where(t => t != null).ToArray()!;
+        }
+
+        var allTypes = exportedTypes.Concat(forwardedTypes).Distinct();
+
+        var types = allTypes
             .Where(ShouldIncludeType)
             .OrderBy(t => t.Namespace)
             .ThenBy(t => t.Name)
@@ -230,7 +267,8 @@ public sealed class AssemblyProcessor
             }
             catch (Exception ex)
             {
-                _typeMapper.AddWarning($"Failed to process metadata for type {type.FullName}: {ex.Message}");
+                var location = $"{assembly.GetName().Name}::{type.FullName}";
+                _typeMapper.AddWarning($"[{location}] Failed to process metadata for type: {ex.Message}");
             }
         }
 

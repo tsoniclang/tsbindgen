@@ -184,6 +184,39 @@ public class TypeForwardingResolver
     }
 
     /// <summary>
+    /// Gets the list of specific types that are forwarded by this assembly.
+    /// Returns a dictionary mapping target assembly names to lists of forwarded types.
+    /// </summary>
+    public static Dictionary<string, List<Type>> GetForwardedTypes(Assembly assembly)
+    {
+        var forwardedTypes = new Dictionary<string, List<Type>>();
+
+        try
+        {
+            var types = assembly.GetForwardedTypes();
+
+            foreach (var type in types)
+            {
+                var targetAssembly = type.Assembly.GetName().Name;
+                if (targetAssembly != null)
+                {
+                    if (!forwardedTypes.ContainsKey(targetAssembly))
+                    {
+                        forwardedTypes[targetAssembly] = new List<Type>();
+                    }
+                    forwardedTypes[targetAssembly].Add(type);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  Warning: Could not read forwarded types: {ex.Message}");
+        }
+
+        return forwardedTypes;
+    }
+
+    /// <summary>
     /// Attempts to find and load a target assembly from common .NET locations.
     /// </summary>
     public static Assembly? TryLoadTargetAssembly(string assemblyName, string originalAssemblyPath)

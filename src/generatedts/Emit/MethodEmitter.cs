@@ -18,9 +18,38 @@ public static class MethodEmitter
         // Skip explicit interface implementations
         if (method.Name.Contains('.'))
         {
-            typeMapper.AddWarning($"Skipped explicit interface implementation {declaringType.Name}.{method.Name} - " +
+            var location = declaringType.FullName ?? declaringType.Name;
+            typeMapper.AddWarning($"[{location}.{method.Name}] Skipped explicit interface implementation - " +
                 $"method name contains dot (TS1434: Unexpected keyword or identifier)");
             return null;
+        }
+
+        // Skip methods with non-public/non-exported parameter or return types
+        // (e.g., AwaitUnsafeOnCompleted(IAsyncStateMachineBox) where IAsyncStateMachineBox is internal)
+        // Check return type
+        var returnType = method.ReturnType;
+        if (!returnType.IsPublic && !returnType.IsNestedPublic && returnType != typeof(void))
+        {
+            var location = declaringType.FullName ?? declaringType.Name;
+            var returnTypeLocation = returnType.FullName ?? returnType.Name;
+            typeMapper.AddWarning($"[{location}.{method.Name}] Skipped method - " +
+                $"return type {returnTypeLocation} is not public");
+            return null;
+        }
+
+        // Check parameter types
+        foreach (var param in method.GetParameters())
+        {
+            var paramType = param.ParameterType;
+
+            if (!paramType.IsPublic && !paramType.IsNestedPublic)
+            {
+                var location = declaringType.FullName ?? declaringType.Name;
+                var paramTypeLocation = paramType.FullName ?? paramType.Name;
+                typeMapper.AddWarning($"[{location}.{method.Name}] Skipped method - " +
+                    $"parameter '{param.Name}' type {paramTypeLocation} is not public");
+                return null;
+            }
         }
 
         trackTypeDependency(method.ReturnType);
