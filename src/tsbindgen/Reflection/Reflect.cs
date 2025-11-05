@@ -5,6 +5,78 @@ using tsbindgen.Snapshot;
 namespace tsbindgen.Reflection;
 
 /// <summary>
+/// Parsed CLR type name with namespace and type name separated.
+/// Handles generic arguments, arrays, and pointers.
+/// </summary>
+internal readonly struct ParsedClrType
+{
+    public string? AssemblyAlias { get; }
+    public string? Namespace { get; }
+    public string TypeName { get; }
+    public string FullType { get; }
+
+    public static ParsedClrType Parse(string clrType)
+    {
+        // Strip generic arguments, arrays, pointers for namespace extraction
+        var cleanedType = clrType;
+        var genericStart = cleanedType.IndexOf('<');
+        if (genericStart >= 0)
+        {
+            cleanedType = cleanedType.Substring(0, genericStart);
+        }
+
+        while (cleanedType.EndsWith("[]"))
+        {
+            cleanedType = cleanedType.Substring(0, cleanedType.Length - 2);
+        }
+        if (cleanedType.EndsWith("*"))
+        {
+            cleanedType = cleanedType.Substring(0, cleanedType.Length - 1);
+        }
+
+        // Parse: "AssemblyAlias.Namespace.Parts.TypeName" or "Namespace.Parts.TypeName"
+        var parts = cleanedType.Split('.');
+
+        if (parts.Length == 1)
+        {
+            // Just a type name, no namespace
+            return new ParsedClrType(null, null, parts[0], clrType);
+        }
+
+        // Check if first part is an assembly alias (contains underscores)
+        bool hasCrossAssemblyPrefix = parts[0].Contains('_');
+
+        if (hasCrossAssemblyPrefix && parts.Length >= 3)
+        {
+            // Cross-assembly: ["AssemblyAlias", "Namespace", "Parts", "TypeName"]
+            var assembly = parts[0];
+            var typeName = parts[^1];
+            var namespaceParts = parts[1..^1];
+            var ns = string.Join(".", namespaceParts);
+            return new ParsedClrType(assembly, ns, typeName, clrType);
+        }
+        else if (parts.Length >= 2)
+        {
+            // Same assembly: ["Namespace", "Parts", "TypeName"]
+            var typeName = parts[^1];
+            var namespaceParts = parts[..^1];
+            var ns = string.Join(".", namespaceParts);
+            return new ParsedClrType(null, ns, typeName, clrType);
+        }
+
+        return new ParsedClrType(null, null, cleanedType, clrType);
+    }
+
+    private ParsedClrType(string? assemblyAlias, string? ns, string typeName, string fullType)
+    {
+        AssemblyAlias = assemblyAlias;
+        Namespace = ns;
+        TypeName = typeName;
+        FullType = fullType;
+    }
+}
+
+/// <summary>
 /// Pure functional reflection over .NET assemblies.
 /// Extracts CLR metadata and produces AssemblySnapshot (pure data).
 /// </summary>
@@ -204,11 +276,28 @@ public static class Reflect
     private static MethodSnapshot ReflectMethod(MethodInfo method)
     {
         var assembly = method.DeclaringType?.Assembly;
+
+        // Determine if this is an override (GetBaseDefinition not supported in MetadataLoadContext)
+        var isOverride = false;
+        if (method.IsVirtual)
+        {
+            try
+            {
+                isOverride = method.GetBaseDefinition() != method;
+            }
+            catch (NotSupportedException)
+            {
+                // MetadataLoadContext doesn't support GetBaseDefinition()
+                // We'll conservatively mark as non-override
+                isOverride = false;
+            }
+        }
+
         return new MethodSnapshot(
             method.Name,
             method.IsStatic,
             method.IsVirtual,
-            method.IsVirtual && method.GetBaseDefinition() != method,
+            isOverride,
             method.IsAbstract,
             DetermineVisibility(method),
             ReflectGenericParameters(method),
@@ -231,15 +320,30 @@ public static class Reflect
 
         var isStatic = (getter?.IsStatic ?? setter?.IsStatic) ?? false;
         var isVirtual = (getter?.IsVirtual ?? setter?.IsVirtual) ?? false;
-        var isOverride = isVirtual && ((getter?.GetBaseDefinition() != getter) || (setter?.GetBaseDefinition() != setter));
+
+        // Determine if this is an override (GetBaseDefinition not supported in MetadataLoadContext)
+        var isOverride = false;
+        if (isVirtual)
+        {
+            try
+            {
+                isOverride = (getter?.GetBaseDefinition() != getter) || (setter?.GetBaseDefinition() != setter);
+            }
+            catch (NotSupportedException)
+            {
+                // MetadataLoadContext doesn't support GetBaseDefinition()
+                // We'll conservatively mark as non-override
+                isOverride = false;
+            }
+        }
+
         var visibility = DetermineVisibility(getter ?? setter!);
 
         var typeRef = CreateTypeReference(property.PropertyType, assembly!);
 
         return new PropertySnapshot(
             property.Name,
-            typeRef.ClrType,
-            typeRef.TsType,
+            typeRef,
             setter == null,
             isStatic,
             isVirtual,
@@ -262,7 +366,6 @@ public static class Reflect
         return new FieldSnapshot(
             field.Name,
             typeRef.ClrType,
-            typeRef.TsType,
             field.IsInitOnly,
             field.IsStatic,
             DetermineVisibility(field),
@@ -284,7 +387,6 @@ public static class Reflect
         return new EventSnapshot(
             evt.Name,
             typeRef.ClrType,
-            typeRef.TsType,
             addMethod?.IsStatic ?? false,
             DetermineVisibility(addMethod!),
             new MemberBinding(
@@ -295,11 +397,18 @@ public static class Reflect
 
     /// <summary>
     /// Reflects enum members.
+    /// Uses GetFields() for MetadataLoadContext compatibility instead of Enum.GetValues()/Parse().
     /// </summary>
     private static IReadOnlyList<EnumMember> ReflectEnumMembers(Type enumType)
     {
-        return Enum.GetNames(enumType)
-            .Select(name => new EnumMember(name, Convert.ToInt64(Enum.Parse(enumType, name))))
+        // Use GetFields() for MetadataLoadContext compatibility
+        return enumType.GetFields(BindingFlags.Public | BindingFlags.Static)
+            .Select(f =>
+            {
+                var value = f.GetRawConstantValue();
+                var longValue = value != null ? Convert.ToInt64(value) : 0L;
+                return new EnumMember(f.Name, longValue);
+            })
             .ToList();
     }
 
@@ -353,28 +462,43 @@ public static class Reflect
                    param.ParameterType.IsByRef ? ParameterKind.Ref :
                    ParameterKind.In;
 
+        // Check for ParamArrayAttribute (GetCustomAttribute not supported in MetadataLoadContext)
+        var isParams = false;
+        try
+        {
+            isParams = param.GetCustomAttribute<ParamArrayAttribute>() != null;
+        }
+        catch (Exception)
+        {
+            // MetadataLoadContext doesn't support GetCustomAttribute for parameters
+            // Throws InvalidOperationException: "The requested operation cannot be used on objects loaded by a MetadataLoadContext."
+            isParams = false;
+        }
+
         return new ParameterSnapshot(
             param.Name ?? $"arg{param.Position}",
-            typeRef.ClrType,
-            typeRef.TsType,
+            typeRef,
             kind,
             param.IsOptional,
-            param.DefaultValue?.ToString(),
-            param.GetCustomAttribute<ParamArrayAttribute>() != null);
+            param.HasDefaultValue ? (param.RawDefaultValue?.ToString() ?? "") : "",
+            isParams);
     }
 
     /// <summary>
-    /// Creates a type reference from a System.Type.
+    /// Creates a TypeReference from a .NET Type using reflection.
+    /// Recursively parses generic arguments.
     /// </summary>
     private static TypeReference CreateTypeReference(Type type, Assembly currentAssembly)
     {
         // Handle ref/out parameters - strip the & suffix
         var actualType = type.IsByRef ? type.GetElementType()! : type;
 
-        // Handle pointer types - map to 'any'
+        // Handle pointer types
         if (actualType.IsPointer)
         {
-            return new TypeReference("void*", "any", null);
+            var elementType = actualType.GetElementType()!;
+            var elementRef = CreateTypeReference(elementType, currentAssembly);
+            return TypeReference.CreatePointer(elementRef);
         }
 
         // Handle array types
@@ -383,67 +507,62 @@ public static class Reflect
             var elementType = actualType.GetElementType()!;
             var elementRef = CreateTypeReference(elementType, currentAssembly);
             var rank = actualType.GetArrayRank();
-            var brackets = string.Concat(Enumerable.Repeat("[]", rank));
-            return new TypeReference(
-                elementRef.ClrType + brackets,
-                elementRef.TsType + brackets,
-                elementRef.Assembly
-            );
+            return TypeReference.CreateArray(elementRef, rank);
         }
 
         var assemblyName = actualType.Assembly.GetName().Name;
         var isCrossAssembly = actualType.Assembly != currentAssembly;
-        var assemblyAlias = isCrossAssembly ? assemblyName?.Replace(".", "_") : null;
+        var assembly = isCrossAssembly ? assemblyName?.Replace(".", "_") : null;
 
-        // Format type name with proper generic syntax
-        var typeName = FormatTypeName(actualType, currentAssembly);
-        var qualifiedName = assemblyAlias != null ? $"{assemblyAlias}.{typeName}" : typeName;
+        // Get namespace and type name
+        var ns = actualType.Namespace;
+        var typeName = actualType.Name.Replace('+', '.');
 
-        return new TypeReference(qualifiedName, qualifiedName, assemblyAlias);
+        // Handle generic types - recursively create TypeReferences for generic arguments
+        if (actualType.IsGenericType)
+        {
+            // Strip generic arity from type name (e.g., "List`1" -> "List_1")
+            typeName = typeName.Replace('`', '_');
+
+            var genericArgs = actualType.GetGenericArguments()
+                .Select(arg => CreateTypeReference(arg, currentAssembly))
+                .ToList();
+
+            return TypeReference.CreateGeneric(ns, typeName, genericArgs, assembly);
+        }
+
+        // Simple type (no generics)
+        return TypeReference.CreateSimple(ns, typeName, assembly);
     }
 
     /// <summary>
-    /// Formats a type name with generic arity and arguments for TypeScript.
+    /// Formats a type name with generic arity and arguments.
     /// Converts: List`1[[System.Int32, ...]] to List_1<System.Int32>
     /// Converts nested types: Outer+Inner to Outer.Inner
-    /// For cross-assembly types: includes full namespace (System.Linq.Expressions.ExpressionType)
-    /// For same-assembly types: includes full namespace
-    /// Note: CreateTypeReference will add assembly alias prefix for cross-assembly types
+    /// Always includes full namespace path (e.g., System.Collections.Generic.List_1)
     /// </summary>
     private static string FormatTypeName(Type type, Assembly currentAssembly)
     {
-        var isCrossAssembly = type.Assembly != currentAssembly;
-
-        // Non-generic types
+        // Non-generic types - always use full namespace path
         if (!type.IsGenericType)
         {
-            // For cross-assembly types, use simple name (namespace handled by import alias)
-            // For same-assembly types, use full namespace path
-            var fullName = isCrossAssembly
-                ? GetSimpleTypeName(type)
-                : (type.FullName ?? type.Name).Replace('+', '.');
-            return fullName;
+            return (type.FullName ?? type.Name).Replace('+', '.');
         }
 
         // Generic type definition (e.g., List`1): add underscore arity, replace + with .
         if (type.IsGenericTypeDefinition)
         {
-            var name = isCrossAssembly
-                ? GetSimpleTypeName(type).Replace('`', '_')
-                : (type.FullName ?? type.Name).Replace('`', '_').Replace('+', '.');
-            return name;
+            return (type.FullName ?? type.Name).Replace('`', '_').Replace('+', '.');
         }
 
         // Constructed generic type (e.g., List<int>): format with TypeScript syntax
         var genericDef = type.GetGenericTypeDefinition();
-        var baseName = isCrossAssembly
-            ? GetSimpleTypeName(genericDef).Replace('`', '_')
-            : (genericDef.FullName ?? genericDef.Name).Replace('`', '_').Replace('+', '.');
+        var baseName = (genericDef.FullName ?? genericDef.Name).Replace('`', '_').Replace('+', '.');
 
         var typeArgs = type.GetGenericArguments();
         var formattedArgs = typeArgs.Select(arg => {
             var argRef = CreateTypeReference(arg, currentAssembly);
-            return argRef.TsType;
+            return argRef.ClrType;
         });
 
         return $"{baseName}<{string.Join(", ", formattedArgs)}>";
@@ -476,6 +595,7 @@ public static class Reflect
 
     /// <summary>
     /// Extracts cross-assembly dependencies from type snapshots.
+    /// Recursively extracts from all TypeReferences including generic arguments.
     /// </summary>
     private static IReadOnlyList<DependencyRef> ExtractDependencies(List<TypeSnapshot> types)
     {
@@ -492,46 +612,39 @@ public static class Reflect
                 ExtractTypeReferenceDependencies(method.ReturnType, deps);
                 foreach (var param in method.Parameters)
                 {
-                    // Extract from clrType string
-                    if (param.ClrType.Contains('.'))
-                        ExtractFromTypeString(param.ClrType, deps);
+                    ExtractTypeReferenceDependencies(param.Type, deps);
                 }
             }
 
             foreach (var prop in type.Members.Properties)
             {
-                if (prop.ClrType.Contains('.'))
-                    ExtractFromTypeString(prop.ClrType, deps);
+                ExtractTypeReferenceDependencies(prop.Type, deps);
             }
         }
 
-        return deps.Select(d => new DependencyRef(d.Assembly, d.Namespace)).ToList();
+        return deps.Select(d => new DependencyRef(d.Namespace, d.Assembly)).ToList();
     }
 
+    /// <summary>
+    /// Recursively extracts namespace dependencies from a TypeReference.
+    /// Handles generic arguments recursively.
+    /// </summary>
     private static void ExtractTypeReferenceDependencies(
         TypeReference? typeRef,
         HashSet<(string, string)> deps)
     {
-        if (typeRef?.Assembly == null) return;
+        if (typeRef == null) return;
 
-        var parts = typeRef.ClrType.Split('.');
-        if (parts.Length >= 2)
+        // Extract namespace dependency for this type
+        if (typeRef.Assembly != null && typeRef.Namespace != null)
         {
-            var ns = string.Join(".", parts.Take(parts.Length - 1));
-            deps.Add((typeRef.Assembly, ns));
+            deps.Add((typeRef.Assembly, typeRef.Namespace));
         }
-    }
 
-    private static void ExtractFromTypeString(string typeString, HashSet<(string, string)> deps)
-    {
-        // Parse "AssemblyAlias.Namespace.Type" format
-        var parts = typeString.Split('.');
-        if (parts.Length >= 3 && parts[0].Contains('_'))
+        // Recursively extract dependencies from generic arguments
+        foreach (var genericArg in typeRef.GenericArgs)
         {
-            // Cross-assembly reference
-            var assembly = parts[0];
-            var ns = string.Join(".", parts.Skip(1).Take(parts.Length - 2));
-            deps.Add((assembly, ns));
+            ExtractTypeReferenceDependencies(genericArg, deps);
         }
     }
 

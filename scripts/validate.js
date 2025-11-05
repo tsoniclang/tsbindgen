@@ -203,6 +203,9 @@ async function main() {
     console.log('================================================================');
     console.log('');
 
+    // Check for --skip-tsc flag
+    const skipTsc = process.argv.includes('--skip-tsc');
+
     try {
         // Step 1: Clean and prepare
         cleanValidationDir();
@@ -216,7 +219,21 @@ async function main() {
         // Step 4: Validate metadata files
         validateMetadataFiles();
 
-        // Step 5: Run TypeScript compiler
+        // Step 5: Run TypeScript compiler (optional)
+        if (skipTsc) {
+            console.log('');
+            console.log('================================================================');
+            console.log('GENERATION COMPLETE (TypeScript validation skipped)');
+            console.log('================================================================');
+            console.log('');
+            console.log(`  Validation directory: ${VALIDATION_DIR}`);
+            console.log(`  Namespaces generated: check ${path.join(VALIDATION_DIR, 'namespaces')}`);
+            console.log('');
+            console.log('  Run without --skip-tsc to validate TypeScript compilation');
+            console.log('');
+            process.exit(0);
+        }
+
         console.log('');
         const result = runTypeScriptCompiler();
 

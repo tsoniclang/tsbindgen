@@ -63,14 +63,14 @@ public static class ModelBuilder
         var baseType = snapshot.BaseType != null
             ? new TypeReferenceModel(
                 snapshot.BaseType.ClrType,
-                RewriteTypeReference(snapshot.BaseType.TsType, currentNamespace, importAliases),
+                RewriteTypeReference(snapshot.BaseType.ClrType, currentNamespace, importAliases),
                 snapshot.BaseType.Assembly)
             : null;
 
         var implements = snapshot.Implements
             .Select(i => new TypeReferenceModel(
                 i.ClrType,
-                RewriteTypeReference(i.TsType, currentNamespace, importAliases),
+                RewriteTypeReference(i.ClrType, currentNamespace, importAliases),
                 i.Assembly))
             .ToList();
 
@@ -97,7 +97,7 @@ public static class ModelBuilder
             snapshot.DelegateReturnType != null
                 ? new TypeReferenceModel(
                     snapshot.DelegateReturnType.ClrType,
-                    RewriteTypeReference(snapshot.DelegateReturnType.TsType, currentNamespace, importAliases),
+                    RewriteTypeReference(snapshot.DelegateReturnType.ClrType, currentNamespace, importAliases),
                     snapshot.DelegateReturnType.Assembly)
                 : null);
     }
@@ -157,7 +157,7 @@ public static class ModelBuilder
             snapshot.Parameters.Select(p => BuildParameter(p, currentNamespace, importAliases)).ToList(),
             new TypeReferenceModel(
                 snapshot.ReturnType.ClrType,
-                RewriteTypeReference(snapshot.ReturnType.TsType, currentNamespace, importAliases),
+                RewriteTypeReference(snapshot.ReturnType.ClrType, currentNamespace, importAliases),
                 snapshot.ReturnType.Assembly),
             snapshot.Binding);
     }
@@ -170,7 +170,7 @@ public static class ModelBuilder
             snapshot.ClrName,
             tsAlias,
             snapshot.ClrType,
-            RewriteTypeReference(snapshot.TsType, currentNamespace, importAliases),
+            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
             snapshot.IsReadOnly,
             snapshot.IsStatic,
             snapshot.IsVirtual,
@@ -187,7 +187,7 @@ public static class ModelBuilder
             snapshot.ClrName,
             tsAlias,
             snapshot.ClrType,
-            RewriteTypeReference(snapshot.TsType, currentNamespace, importAliases),
+            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
             snapshot.IsReadOnly,
             snapshot.IsStatic,
             snapshot.Visibility,
@@ -202,7 +202,7 @@ public static class ModelBuilder
             snapshot.ClrName,
             tsAlias,
             snapshot.ClrType,
-            RewriteTypeReference(snapshot.TsType, currentNamespace, importAliases),
+            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
             snapshot.IsStatic,
             snapshot.Visibility,
             snapshot.Binding);
@@ -213,7 +213,7 @@ public static class ModelBuilder
         return new ParameterModel(
             snapshot.Name,
             snapshot.ClrType,
-            RewriteTypeReference(snapshot.TsType, currentNamespace, importAliases),
+            RewriteTypeReference(snapshot.ClrType, currentNamespace, importAliases),
             snapshot.Kind,
             snapshot.IsOptional,
             snapshot.DefaultValue,
@@ -223,7 +223,7 @@ public static class ModelBuilder
     /// <summary>
     /// Rewrites type references based on namespace context.
     /// - Same namespace: "Microsoft.CSharp.RuntimeBinder.CSharpBinderFlags" -> "CSharpBinderFlags"
-    /// - Imported namespace: "Microsoft.VisualBasic.CompareMethod" -> "Microsoft_VisualBasic.CompareMethod"
+    /// - Imported namespace: "Microsoft.VisualBasic.CompareMethod" -> "Microsoft$VisualBasic.CompareMethod"
     /// - Other: leave as-is
     /// Handles generic types recursively.
     /// </summary>
@@ -275,24 +275,42 @@ public static class ModelBuilder
 
     private static string RewriteSimpleType(string tsType, string currentNamespace, HashSet<string> importAliases)
     {
-        // Case 1: Same namespace - strip namespace prefix
-        if (tsType.StartsWith(currentNamespace + "."))
+        // Extract array suffixes ([], [][], etc.)
+        var arraySuffix = "";
+        var baseType = tsType;
+        while (baseType.EndsWith("[]"))
         {
-            return tsType.Substring(currentNamespace.Length + 1);
+            arraySuffix += "[]";
+            baseType = baseType.Substring(0, baseType.Length - 2);
         }
 
-        // Case 2: Imported namespace - rewrite with import alias
-        foreach (var ns in importAliases.OrderByDescending(n => n.Length))
+        // Handle pointer types - TypeScript doesn't have pointer syntax, map to 'any'
+        if (baseType.EndsWith("*"))
         {
-            if (tsType.StartsWith(ns + ".") || tsType == ns)
-            {
-                var alias = ns.Replace(".", "_");
-                return alias + tsType.Substring(ns.Length);
-            }
+            return "any" + arraySuffix;
         }
 
-        // Case 3: Other namespace - leave as-is
-        return tsType;
+        // Special case: primitive types (no dots) - no rewriting needed
+        if (!baseType.Contains("."))
+        {
+            return baseType + arraySuffix;
+        }
+
+        // All namespace-qualified types should use the $ separator for TypeScript
+        // This includes types in the current namespace (e.g., System.ValueType -> System$ValueType)
+        // because we're generating flat modules, not ambient namespaces
+
+        // Replace . with $ in the namespace portion (everything before the last .)
+        var lastDot = baseType.LastIndexOf('.');
+        if (lastDot > 0)
+        {
+            var namespacePart = baseType.Substring(0, lastDot);
+            var typePart = baseType.Substring(lastDot + 1);
+            return namespacePart.Replace(".", "$") + "." + typePart + arraySuffix;
+        }
+
+        // No namespace prefix - just return as-is
+        return baseType + arraySuffix;
     }
 
     private static List<string> ParseTypeArguments(string typeArgsText)

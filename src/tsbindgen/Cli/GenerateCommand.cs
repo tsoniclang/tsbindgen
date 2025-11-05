@@ -265,7 +265,7 @@ public static class GenerateCommand
                     var nsSnapshot = new NamespaceSnapshot(
                         bundle.ClrName,
                         bundle.Types,
-                        bundle.Imports.SelectMany(kvp => kvp.Value.Select(ns => new DependencyRef(kvp.Key, ns))).ToList(),
+                        bundle.Imports.SelectMany(kvp => kvp.Value.Select(ns => new DependencyRef(ns, kvp.Key))).ToList(),
                         bundle.Diagnostics);
 
                     await SnapshotIO.WriteNamespaceSnapshot(nsSnapshot, nsPath);

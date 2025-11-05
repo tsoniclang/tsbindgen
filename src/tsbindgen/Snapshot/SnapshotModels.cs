@@ -88,14 +88,18 @@ public sealed record MethodSnapshot(
 /// </summary>
 public sealed record PropertySnapshot(
     string ClrName,
-    string ClrType,
-    string TsType,
+    TypeReference Type,
     bool IsReadOnly,
     bool IsStatic,
     bool IsVirtual,
     bool IsOverride,
     string Visibility,
-    MemberBinding Binding);
+    MemberBinding Binding)
+{
+    // Backward compatibility property
+    [JsonIgnore]
+    public string ClrType => Type.ClrType;
+};
 
 /// <summary>
 /// Snapshot of a constructor.
@@ -110,7 +114,6 @@ public sealed record ConstructorSnapshot(
 public sealed record FieldSnapshot(
     string ClrName,
     string ClrType,
-    string TsType,
     bool IsReadOnly,
     bool IsStatic,
     string Visibility,
@@ -122,18 +125,100 @@ public sealed record FieldSnapshot(
 public sealed record EventSnapshot(
     string ClrName,
     string ClrType,
-    string TsType,
     bool IsStatic,
     string Visibility,
     MemberBinding Binding);
 
 /// <summary>
-/// Type reference with both CLR and TS representations.
+/// Type reference - recursive structure for CLR types.
+/// Fully parsed with namespace, type name, generic arguments, arrays, and pointers.
 /// </summary>
 public sealed record TypeReference(
-    string ClrType,
-    string TsType,
-    string? Assembly = null);
+    string? Namespace,                           // "System" (null if no namespace or primitive)
+    string TypeName,                             // "Nullable_1", "Int32", "T" (generic param)
+    IReadOnlyList<TypeReference> GenericArgs,    // Recursive: generic type arguments
+    int ArrayRank,                                // 0 = not array, 1 = [], 2 = [][], etc.
+    bool IsPointer,                              // true if pointer type (*)
+    string? Assembly = null)                     // Assembly alias for cross-assembly refs
+{
+    /// <summary>
+    /// Gets the full CLR type string representation.
+    /// Reconstructs the original type string from parsed components.
+    /// </summary>
+    public string ClrType
+    {
+        get
+        {
+            var sb = new System.Text.StringBuilder();
+
+            // Namespace.TypeName
+            if (Namespace != null)
+            {
+                sb.Append(Namespace);
+                sb.Append('.');
+            }
+            sb.Append(TypeName);
+
+            // Generic arguments
+            if (GenericArgs.Count > 0)
+            {
+                sb.Append('<');
+                for (int i = 0; i < GenericArgs.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(GenericArgs[i].ClrType);
+                }
+                sb.Append('>');
+            }
+
+            // Pointer
+            if (IsPointer)
+            {
+                sb.Append('*');
+            }
+
+            // Arrays
+            for (int i = 0; i < ArrayRank; i++)
+            {
+                sb.Append("[]");
+            }
+
+            return sb.ToString();
+        }
+    }
+
+    /// <summary>
+    /// Creates a simple TypeReference (no generics, arrays, pointers).
+    /// </summary>
+    public static TypeReference CreateSimple(string? ns, string typeName, string? assembly = null)
+    {
+        return new TypeReference(ns, typeName, Array.Empty<TypeReference>(), 0, false, assembly);
+    }
+
+    /// <summary>
+    /// Creates a generic TypeReference.
+    /// </summary>
+    public static TypeReference CreateGeneric(string? ns, string typeName, IReadOnlyList<TypeReference> genericArgs, string? assembly = null)
+    {
+        return new TypeReference(ns, typeName, genericArgs, 0, false, assembly);
+    }
+
+    /// <summary>
+    /// Creates an array TypeReference from an element type.
+    /// </summary>
+    public static TypeReference CreateArray(TypeReference elementType, int rank)
+    {
+        return new TypeReference(elementType.Namespace, elementType.TypeName, elementType.GenericArgs, rank, elementType.IsPointer, elementType.Assembly);
+    }
+
+    /// <summary>
+    /// Creates a pointer TypeReference from an element type.
+    /// </summary>
+    public static TypeReference CreatePointer(TypeReference elementType)
+    {
+        return new TypeReference(elementType.Namespace, elementType.TypeName, elementType.GenericArgs, elementType.ArrayRank, true, elementType.Assembly);
+    }
+};
 
 /// <summary>
 /// Generic parameter with constraints and variance.
@@ -156,12 +241,16 @@ public enum Variance
 /// </summary>
 public sealed record ParameterSnapshot(
     string Name,
-    string ClrType,
-    string TsType,
+    TypeReference Type,
     ParameterKind Kind,
     bool IsOptional,
     string? DefaultValue,
-    bool IsParams);
+    bool IsParams)
+{
+    // Backward compatibility property
+    [JsonIgnore]
+    public string ClrType => Type.ClrType;
+};
 
 [JsonConverter(typeof(JsonStringEnumConverter))]
 public enum ParameterKind

@@ -18,19 +18,19 @@ public static class TypeScriptEmit
         builder.AppendLine($"// Generated from {model.SourceAssemblies.Count} assembly(ies)");
         builder.AppendLine();
 
-        // Imports - using named imports from other modules
+        // Imports - collect all unique namespaces from all assemblies
         if (model.Imports.Count > 0)
         {
-            foreach (var (assembly, namespaces) in model.Imports.OrderBy(kvp => kvp.Key))
-            {
-                foreach (var ns in namespaces.OrderBy(n => n))
-                {
-                    // Skip self-references
-                    if (ns == model.ClrName) continue;
+            var allNamespaces = model.Imports
+                .SelectMany(kvp => kvp.Value)
+                .Where(ns => ns != model.ClrName) // Skip self-references
+                .Distinct()
+                .OrderBy(ns => ns);
 
-                    var nsAlias = ns.Replace(".", "_");
-                    builder.AppendLine($"import type * as {nsAlias} from \"../{ns}/index.js\";");
-                }
+            foreach (var ns in allNamespaces)
+            {
+                var nsAlias = ns.Replace(".", "$");
+                builder.AppendLine($"import type * as {nsAlias} from \"../{ns}/index.js\";");
             }
             builder.AppendLine();
         }
