@@ -21,39 +21,32 @@ The runtime loader should look for the `.bindings.json` next to the `.metadata.j
 
 ```json
 {
-  "assembly": "System.Linq",
-  "namespaces": [
-    {
-      "name": "systemLinq",
-      "alias": "System.Linq",
-      "types": [
-        {
-          "name": "enumerable",
-          "alias": "Enumerable",
-          "kind": "class",
-          "members": [
-            {
-              "kind": "method",
-              "signature": "selectMany<TSource, TResult>(source: IEnumerable<TSource>, selector: (TSource) => IEnumerable<TResult>)",
-              "name": "selectMany",
-              "alias": "SelectMany",
-              "binding": {
-                "assembly": "System.Linq",
-                "type": "System.Linq.Enumerable",
-                "member": "SelectMany"
-              }
-            }
-          ]
-        }
-      ]
-    }
-  ]
+  "SelectMany": {
+    "Kind": "method",
+    "Name": "SelectMany",
+    "Alias": "selectMany",
+    "FullName": "System.Linq.Enumerable.SelectMany"
+  },
+  "Enumerable": {
+    "Kind": "class",
+    "Name": "Enumerable",
+    "Alias": "enumerable",
+    "FullName": "System.Linq.Enumerable"
+  },
+  "System.Linq": {
+    "Kind": "namespace",
+    "Name": "System.Linq",
+    "Alias": "systemLinq",
+    "FullName": "System.Linq"
+  }
 }
 ```
 
-- `name` is the identifier emitted in the `.d.ts`; `alias` is the CLR identifier.
-- `binding` contains the fully-qualified CLR target the runtime should call.
-- `signature` is optional and may be omitted when not needed.
+- `Name` is the CLR identifier (e.g., "SelectMany", "Enumerable", "System.Linq")
+- `Alias` is the TypeScript-facing identifier emitted in the `.d.ts` (e.g., "selectMany", "enumerable", "systemLinq")
+- `Kind` describes the type of entity: "namespace", "class", "interface", "method", "property", "enumMember"
+- `FullName` contains the fully-qualified CLR name for the entity
+- Dictionary keys are the CLR identifiers for quick lookup
 
 The manifest mirrors the declaration hierarchy, making it straightforward for
 the runtime to map transformed TypeScript names back to CLR members.
@@ -61,11 +54,14 @@ the runtime to map transformed TypeScript names back to CLR members.
 ## Usage from Tsonic runtime
 
 1. Load the manifest once per assembly alongside its metadata.
-2. When resolving a TypeScript identifier (e.g. `selectMany`), walk the
-   namespace/type/member structure to locate the entry and read the CLR binding
-   target.
-3. If a name is missing from the manifest, fall back to the CLR name (no transform).
+2. When you have a TypeScript identifier (e.g. `selectMany`), you need to find its CLR name:
+   - Iterate through the dictionary values to find an entry where `Alias` matches `"selectMany"`
+   - Read the `Name` field to get the CLR identifier (`"SelectMany"`)
+   - Use `FullName` for the fully-qualified CLR target
+3. When you have a CLR identifier (e.g. `SelectMany`), you can directly look it up:
+   - Use the CLR name as the dictionary key: `bindings["SelectMany"]`
+   - Read the `Alias` field to get the TypeScript identifier
+4. If a name is missing from the manifest, assume no transform was applied (CLR name = TS name).
 
-The manifest is additive.  New fields (e.g. overload metadata) may appear in the
-future, but existing properties (`kind`, `originalName`, `fullName`) will remain
-stable.
+The manifest is additive. New fields may appear in future versions, but existing
+properties (`Kind`, `Name`, `Alias`, `FullName`) will remain stable.

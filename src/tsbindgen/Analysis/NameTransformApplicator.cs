@@ -231,17 +231,20 @@ public sealed class NameTransformApplicator
 
     private void TrackBinding(string transformedName, string originalName, string kind, string fullName)
     {
-        _bindings[transformedName] = new BindingEntry(
+        // Key by CLR name (originalName), store CLR name as Name and TypeScript name as Alias
+        _bindings[originalName] = new BindingEntry(
             kind,
-            originalName,
+            originalName,     // CLR name
+            transformedName,  // TS alias
             fullName);
     }
 }
 
 /// <summary>
-/// Represents a binding entry mapping a transformed name to its original CLR name.
+/// Represents a binding entry mapping a CLR name to its TypeScript alias.
 /// </summary>
 public sealed record BindingEntry(
     string Kind,
-    string OriginalName,
+    string Name,      // CLR identifier
+    string Alias,     // TypeScript-facing identifier
     string FullName);
