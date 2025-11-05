@@ -169,6 +169,12 @@ public static class Reflect
             .Select(ReflectMethod)
             .ToList();
 
+        // Add interface-compatible method overloads for classes/structs
+        if (!type.IsInterface)
+        {
+            AddInterfaceCompatibleMethodOverloads(type, methods);
+        }
+
         var properties = type.GetProperties(flags)
             .Where(p => (p.GetMethod?.IsPublic ?? false) || (p.SetMethod?.IsPublic ?? false))
             .Select(ReflectProperty)
@@ -761,5 +767,146 @@ public static class Reflect
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Adds interface-compatible method overloads to satisfy TypeScript interface contracts.
+    /// For each interface method, if the class doesn't have an exact matching signature,
+    /// add the interface method signature as an overload.
+    /// </summary>
+    private static void AddInterfaceCompatibleMethodOverloads(Type type, List<MethodSnapshot> methods)
+    {
+        try
+        {
+            var assembly = type.Assembly;
+            var interfaces = type.GetInterfaces();
+
+            foreach (var iface in interfaces)
+            {
+                // Skip non-public interfaces
+                if (!iface.IsPublic && !iface.IsNestedPublic)
+                    continue;
+
+                try
+                {
+                    var map = type.GetInterfaceMap(iface);
+                    for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                    {
+                        var interfaceMethod = map.InterfaceMethods[i];
+
+                        // Skip property getters/setters - properties can't have overloads in TypeScript
+                        if (interfaceMethod.IsSpecialName)
+                            continue;
+
+                        // Skip explicit interface implementations (method name contains dot)
+                        if (interfaceMethod.Name.Contains('.'))
+                            continue;
+
+                        // Skip methods with non-public parameter or return types
+                        if (!interfaceMethod.ReturnType.IsPublic &&
+                            !interfaceMethod.ReturnType.IsNestedPublic &&
+                            interfaceMethod.ReturnType != typeof(void))
+                            continue;
+
+                        bool hasNonPublicParam = false;
+                        foreach (var param in interfaceMethod.GetParameters())
+                        {
+                            if (!param.ParameterType.IsPublic && !param.ParameterType.IsNestedPublic)
+                            {
+                                hasNonPublicParam = true;
+                                break;
+                            }
+                        }
+                        if (hasNonPublicParam)
+                            continue;
+
+                        // Create interface method snapshot
+                        var interfaceReturnType = CreateTypeReference(interfaceMethod.ReturnType, assembly);
+                        var interfaceParams = ReflectParameters(interfaceMethod.GetParameters(), assembly);
+
+                        // Check if we already have this exact method signature
+                        var hasExactMatch = methods.Any(m =>
+                            m.ClrName == interfaceMethod.Name &&
+                            TypeReferencesMatch(m.ReturnType, interfaceReturnType) &&
+                            ParameterListsMatch(m.Parameters, interfaceParams));
+
+                        if (!hasExactMatch)
+                        {
+                            // Add interface-compatible method signature
+                            var genericParams = interfaceMethod.IsGenericMethod
+                                ? ReflectGenericParameters(interfaceMethod)
+                                : Array.Empty<GenericParameter>();
+
+                            methods.Add(new MethodSnapshot(
+                                interfaceMethod.Name,
+                                false, // Instance method (interface methods are never static)
+                                false, // Not virtual (it's an overload)
+                                false, // Not override
+                                false, // Not abstract
+                                "public",
+                                genericParams,
+                                interfaceParams,
+                                interfaceReturnType,
+                                new MemberBinding(
+                                    assembly.GetName().Name ?? "",
+                                    type.FullName ?? type.Name,
+                                    interfaceMethod.Name))
+                            {
+                                SyntheticOverload = new SyntheticOverloadInfo(
+                                    iface.FullName ?? iface.Name,
+                                    interfaceMethod.Name,
+                                    SyntheticOverloadReason.InterfaceSignatureMismatch)
+                            });
+                        }
+                    }
+                }
+                catch
+                {
+                    // GetInterfaceMap can fail for some types in MetadataLoadContext
+                    // Skip and continue
+                }
+            }
+        }
+        catch
+        {
+            // Type may not support interface mapping
+        }
+    }
+
+    /// <summary>
+    /// Checks if two TypeReferences represent the same type.
+    /// </summary>
+    private static bool TypeReferencesMatch(TypeReference tr1, TypeReference tr2)
+    {
+        if (tr1.ClrType != tr2.ClrType)
+            return false;
+
+        if (tr1.GenericArgs.Count != tr2.GenericArgs.Count)
+            return false;
+
+        for (int i = 0; i < tr1.GenericArgs.Count; i++)
+        {
+            if (!TypeReferencesMatch(tr1.GenericArgs[i], tr2.GenericArgs[i]))
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Checks if two parameter lists match.
+    /// </summary>
+    private static bool ParameterListsMatch(IReadOnlyList<ParameterSnapshot> params1, IReadOnlyList<ParameterSnapshot> params2)
+    {
+        if (params1.Count != params2.Count)
+            return false;
+
+        for (int i = 0; i < params1.Count; i++)
+        {
+            if (!TypeReferencesMatch(params1[i].Type, params2[i].Type))
+                return false;
+        }
+
+        return true;
     }
 }

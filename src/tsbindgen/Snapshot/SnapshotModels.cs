@@ -81,7 +81,47 @@ public sealed record MethodSnapshot(
     IReadOnlyList<GenericParameter> GenericParameters,
     IReadOnlyList<ParameterSnapshot> Parameters,
     TypeReference ReturnType,
-    MemberBinding Binding);
+    MemberBinding Binding)
+{
+    /// <summary>
+    /// If not null, indicates this is a synthetic overload added for TypeScript compatibility.
+    /// Contains information about which interface this overload satisfies.
+    /// </summary>
+    public SyntheticOverloadInfo? SyntheticOverload { get; init; }
+}
+
+/// <summary>
+/// Information about a synthetic method overload.
+/// </summary>
+public sealed record SyntheticOverloadInfo(
+    /// <summary>
+    /// Full name of the interface that required this overload (e.g., "System.Collections.IList").
+    /// </summary>
+    string InterfaceFullName,
+
+    /// <summary>
+    /// Name of the interface method (e.g., "Add").
+    /// </summary>
+    string InterfaceMethodName,
+
+    /// <summary>
+    /// Reason this overload was added.
+    /// </summary>
+    SyntheticOverloadReason Reason);
+
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum SyntheticOverloadReason
+{
+    /// <summary>
+    /// Added to satisfy interface contract with different method signature.
+    /// </summary>
+    InterfaceSignatureMismatch,
+
+    /// <summary>
+    /// Added to satisfy base class method with covariant return type.
+    /// </summary>
+    BaseClassCovariance
+}
 
 /// <summary>
 /// Snapshot of a property.
