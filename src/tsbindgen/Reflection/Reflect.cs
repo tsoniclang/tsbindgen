@@ -26,9 +26,10 @@ public static class Reflect
         // Get all exported types
         var types = GetExportedTypes(assembly, verbose);
 
-        // Group types by namespace
+        // Group types by namespace, excluding compiler-generated types
         var namespaceGroups = types
             .Where(t => ShouldIncludeNamespace(t.Namespace, namespaceFilter))
+            .Where(t => !IsCompilerGenerated(t))
             .GroupBy(t => t.Namespace ?? "")
             .OrderBy(g => g.Key)
             .ToList();
@@ -314,7 +315,7 @@ public static class Reflect
             .Where(t => t.IsGenericParameter)
             .Select(t => new GenericParameter(
                 t.Name,
-                t.GetGenericParameterConstraints().Select(c => c.FullName ?? c.Name).ToList(),
+                t.GetGenericParameterConstraints().Select(c => FormatTypeName(c, type.Assembly)).ToList(),
                 DetermineVariance(t)))
             .ToList();
     }
@@ -328,7 +329,7 @@ public static class Reflect
             .Where(t => t.IsGenericParameter)
             .Select(t => new GenericParameter(
                 t.Name,
-                t.GetGenericParameterConstraints().Select(c => c.FullName ?? c.Name).ToList(),
+                t.GetGenericParameterConstraints().Select(c => FormatTypeName(c, method.DeclaringType!.Assembly)).ToList(),
                 Variance.None)) // Methods don't have variance
             .ToList();
     }
@@ -367,27 +368,69 @@ public static class Reflect
     /// </summary>
     private static TypeReference CreateTypeReference(Type type, Assembly currentAssembly)
     {
-        var assemblyName = type.Assembly.GetName().Name;
-        var isCrossAssembly = type.Assembly != currentAssembly;
+        // Handle ref/out parameters - strip the & suffix
+        var actualType = type.IsByRef ? type.GetElementType()! : type;
+
+        // Handle pointer types - map to 'any'
+        if (actualType.IsPointer)
+        {
+            return new TypeReference("void*", "any", null);
+        }
+
+        // Handle array types
+        if (actualType.IsArray)
+        {
+            var elementType = actualType.GetElementType()!;
+            var elementRef = CreateTypeReference(elementType, currentAssembly);
+            var rank = actualType.GetArrayRank();
+            var brackets = string.Concat(Enumerable.Repeat("[]", rank));
+            return new TypeReference(
+                elementRef.ClrType + brackets,
+                elementRef.TsType + brackets,
+                elementRef.Assembly
+            );
+        }
+
+        var assemblyName = actualType.Assembly.GetName().Name;
+        var isCrossAssembly = actualType.Assembly != currentAssembly;
         var assemblyAlias = isCrossAssembly ? assemblyName?.Replace(".", "_") : null;
 
-        // Format type name with generic arity
-        var typeName = FormatTypeName(type);
+        // Format type name with proper generic syntax
+        var typeName = FormatTypeName(actualType, currentAssembly);
         var qualifiedName = assemblyAlias != null ? $"{assemblyAlias}.{typeName}" : typeName;
 
         return new TypeReference(qualifiedName, qualifiedName, assemblyAlias);
     }
 
     /// <summary>
-    /// Formats a type name with generic arity (e.g., List_1 instead of List`1).
+    /// Formats a type name with generic arity and arguments for TypeScript.
+    /// Converts: List`1[[System.Int32, ...]] to List_1<System.Int32>
+    /// Converts nested types: Outer+Inner to Outer.Inner
     /// </summary>
-    private static string FormatTypeName(Type type)
+    private static string FormatTypeName(Type type, Assembly currentAssembly)
     {
+        // Non-generic types: use FullName, replace + with . for nested types
         if (!type.IsGenericType)
-            return type.FullName ?? type.Name;
+            return (type.FullName ?? type.Name).Replace('+', '.');
 
-        var name = type.FullName ?? type.Name;
-        return name.Replace('`', '_');
+        // Generic type definition (e.g., List`1): add underscore arity, replace + with .
+        if (type.IsGenericTypeDefinition)
+        {
+            var name = type.FullName ?? type.Name;
+            return name.Replace('`', '_').Replace('+', '.');
+        }
+
+        // Constructed generic type (e.g., List<int>): format with TypeScript syntax
+        var genericDef = type.GetGenericTypeDefinition();
+        var baseName = (genericDef.FullName ?? genericDef.Name).Replace('`', '_').Replace('+', '.');
+
+        var typeArgs = type.GetGenericArguments();
+        var formattedArgs = typeArgs.Select(arg => {
+            var argRef = CreateTypeReference(arg, currentAssembly);
+            return argRef.TsType;
+        });
+
+        return $"{baseName}<{string.Join(", ", formattedArgs)}>";
     }
 
     /// <summary>
@@ -484,6 +527,14 @@ public static class Reflect
             return false;
 
         return filter.Any(f => ns.Equals(f, StringComparison.Ordinal) || ns.StartsWith(f + ".", StringComparison.Ordinal));
+    }
+
+    private static bool IsCompilerGenerated(Type type)
+    {
+        // Compiler-generated types have unspeakable names containing < and >
+        // Examples: "<Module>", "<PrivateImplementationDetails>", "<G>$A9DC899..."
+        var name = type.Name;
+        return name.Contains('<') || name.Contains('>');
     }
 
     private static TypeKind DetermineTypeKind(Type type)

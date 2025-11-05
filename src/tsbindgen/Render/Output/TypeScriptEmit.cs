@@ -113,8 +113,8 @@ public static class TypeScriptEmit
 
         builder.AppendLine($"{indent}interface {type.TsAlias}{genericParams}{extends} {{");
 
-        // Members
-        EmitMembers(builder, type.Members, indent + "    ");
+        // Members - skip static members (TypeScript doesn't support static interface members)
+        EmitMembers(builder, type.Members, indent + "    ", skipStatic: true);
 
         builder.AppendLine($"{indent}}}");
     }
@@ -140,7 +140,7 @@ public static class TypeScriptEmit
     {
         var genericParams = FormatGenericParameters(type.GenericParameters);
         var parameters = type.DelegateParameters != null
-            ? string.Join(", ", type.DelegateParameters.Select(p => $"{p.Name}: {p.TsType}"))
+            ? string.Join(", ", type.DelegateParameters.Select(p => $"{EscapeIdentifier(p.Name)}: {p.TsType}"))
             : "";
         var returnType = type.DelegateReturnType?.TsType ?? "void";
 
@@ -157,14 +157,14 @@ public static class TypeScriptEmit
         builder.AppendLine($"{indent}}}");
     }
 
-    private static void EmitMembers(StringBuilder builder, MemberCollectionModel members, string indent, bool staticOnly = false)
+    private static void EmitMembers(StringBuilder builder, MemberCollectionModel members, string indent, bool staticOnly = false, bool skipStatic = false)
     {
-        // Constructors (if not staticOnly)
-        if (!staticOnly)
+        // Constructors (if not staticOnly and not skipStatic)
+        if (!staticOnly && !skipStatic)
         {
             foreach (var ctor in members.Constructors)
             {
-                var parameters = string.Join(", ", ctor.Parameters.Select(p => $"{p.Name}: {p.TsType}"));
+                var parameters = string.Join(", ", ctor.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {p.TsType}"));
                 builder.AppendLine($"{indent}constructor({parameters});");
             }
         }
@@ -173,10 +173,11 @@ public static class TypeScriptEmit
         foreach (var method in members.Methods)
         {
             if (staticOnly && !method.IsStatic) continue;
+            if (skipStatic && method.IsStatic) continue;
 
             var modifiers = method.IsStatic ? "static " : "";
             var genericParams = FormatGenericParameters(method.GenericParameters);
-            var parameters = string.Join(", ", method.Parameters.Select(p => $"{p.Name}: {p.TsType}"));
+            var parameters = string.Join(", ", method.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {p.TsType}"));
 
             builder.AppendLine($"{indent}{modifiers}{method.TsAlias}{genericParams}({parameters}): {method.ReturnType.TsType};");
         }
@@ -185,6 +186,7 @@ public static class TypeScriptEmit
         foreach (var prop in members.Properties)
         {
             if (staticOnly && !prop.IsStatic) continue;
+            if (skipStatic && prop.IsStatic) continue;
 
             var modifiers = prop.IsStatic ? "static " : "";
             var readonlyModifier = prop.IsReadonly ? "readonly " : "";
@@ -196,6 +198,7 @@ public static class TypeScriptEmit
         foreach (var field in members.Fields)
         {
             if (staticOnly && !field.IsStatic) continue;
+            if (skipStatic && field.IsStatic) continue;
 
             var modifiers = field.IsStatic ? "static " : "";
             var readonlyModifier = field.IsReadonly ? "readonly " : "";
@@ -207,6 +210,7 @@ public static class TypeScriptEmit
         foreach (var evt in members.Events)
         {
             if (staticOnly && !evt.IsStatic) continue;
+            if (skipStatic && evt.IsStatic) continue;
 
             var modifiers = evt.IsStatic ? "static " : "";
 
@@ -228,5 +232,28 @@ public static class TypeScriptEmit
         });
 
         return $"<{string.Join(", ", formatted)}>";
+    }
+
+    /// <summary>
+    /// Escapes TypeScript/JavaScript reserved keywords using $$name$$ format.
+    /// This is the standard Tsonic escaping format for reserved identifiers.
+    /// </summary>
+    private static string EscapeIdentifier(string name)
+    {
+        // List of TypeScript/JavaScript reserved keywords
+        var reservedKeywords = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "break", "case", "catch", "class", "const", "continue", "debugger", "default",
+            "delete", "do", "else", "enum", "export", "extends", "false", "finally",
+            "for", "function", "if", "import", "in", "instanceof", "new", "null",
+            "return", "super", "switch", "this", "throw", "true", "try", "typeof",
+            "var", "void", "while", "with", "yield",
+            "let", "static", "implements", "interface", "package", "private", "protected",
+            "public", "as", "async", "await", "constructor", "get", "set",
+            "from", "of", "namespace", "module", "declare", "abstract", "any", "boolean",
+            "never", "number", "object", "string", "symbol", "unknown", "type", "readonly"
+        };
+
+        return reservedKeywords.Contains(name) ? $"$${name}$$" : name;
     }
 }

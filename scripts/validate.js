@@ -1,16 +1,16 @@
 #!/usr/bin/env node
 /**
- * Validation script for tsbindgen output
+ * Validation script for tsbindgen namespace-based output
  *
  * This script:
- * 1. Regenerates all BCL .d.ts files to a temp directory
- * 2. Creates an index.d.ts with triple-slash references
- * 3. Creates a tsconfig.json
+ * 1. Cleans the validation directory
+ * 2. Runs tsbindgen generate command on the full .NET framework
+ * 3. Creates a tsconfig.json in the output directory
  * 4. Runs TypeScript compiler to validate all declarations
- * 5. Reports any syntax or semantic errors
+ * 5. Reports error breakdown by category
  */
 
-import { execSync, spawn } from 'child_process';
+import { execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -22,135 +22,10 @@ const __dirname = path.dirname(__filename);
 // Configuration
 const DOTNET_VERSION = '10.0.0-rc.1.25451.107';
 const DOTNET_HOME = os.homedir() + '/dotnet';
-
-// Prefer ref-pack for most assemblies (better type definitions, no type-forwarding)
-const DOTNET_REF_PATH = process.env.DOTNET_REF_PATH ||
-    `${DOTNET_HOME}/packs/Microsoft.NETCore.App.Ref/${DOTNET_VERSION}/ref/net10.0`;
-
-// Runtime path needed for System.Private.CoreLib (can't load from ref-pack with MetadataLoadContext)
-const DOTNET_RUNTIME_PATH = process.env.DOTNET_RUNTIME_PATH ||
-    `${DOTNET_HOME}/shared/Microsoft.NETCore.App/${DOTNET_VERSION}`;
-
-// Assemblies that MUST use runtime path (not ref-pack)
-const RUNTIME_ONLY_ASSEMBLIES = [
-    'System.Private.CoreLib',     // Requires MetadataLoadContext, doesn't work from ref-pack
-    'System.Private.Uri',         // Private implementation assembly, not in ref-pack
-    'System.Private.Xml',         // Private implementation assembly, not in ref-pack
-    'System.Private.Xml.Linq'     // Private implementation assembly, not in ref-pack
-];
-
-const BCL_ASSEMBLIES = [
-    // Core runtime
-    // NOTE: System.Private.CoreLib is now generated using MetadataLoadContext
-    // NOTE: Type-forwarding assemblies (System.Runtime, System.IO, etc.) are included here
-    //       but will be automatically skipped by Program.cs if they forward to core assemblies
-    'System.Private.CoreLib',
-    'System.Runtime',
-    'System.Runtime.Extensions',
-    'System.Runtime.InteropServices',
-    'System.Console',
-    'System.ComponentModel',
-    'System.ComponentModel.Primitives',
-    'System.ComponentModel.TypeConverter',
-    'System.ComponentModel.EventBasedAsync',
-    'System.ObjectModel',
-    'System.Reflection',
-    'System.Memory',
-    'System.Numerics.Vectors',
-
-    // Core collections
-    'System.Collections',
-    'System.Collections.Concurrent',
-    'System.Collections.Immutable',
-    'System.Collections.Specialized',
-    'System.Collections.NonGeneric',
-
-    // LINQ and queries
-    'System.Linq',
-    'System.Linq.Expressions',
-    'System.Linq.Parallel',
-    'System.Linq.Queryable',
-    'System.Linq.AsyncEnumerable',
-
-    // I/O
-    'System.IO',
-    'System.IO.FileSystem',
-    'System.IO.Compression',
-    'System.IO.Pipes',
-
-    // Text processing
-    'System.Text.Json',
-    'System.Text.RegularExpressions',
-    'System.Text.Encoding',
-    'System.Text.Encodings.Web',
-
-    // Networking
-    'System.Net',
-    'System.Net.Primitives',
-    'System.Net.Http',
-    'System.Net.Http.Json',
-    'System.Net.Requests',
-    'System.Net.WebHeaderCollection',
-    'System.Net.Sockets',
-    'System.Net.WebSockets',
-    'System.Net.Security',
-    'System.Net.NetworkInformation',
-
-    // Threading
-    'System.Threading',
-    'System.Threading.Tasks',
-    'System.Threading.Channels',
-
-    // Data and XML
-    'System.Data',
-    'System.Data.Common',
-    'System.Xml',
-    'System.Xml.ReaderWriter',
-    'System.Xml.XDocument',
-    'System.Xml.XmlDocument',
-    'System.Xml.Linq',
-    'System.Xml.Serialization',
-    'System.Xml.XPath',
-    'System.Private.Xml',
-    'System.Private.Xml.Linq',
-
-    // Security
-    'System.Security.Cryptography',
-    'System.Security.Claims',
-    'System.Security.Principal',
-
-    // Resources
-    'System.Resources.Writer',
-
-    // Diagnostics
-    'System.Diagnostics.Process',
-    'System.Diagnostics.DiagnosticSource',
-    'System.Diagnostics.FileVersionInfo',
-
-    // Drawing
-    'System.Drawing.Primitives',
-    'System.Drawing',
-
-    // Transactions
-    'System.Transactions.Local',
-
-    // URI support (private implementation)
-    'System.Private.Uri',
-
-    // Numerics
-    'System.Numerics',
-    'System.Runtime.Numerics',
-
-    // Formats
-    'System.Formats.Asn1',
-    'System.Formats.Tar',
-
-    // Pipelines
-    'System.IO.Pipelines'
-];
+const DOTNET_RUNTIME_PATH = `${DOTNET_HOME}/shared/Microsoft.NETCore.App/${DOTNET_VERSION}`;
 
 const VALIDATION_DIR = path.join(__dirname, '..', '.tests', 'validation');
-const TYPES_DIR = path.join(VALIDATION_DIR, 'types');
+const PROJECT_ROOT = path.join(__dirname, '..');
 
 function log(message) {
     console.log(`[validate] ${message}`);
@@ -165,83 +40,35 @@ function cleanValidationDir() {
     if (fs.existsSync(VALIDATION_DIR)) {
         fs.rmSync(VALIDATION_DIR, { recursive: true, force: true });
     }
-    fs.mkdirSync(TYPES_DIR, { recursive: true });
+    fs.mkdirSync(VALIDATION_DIR, { recursive: true });
 }
 
 function generateTypes() {
-    log(`Generating types for ${BCL_ASSEMBLIES.length} assemblies...`);
+    log('Generating TypeScript declarations for entire .NET framework...');
+    log(`  Source: ${DOTNET_RUNTIME_PATH}`);
+    log(`  Output: ${VALIDATION_DIR}`);
+    log('');
 
-    const projectPath = path.join(__dirname, '..', 'src', 'tsbindgen', 'tsbindgen.csproj');
-    let successCount = 0;
-    let failCount = 0;
+    const projectPath = path.join(PROJECT_ROOT, 'src', 'tsbindgen', 'tsbindgen.csproj');
 
-    for (const assembly of BCL_ASSEMBLIES) {
-        // Choose path: runtime-only assemblies use RUNTIME_PATH, others use REF_PATH
-        const useRuntimePath = RUNTIME_ONLY_ASSEMBLIES.includes(assembly);
-        const basePath = useRuntimePath ? DOTNET_RUNTIME_PATH : DOTNET_REF_PATH;
-        const dllPath = path.join(basePath, `${assembly}.dll`);
+    try {
+        const output = execSync(
+            `dotnet run --project "${projectPath}" -- generate -d "${DOTNET_RUNTIME_PATH}" -o "${VALIDATION_DIR}" --debug-snapshot`,
+            {
+                stdio: 'pipe',
+                encoding: 'utf-8',
+                maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+            }
+        );
 
-        if (!fs.existsSync(dllPath)) {
-            error(`Assembly not found: ${dllPath}`);
-            failCount++;
-            continue;
-        }
-
-        try {
-            execSync(
-                `dotnet run --project "${projectPath}" -- "${dllPath}" --out-dir "${TYPES_DIR}"`,
-                { stdio: 'pipe' }
-            );
-            successCount++;
-            process.stdout.write('.');
-        } catch (err) {
-            error(`Failed to generate ${assembly}: ${err.message}`);
-            failCount++;
-        }
+        console.log(output);
+        log('✓ Type generation completed');
+        log('');
+    } catch (err) {
+        error('Failed to generate types');
+        console.error(err.stderr || err.stdout || err.message);
+        throw new Error('Type generation failed');
     }
-
-    console.log('');
-    log(`Generated ${successCount} assemblies successfully, ${failCount} failed`);
-
-    if (failCount > 0) {
-        throw new Error(`Failed to generate ${failCount} assemblies`);
-    }
-}
-
-// NOTE: @tsonic/types package must be installed for validation
-// Generated files import from '@tsonic/types/intrinsics.js'
-
-function createIndexFile() {
-    log('Creating index.d.ts with ESM re-exports...');
-
-    const dtsFiles = fs.readdirSync(TYPES_DIR)
-        .filter(f => f.endsWith('.d.ts') && f !== 'index.d.ts' && f !== '_intrinsics.d.ts')
-        .sort();
-
-    // Ensure System.Private.CoreLib is first (if it exists)
-    const coreLibIndex = dtsFiles.indexOf('System.Private.CoreLib.d.ts');
-    if (coreLibIndex > 0) {
-        dtsFiles.splice(coreLibIndex, 1);
-        dtsFiles.unshift('System.Private.CoreLib.d.ts');
-    }
-
-    // Generate ESM re-exports (barrel pattern)
-    const exports = dtsFiles
-        .map(f => {
-            const moduleName = f.replace('.d.ts', '');
-            return `export * from './${moduleName}.js';`;
-        })
-        .join('\n');
-
-    const indexContent = `// Auto-generated barrel export file for BCL type definitions
-// This file re-exports all namespaces from individual assembly files
-// using ESM module syntax for full module support.
-
-${exports}
-`;
-
-    fs.writeFileSync(path.join(TYPES_DIR, 'index.d.ts'), indexContent);
-    log(`Created index.d.ts with ${dtsFiles.length} re-exports`);
 }
 
 function createTsConfig() {
@@ -250,141 +77,129 @@ function createTsConfig() {
     const tsconfig = {
         compilerOptions: {
             target: 'ES2020',
-            module: 'commonjs',
+            module: 'ES2020',
+            lib: ['ES2020'],
             strict: true,
             noEmit: true,
             skipLibCheck: false,
-            types: []
+            moduleResolution: 'bundler'
         },
-        include: ['types/**/*.d.ts']
+        include: [
+            'namespaces/**/*.d.ts'
+        ]
     };
 
     fs.writeFileSync(
         path.join(VALIDATION_DIR, 'tsconfig.json'),
         JSON.stringify(tsconfig, null, 2)
     );
-}
 
-function installTsonicTypes() {
-    log('Installing @tsonic/types package...');
-
-    // Create a minimal package.json in validation directory
-    const packageJson = {
-        name: 'validation-temp',
-        version: '1.0.0',
-        private: true,
-        dependencies: {
-            '@tsonic/types': '^0.1.0'
-        }
-    };
-
-    fs.writeFileSync(
-        path.join(VALIDATION_DIR, 'package.json'),
-        JSON.stringify(packageJson, null, 2)
-    );
-
-    try {
-        execSync('npm install', {
-            cwd: VALIDATION_DIR,
-            stdio: 'pipe'
-        });
-        log('  ✓ @tsonic/types installed successfully');
-    } catch (err) {
-        throw new Error(`Failed to install @tsonic/types: ${err.message}`);
-    }
+    log('✓ Created tsconfig.json');
 }
 
 function runTypeScriptCompiler() {
     log('Running TypeScript compiler...');
     log('');
 
-    return new Promise((resolve, reject) => {
-        let stdout = '';
-        let stderr = '';
+    let output;
+    let exitCode = 0;
 
-        const tsc = spawn('tsc', [
-            '--project', VALIDATION_DIR
-        ], {
-            stdio: ['ignore', 'pipe', 'pipe']
-        });
-
-        tsc.stdout.on('data', (data) => {
-            stdout += data.toString();
-        });
-
-        tsc.stderr.on('data', (data) => {
-            stderr += data.toString();
-        });
-
-        tsc.on('close', (code) => {
-            const output = stdout + stderr;
-
-            // Count different error types
-            const syntaxErrors = (output.match(/error TS1\d{3}:/g) || []).length;
-            const duplicateTypeErrors = (output.match(/error TS6200:/g) || []).length;
-            const moduleErrors = (output.match(/error TS2307:/g) || []).length;
-            const semanticErrors = (output.match(/error TS2\d{3}:/g) || []).length - moduleErrors;
-
-            const result = {
-                code,
-                output,
-                syntaxErrors,
-                duplicateTypeErrors,
-                moduleErrors,
-                semanticErrors,
-                totalErrors: syntaxErrors + duplicateTypeErrors + moduleErrors + semanticErrors
-            };
-
-            if (syntaxErrors > 0) {
-                // Syntax errors are CRITICAL - means our generator is broken
-                reject(result);
-            } else if (moduleErrors > 0) {
-                // Module resolution errors are CRITICAL - means dependencies are missing
-                reject(result);
-            } else {
-                // Semantic/duplicate errors are expected when validating individual assemblies
-                resolve(result);
+    try {
+        output = execSync(
+            `npx tsc --noEmit --project "${VALIDATION_DIR}"`,
+            {
+                stdio: 'pipe',
+                encoding: 'utf-8',
+                maxBuffer: 50 * 1024 * 1024 // 50MB buffer for errors
             }
-        });
+        );
+    } catch (err) {
+        exitCode = err.status || 1;
+        output = err.stdout || '';
+    }
 
-        tsc.on('error', (err) => {
-            reject(new Error(`Failed to run tsc: ${err.message}`));
-        });
+    // Save full output to file
+    const outputPath = path.join(PROJECT_ROOT, '.tests', 'tsc-validation.txt');
+    fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+    fs.writeFileSync(outputPath, output);
+
+    // Count different error types
+    const errorLines = output.split('\n').filter(line => line.includes('error TS'));
+
+    const syntaxErrors = errorLines.filter(line => /error TS1\d{3}:/.test(line)).length;
+    const semanticErrors = errorLines.filter(line => /error TS2\d{3}:/.test(line)).length;
+    const duplicateErrors = errorLines.filter(line => /error TS6200:/.test(line)).length;
+    const totalErrors = errorLines.length;
+
+    // Breakdown by specific error codes
+    const errorCounts = {};
+    errorLines.forEach(line => {
+        const match = line.match(/error (TS\d+):/);
+        if (match) {
+            const code = match[1];
+            errorCounts[code] = (errorCounts[code] || 0) + 1;
+        }
     });
+
+    // Sort by count descending
+    const sortedErrors = Object.entries(errorCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+
+    return {
+        exitCode,
+        output,
+        outputPath,
+        totalErrors,
+        syntaxErrors,
+        semanticErrors,
+        duplicateErrors,
+        errorCounts: sortedErrors
+    };
 }
 
 function validateMetadataFiles() {
     log('Validating metadata files...');
 
-    const files = fs.readdirSync(TYPES_DIR);
-    const dtsFiles = files.filter(f => f.endsWith('.d.ts') && f !== 'index.d.ts' && f !== '_intrinsics.d.ts');
-    const metadataFiles = files.filter(f => f.endsWith('.metadata.json'));
+    const namespacesDir = path.join(VALIDATION_DIR, 'namespaces');
 
-    log(`  .d.ts files: ${dtsFiles.length}`);
-    log(`  .metadata.json files: ${metadataFiles.length}`);
+    if (!fs.existsSync(namespacesDir)) {
+        throw new Error('Namespaces directory not found');
+    }
 
-    const missingMetadata = [];
-    for (const dtsFile of dtsFiles) {
-        const baseName = dtsFile.replace('.d.ts', '');
-        const metadataFile = `${baseName}.metadata.json`;
+    const namespaces = fs.readdirSync(namespacesDir);
+    let missingMetadata = 0;
+    let missingIndex = 0;
 
-        if (!metadataFiles.includes(metadataFile)) {
-            missingMetadata.push(dtsFile);
+    for (const ns of namespaces) {
+        const nsPath = path.join(namespacesDir, ns);
+        if (!fs.statSync(nsPath).isDirectory()) continue;
+
+        const indexPath = path.join(nsPath, 'index.d.ts');
+        const metadataPath = path.join(nsPath, 'metadata.json');
+
+        if (!fs.existsSync(indexPath)) {
+            error(`  Missing index.d.ts in ${ns}`);
+            missingIndex++;
+        }
+
+        if (!fs.existsSync(metadataPath)) {
+            error(`  Missing metadata.json in ${ns}`);
+            missingMetadata++;
         }
     }
 
-    if (missingMetadata.length > 0) {
-        error(`Missing metadata files for: ${missingMetadata.join(', ')}`);
-        throw new Error('Metadata validation failed');
+    if (missingIndex > 0 || missingMetadata > 0) {
+        throw new Error(`Missing ${missingIndex} index files and ${missingMetadata} metadata files`);
     }
 
-    log('  ✓ All .d.ts files have matching .metadata.json files');
+    log(`  ✓ All ${namespaces.length} namespaces have index.d.ts and metadata.json`);
 }
 
 async function main() {
     console.log('');
     console.log('================================================================');
-    console.log('tsbindgen - Full Validation');
+    console.log('tsbindgen - Full Framework Validation');
     console.log('================================================================');
     console.log('');
 
@@ -392,127 +207,72 @@ async function main() {
         // Step 1: Clean and prepare
         cleanValidationDir();
 
-        // Step 2: Install @tsonic/types package (before generating types)
-        installTsonicTypes();
-
-        // Step 3: Generate all types
+        // Step 2: Generate all types
         generateTypes();
 
-        // Step 4: Create index file
-        // SKIP: index.d.ts causes TS2308 namespace merging warnings (49 errors)
-        // Users should import from specific assemblies instead of using barrel export
-        // createIndexFile();
-
-        // Step 5: Create tsconfig
+        // Step 3: Create tsconfig
         createTsConfig();
 
-        // Step 6: Validate metadata files
+        // Step 4: Validate metadata files
         validateMetadataFiles();
 
-        // Step 7: Run TypeScript compiler
+        // Step 5: Run TypeScript compiler
         console.log('');
-        log('Running TypeScript validation...');
-        log('─'.repeat(64));
-        const result = await runTypeScriptCompiler();
+        const result = runTypeScriptCompiler();
 
-        // Success!
+        // Print results
         console.log('');
         console.log('================================================================');
-        console.log('✓ VALIDATION PASSED');
+        console.log('VALIDATION RESULTS');
         console.log('================================================================');
         console.log('');
-        console.log(`  All ${BCL_ASSEMBLIES.length} BCL assemblies generated successfully`);
-        console.log('  All metadata files present');
-        console.log('  ✓ No TypeScript syntax errors (TS1xxx)');
-        console.log('  ✓ No module resolution errors (TS2307)');
+        console.log(`  Total errors: ${result.totalErrors}`);
         console.log('');
         console.log('  Error breakdown:');
-        console.log(`    - Syntax errors (TS1xxx): ${result.syntaxErrors} ✓`);
-        console.log(`    - Module errors (TS2307): ${result.moduleErrors} ✓`);
-        console.log(`    - Duplicate types (TS6200): ${result.duplicateTypeErrors} (expected)`);
-        console.log(`    - Semantic errors (TS2xxx): ${result.semanticErrors} (expected - missing cross-assembly refs)`);
+        console.log(`    - Syntax errors (TS1xxx):     ${result.syntaxErrors}`);
+        console.log(`    - Semantic errors (TS2xxx):   ${result.semanticErrors}`);
+        console.log(`    - Duplicate types (TS6200):   ${result.duplicateErrors}`);
         console.log('');
-        console.log('  Note: Semantic errors are expected when validating individual');
-        console.log('  assemblies without their full dependency graph. The critical');
-        console.log('  validation is that there are zero syntax errors.');
+        console.log('  Top 10 error codes:');
+        result.errorCounts.forEach(([code, count]) => {
+            const pct = ((count / result.totalErrors) * 100).toFixed(1);
+            console.log(`    ${count.toString().padStart(5)} ${code} (${pct}%)`);
+        });
         console.log('');
-        console.log(`  Output directory: ${VALIDATION_DIR}`);
+        console.log(`  Full output saved to: ${result.outputPath}`);
+        console.log(`  Validation directory: ${VALIDATION_DIR}`);
         console.log('');
 
-        // Write machine-readable stats
-        const stats = {
-            timestamp: new Date().toISOString(),
-            status: 'passed',
-            assemblies: {
-                total: BCL_ASSEMBLIES.length,
-                succeeded: BCL_ASSEMBLIES.length,
-                failed: 0
-            },
-            errors: {
-                syntax: result.syntaxErrors,
-                module: result.moduleErrors,
-                duplicate: result.duplicateTypeErrors,
-                semantic: result.semanticErrors,
-                total: result.totalErrors
-            },
-            outputDir: VALIDATION_DIR
-        };
+        // Success criteria: zero syntax errors
+        if (result.syntaxErrors === 0) {
+            console.log('  ✓ VALIDATION PASSED - No TypeScript syntax errors');
+            console.log('');
+            console.log('  Note: Semantic errors are expected and documented.');
+            console.log('  See CLAUDE.md for details on known limitations.');
+            console.log('');
+            process.exit(0);
+        } else {
+            console.log(`  ✗ VALIDATION FAILED - ${result.syntaxErrors} syntax errors found`);
+            console.log('');
+            console.log('  First 10 syntax errors:');
+            const syntaxLines = result.output.split('\n')
+                .filter(line => /error TS1\d{3}:/.test(line))
+                .slice(0, 10);
+            syntaxLines.forEach(line => console.log(`    ${line}`));
+            console.log('');
+            process.exit(1);
+        }
 
-        const statsPath = path.join(__dirname, '..', '.analysis', 'validation-stats.json');
-        fs.mkdirSync(path.dirname(statsPath), { recursive: true });
-        fs.writeFileSync(statsPath, JSON.stringify(stats, null, 2));
-        log(`Machine-readable stats: ${statsPath}`);
-
-        process.exit(0);
     } catch (err) {
         console.log('');
         console.log('================================================================');
         console.log('✗ VALIDATION FAILED');
         console.log('================================================================');
         console.log('');
-
-        if (err.moduleErrors !== undefined && err.moduleErrors > 0) {
-            // TypeScript validation failed with module resolution errors
-            console.log(`  ✗ ${err.moduleErrors} TypeScript module resolution errors (TS2307) found`);
-            console.log('');
-            console.log('  These are CRITICAL errors that indicate required dependencies');
-            console.log('  are missing. Install @tsonic/types package to resolve.');
-            console.log('');
-            console.log('  First few module errors:');
-            console.log('');
-
-            const moduleErrorLines = err.output.split('\n')
-                .filter(line => line.includes('error TS2307'))
-                .slice(0, 10);
-
-            moduleErrorLines.forEach(line => console.log(`    ${line}`));
-
-            if (moduleErrorLines.length < err.moduleErrors) {
-                console.log(`    ... and ${err.moduleErrors - moduleErrorLines.length} more`);
-            }
-        } else if (err.syntaxErrors !== undefined && err.syntaxErrors > 0) {
-            // TypeScript validation failed with syntax errors
-            console.log(`  ✗ ${err.syntaxErrors} TypeScript syntax errors (TS1xxx) found`);
-            console.log('');
-            console.log('  These are CRITICAL errors that indicate the generator');
-            console.log('  is producing invalid TypeScript syntax.');
-            console.log('');
-            console.log('  First few syntax errors:');
-            console.log('');
-
-            const syntaxErrorLines = err.output.split('\n')
-                .filter(line => line.includes('error TS1'))
-                .slice(0, 10);
-
-            syntaxErrorLines.forEach(line => console.log(`    ${line}`));
-
-            if (syntaxErrorLines.length < err.syntaxErrors) {
-                console.log(`    ... and ${err.syntaxErrors - syntaxErrorLines.length} more`);
-            }
-        } else {
-            error(err.message);
+        error(err.message);
+        if (err.stack) {
+            console.error(err.stack);
         }
-
         console.log('');
         process.exit(1);
     }

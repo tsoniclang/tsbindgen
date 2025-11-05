@@ -36,11 +36,14 @@ public static class ModelBuilder
 
     private static TypeModel BuildType(TypeSnapshot snapshot, GeneratorConfig config)
     {
+        // Clean the CLR name (replace backticks with underscores for generic arity)
+        var cleanedName = snapshot.ClrName.Replace('`', '_');
+
         var tsAlias = snapshot.Kind switch
         {
-            TypeKind.Interface => NameTransformation.Apply(snapshot.ClrName, config.InterfaceNames),
-            TypeKind.Class => NameTransformation.Apply(snapshot.ClrName, config.ClassNames),
-            _ => snapshot.ClrName
+            TypeKind.Interface => NameTransformation.Apply(cleanedName, config.InterfaceNames),
+            TypeKind.Class => NameTransformation.Apply(cleanedName, config.ClassNames),
+            _ => cleanedName
         };
 
         var genericParams = snapshot.GenericParameters
