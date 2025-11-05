@@ -173,6 +173,7 @@ public static class Reflect
         if (!type.IsInterface)
         {
             AddInterfaceCompatibleMethodOverloads(type, methods);
+            AddBaseClassCompatibleMethodOverloads(type, methods);
         }
 
         var properties = type.GetProperties(flags)
@@ -908,5 +909,91 @@ public static class Reflect
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Adds base class-compatible method overloads to satisfy TypeScript covariance requirements.
+    /// When a derived class overrides a base method with different parameter/return types,
+    /// add the base class signature as an overload.
+    /// </summary>
+    private static void AddBaseClassCompatibleMethodOverloads(Type type, List<MethodSnapshot> methods)
+    {
+        var baseType = type.BaseType;
+        if (baseType == null ||
+            baseType.FullName == "System.Object" ||
+            baseType.FullName == "System.ValueType" ||
+            baseType.FullName == "System.MarshalByRefObject")
+        {
+            return;
+        }
+
+        try
+        {
+            var assembly = type.Assembly;
+            const BindingFlags flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+
+            // Get base class methods
+            var baseMethods = baseType.GetMethods(flags)
+                .Where(m => m.IsPublic && !m.IsSpecialName && !m.Name.Contains('.'));
+
+            foreach (var baseMethod in baseMethods)
+            {
+                try
+                {
+                    // Create base method snapshot
+                    var baseReturnType = CreateTypeReference(baseMethod.ReturnType, assembly);
+                    var baseParams = ReflectParameters(baseMethod.GetParameters(), assembly);
+
+                    // Check if we already have this exact method signature
+                    var hasExactMatch = methods.Any(m =>
+                        m.ClrName == baseMethod.Name &&
+                        TypeReferencesMatch(m.ReturnType, baseReturnType) &&
+                        ParameterListsMatch(m.Parameters, baseParams));
+
+                    if (!hasExactMatch)
+                    {
+                        // Add base class-compatible method signature
+                        var genericParams = baseMethod.IsGenericMethod
+                            ? ReflectGenericParameters(baseMethod)
+                            : Array.Empty<GenericParameter>();
+
+                        methods.Add(new MethodSnapshot(
+                            baseMethod.Name,
+                            false, // Instance method
+                            false, // Not virtual (it's an overload)
+                            false, // Not override
+                            false, // Not abstract
+                            "public",
+                            genericParams,
+                            baseParams,
+                            baseReturnType,
+                            new MemberBinding(
+                                assembly.GetName().Name ?? "",
+                                type.FullName ?? type.Name,
+                                baseMethod.Name))
+                        {
+                            SyntheticOverload = new SyntheticOverloadInfo(
+                                baseType.FullName ?? baseType.Name,
+                                baseMethod.Name,
+                                SyntheticOverloadReason.BaseClassCovariance)
+                        });
+                    }
+                }
+                catch
+                {
+                    // Skip methods that can't be processed
+                }
+            }
+
+            // Recursively process base class chain
+            if (baseType.BaseType != null)
+            {
+                AddBaseClassCompatibleMethodOverloads(baseType, methods);
+            }
+        }
+        catch
+        {
+            // Base class may not be accessible
+        }
     }
 }
