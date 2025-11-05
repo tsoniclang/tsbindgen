@@ -42,8 +42,9 @@ public static class ModelBuilder
 
     private static TypeModel BuildType(TypeSnapshot snapshot, GeneratorConfig config, string currentNamespace, HashSet<string> importAliases)
     {
-        // Clean the CLR name (replace backticks with underscores for generic arity)
-        var cleanedName = snapshot.ClrName.Replace('`', '_');
+        // Build unique TypeScript name for nested types to avoid collisions
+        // E.g., "Dictionary`2+KeyCollection+Enumerator" becomes "Dictionary_2_KeyCollection_Enumerator"
+        var cleanedName = BuildTypeScriptName(snapshot.FullName, snapshot.ClrName);
 
         var tsAlias = snapshot.Kind switch
         {
@@ -365,5 +366,43 @@ public static class ModelBuilder
             args.Add(current.ToString().Trim());
 
         return args;
+    }
+
+    /// <summary>
+    /// Builds a unique TypeScript name for a type, handling nested types to avoid collisions.
+    /// For nested types, includes parent type names in the hierarchy.
+    /// E.g., "Dictionary`2+KeyCollection+Enumerator" becomes "Dictionary_2_KeyCollection_Enumerator"
+    /// </summary>
+    private static string BuildTypeScriptName(string fullName, string clrName)
+    {
+        // Extract just the type part (remove namespace)
+        var lastDotIndex = fullName.LastIndexOf('.');
+        var typeFullName = lastDotIndex >= 0 ? fullName.Substring(lastDotIndex + 1) : fullName;
+
+        // Check if this is a nested type (contains '+' separator)
+        if (!typeFullName.Contains('+'))
+        {
+            // Not nested - just clean the backticks
+            return clrName.Replace('`', '_');
+        }
+
+        // Split by '+' to get parent hierarchy
+        var parts = typeFullName.Split('+');
+
+        // Build qualified name: ParentType_NestedType
+        var nameBuilder = new System.Text.StringBuilder();
+
+        foreach (var part in parts)
+        {
+            if (nameBuilder.Length > 0)
+            {
+                nameBuilder.Append('_');
+            }
+
+            // Clean backticks from each part (e.g., "Dictionary`2" -> "Dictionary_2")
+            nameBuilder.Append(part.Replace('`', '_'));
+        }
+
+        return nameBuilder.ToString();
     }
 }
