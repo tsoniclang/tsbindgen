@@ -169,17 +169,18 @@ public static class Reflect
             .Select(ReflectMethod)
             .ToList();
 
-        // Add interface-compatible method overloads for classes/structs
-        if (!type.IsInterface)
-        {
-            AddInterfaceCompatibleMethodOverloads(type, methods);
-            AddBaseClassCompatibleMethodOverloads(type, methods);
-        }
-
         var properties = type.GetProperties(flags)
             .Where(p => (p.GetMethod?.IsPublic ?? false) || (p.SetMethod?.IsPublic ?? false))
             .Select(ReflectProperty)
             .ToList();
+
+        // Add interface-compatible method overloads and missing interface properties for classes/structs
+        if (!type.IsInterface)
+        {
+            AddInterfaceCompatibleMethodOverloads(type, methods);
+            AddMissingInterfaceProperties(type, properties);
+            AddBaseClassCompatibleMethodOverloads(type, methods);
+        }
 
         var fields = type.GetFields(flags)
             .Where(f => f.IsPublic)
@@ -994,6 +995,82 @@ public static class Reflect
         catch
         {
             // Base class may not be accessible
+        }
+    }
+
+    /// <summary>
+    /// Adds missing interface properties that are explicitly implemented.
+    /// When a class explicitly implements an interface property, it won't show up in GetProperties()
+    /// but we need it in the TypeScript declarations.
+    /// </summary>
+    private static void AddMissingInterfaceProperties(Type type, List<PropertySnapshot> properties)
+    {
+        try
+        {
+            var assembly = type.Assembly;
+            var interfaces = type.GetInterfaces();
+
+            foreach (var iface in interfaces)
+            {
+                // Skip non-public interfaces
+                if (!iface.IsPublic && !iface.IsNestedPublic)
+                    continue;
+
+                try
+                {
+                    var map = type.GetInterfaceMap(iface);
+                    for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                    {
+                        var interfaceMethod = map.InterfaceMethods[i];
+
+                        // Only process property getters (special name starting with "get_")
+                        if (!interfaceMethod.IsSpecialName || !interfaceMethod.Name.StartsWith("get_"))
+                            continue;
+
+                        // Extract property name (remove "get_" prefix)
+                        var propName = interfaceMethod.Name.Substring(4);
+
+                        // Check if we already have this property
+                        if (properties.Any(p => p.ClrName == propName))
+                            continue;
+
+                        // Check if return type is public
+                        if (!interfaceMethod.ReturnType.IsPublic &&
+                            !interfaceMethod.ReturnType.IsNestedPublic &&
+                            interfaceMethod.ReturnType != typeof(void))
+                            continue;
+
+                        // Add the interface property
+                        var propType = CreateTypeReference(interfaceMethod.ReturnType, assembly);
+
+                        properties.Add(new PropertySnapshot(
+                            propName,
+                            propType,
+                            true, // readonly (interface properties from getters are readonly)
+                            false, // not static
+                            false, // not virtual
+                            false, // not override
+                            "public",
+                            new MemberBinding(
+                                assembly.GetName().Name ?? "",
+                                type.FullName ?? type.Name,
+                                propName))
+                        {
+                            // Don't set ContractType here - let the normal covariance detection handle it
+                            ContractType = null
+                        });
+                    }
+                }
+                catch
+                {
+                    // GetInterfaceMap can fail for some types in MetadataLoadContext
+                    // Skip and continue
+                }
+            }
+        }
+        catch
+        {
+            // Type may not support interface mapping
         }
     }
 }
