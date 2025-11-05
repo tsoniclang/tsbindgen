@@ -67,6 +67,11 @@ public static class Program
             name: "--binding-names",
             description: "Transform binding names (camelCase, overrides class/method/property flags)");
 
+        var verboseOption = new Option<bool>(
+            aliases: new[] { "--verbose", "-v" },
+            getDefaultValue: () => false,
+            description: "Show warning messages during generation");
+
         var rootCommand = new RootCommand("Generate TypeScript declarations from .NET assemblies")
         {
             assemblyPathArg,
@@ -80,7 +85,8 @@ public static class Program
             methodNamesOption,
             propertyNamesOption,
             enumMemberNamesOption,
-            bindingNamesOption
+            bindingNamesOption,
+            verboseOption
         };
 
         rootCommand.SetHandler(async (context) =>
@@ -97,6 +103,7 @@ public static class Program
                 var propertyNames = context.ParseResult.GetValueForOption(propertyNamesOption);
                 var enumMemberNames = context.ParseResult.GetValueForOption(enumMemberNamesOption);
                 var bindingNames = context.ParseResult.GetValueForOption(bindingNamesOption);
+                var verbose = context.ParseResult.GetValueForOption(verboseOption);
 
                 await GenerateDeclarationsAsync(
                     assemblyPath,
@@ -110,7 +117,8 @@ public static class Program
                     methodNames,
                     propertyNames,
                     enumMemberNames,
-                    bindingNames);
+                    bindingNames,
+                    verbose);
             });
 
         return await rootCommand.InvokeAsync(args);
@@ -128,7 +136,8 @@ public static class Program
         string? methodNames,
         string? propertyNames,
         string? enumMemberNames,
-        string? bindingNames)
+        string? bindingNames,
+        bool verbose)
     {
         try
         {
@@ -213,7 +222,7 @@ public static class Program
             try
             {
                 // Process assembly
-                var processor = new AssemblyProcessor(config, namespaces);
+                var processor = new AssemblyProcessor(config, namespaces, verbose);
                 var processedAssembly = processor.ProcessAssembly(assembly);
 
                 // Apply naming transforms if any are configured

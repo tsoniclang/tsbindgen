@@ -6,10 +6,16 @@ namespace GenerateDts.Mapping;
 public sealed class TypeMapper
 {
     private readonly List<string> _warnings = new();
+    private readonly bool _verbose;
     private Assembly? _currentAssembly;
     private DependencyTracker? _dependencyTracker;
 
     public IReadOnlyList<string> Warnings => _warnings;
+
+    public TypeMapper(bool verbose = false)
+    {
+        _verbose = verbose;
+    }
 
     public void SetContext(Assembly currentAssembly, DependencyTracker? dependencyTracker)
     {
@@ -92,5 +98,9 @@ public sealed class TypeMapper
     public void AddWarning(string message)
     {
         _warnings.Add(message);
+        if (_verbose)
+        {
+            Console.WriteLine($"Warning: {message}");
+        }
     }
 }

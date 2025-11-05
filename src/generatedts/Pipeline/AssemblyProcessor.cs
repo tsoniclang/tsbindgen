@@ -14,7 +14,7 @@ public sealed class AssemblyProcessor
 {
     private readonly GeneratorConfig _config;
     private readonly HashSet<string>? _namespaceWhitelist;
-    private readonly TypeMapper _typeMapper = new();
+    private readonly TypeMapper _typeMapper;
     private readonly SignatureFormatter _signatureFormatter = new();
     private DependencyTracker? _dependencyTracker;
 
@@ -22,12 +22,13 @@ public sealed class AssemblyProcessor
     // Key: namespace name, Value: list of intersection aliases to add to that namespace
     private Dictionary<string, List<IntersectionTypeAlias>> _intersectionAliases = new();
 
-    public AssemblyProcessor(GeneratorConfig config, string[] namespaces)
+    public AssemblyProcessor(GeneratorConfig config, string[] namespaces, bool verbose = false)
     {
         _config = config;
         _namespaceWhitelist = namespaces.Length > 0
             ? new HashSet<string>(namespaces)
             : null;
+        _typeMapper = new TypeMapper(verbose);
     }
 
     public ProcessedAssembly ProcessAssembly(Assembly assembly)
