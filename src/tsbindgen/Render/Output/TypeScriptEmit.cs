@@ -9,8 +9,14 @@ namespace tsbindgen.Render.Output;
 /// </summary>
 public static class TypeScriptEmit
 {
+    // Track bindings during emit for later generation
+    private static Dictionary<string, TypeBindings> _bindingsMap = new();
+
     public static string Emit(NamespaceModel model)
     {
+        // Reset bindings for this namespace
+        _bindingsMap = new Dictionary<string, TypeBindings>();
+
         var builder = new StringBuilder();
 
         // Header comment
@@ -48,13 +54,13 @@ public static class TypeScriptEmit
         // Types - export each type directly
         foreach (var type in model.Types)
         {
-            EmitType(builder, type, "", model.ClrName);
+            EmitType(builder, type, "", model.ClrName, model);
         }
 
         return builder.ToString();
     }
 
-    private static void EmitType(StringBuilder builder, TypeModel type, string indent, string currentNamespace)
+    private static void EmitType(StringBuilder builder, TypeModel type, string indent, string currentNamespace, NamespaceModel namespaceModel)
     {
         switch (type.Kind)
         {
@@ -66,7 +72,7 @@ public static class TypeScriptEmit
                 break;
             case TypeKind.Class:
             case TypeKind.Struct:
-                EmitClass(builder, type, indent, currentNamespace);
+                EmitClass(builder, type, indent, currentNamespace, namespaceModel);
                 break;
             case TypeKind.Delegate:
                 EmitDelegate(builder, type, indent, currentNamespace);
@@ -107,12 +113,12 @@ public static class TypeScriptEmit
 
         // Members - skip static members (TypeScript doesn't support static interface members)
         // For interfaces, emit properties as getter/setter methods
-        EmitMembers(builder, type.Members, indent + "    ", skipStatic: true, currentNamespace: currentNamespace, isInterface: true);
+        EmitMembers(builder, type.Members, typeBindings: null, indent + "    ", skipStatic: true, currentNamespace: currentNamespace, isInterface: true);
 
         builder.AppendLine($"{indent}}}");
     }
 
-    private static void EmitClass(StringBuilder builder, TypeModel type, string indent, string currentNamespace)
+    private static void EmitClass(StringBuilder builder, TypeModel type, string indent, string currentNamespace, NamespaceModel namespaceModel)
     {
         var typeName = ToTypeScriptType(type.Binding.Type, currentNamespace, includeNamespacePrefix: false, includeGenericArgs: false);
         var genericParams = FormatGenericParameters(type.GenericParameters, currentNamespace);
@@ -124,12 +130,19 @@ public static class TypeScriptEmit
         var modifiers = type.IsAbstract ? "abstract " : "";
         builder.AppendLine($"{indent}export {modifiers}class {typeName}{genericParams}{extends}{implements} {{");
 
-        // Members - emit properties and methods
-        EmitMembers(builder, type.Members, indent + "    ", currentNamespace: currentNamespace);
+        // Initialize bindings for this type
+        var typeBindings = new TypeBindings(
+            type.Binding.Type.TypeName,
+            typeName,
+            new Dictionary<string, MemberBindingInfo>());
+        _bindingsMap[typeName] = typeBindings;
+
+        // Members - emit methods (properties become methods too)
+        EmitMembers(builder, type.Members, typeBindings, indent + "    ", currentNamespace: currentNamespace);
 
         // Emit getter/setter methods for properties to satisfy interface contracts
-        // Pass the implemented interfaces so we can create overloads
-        EmitPropertyMethods(builder, type.Members, type.Implements, indent + "    ", currentNamespace: currentNamespace);
+        // Pass the namespace model so we can look up interface types
+        EmitPropertyMethods(builder, type.Members, type.Implements, namespaceModel, typeBindings, indent + "    ", currentNamespace);
 
         builder.AppendLine($"{indent}}}");
     }
@@ -152,12 +165,12 @@ public static class TypeScriptEmit
         builder.AppendLine($"{indent}export class {typeName} {{");
 
         // Only static members
-        EmitMembers(builder, type.Members, indent + "    ", staticOnly: true, currentNamespace: currentNamespace);
+        EmitMembers(builder, type.Members, typeBindings: null, indent + "    ", staticOnly: true, currentNamespace: currentNamespace);
 
         builder.AppendLine($"{indent}}}");
     }
 
-    private static void EmitMembers(StringBuilder builder, MemberCollectionModel members, string indent, bool staticOnly = false, bool skipStatic = false, string currentNamespace = "", bool isInterface = false)
+    private static void EmitMembers(StringBuilder builder, MemberCollectionModel members, TypeBindings? typeBindings, string indent, bool staticOnly = false, bool skipStatic = false, string currentNamespace = "", bool isInterface = false)
     {
         // Constructors (if not staticOnly and not skipStatic)
         if (!staticOnly && !skipStatic)
@@ -180,20 +193,30 @@ public static class TypeScriptEmit
             var parameters = string.Join(", ", method.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
 
             builder.AppendLine($"{indent}{modifiers}{method.TsAlias}{genericParams}({parameters}): {ToTypeScriptType(method.ReturnType, currentNamespace)};");
+
+            // Track binding
+            if (typeBindings != null)
+            {
+                typeBindings.Members[method.TsAlias] = new MemberBindingInfo(
+                    Kind: "method",
+                    ClrName: method.ClrName,
+                    ClrMemberType: "method");
+            }
         }
 
         // Properties
-        foreach (var prop in members.Properties)
+        // For interfaces: emit as getter/setter methods
+        // For classes: skip (will be emitted as methods by EmitPropertyMethods)
+        if (isInterface)
         {
-            if (staticOnly && !prop.IsStatic) continue;
-            if (skipStatic && prop.IsStatic) continue;
-
-            var modifiers = prop.IsStatic ? "static " : "";
-            var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
-
-            if (isInterface)
+            foreach (var prop in members.Properties)
             {
-                // For interfaces: emit getter/setter methods instead of properties
+                if (staticOnly && !prop.IsStatic) continue;
+                if (skipStatic && prop.IsStatic) continue;
+
+                var modifiers = prop.IsStatic ? "static " : "";
+                var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
+
                 // Convert PascalCase property name to camelCase method name
                 var getterName = ToCamelCase("get" + prop.TsAlias);
                 builder.AppendLine($"{indent}{modifiers}{getterName}(): {propertyType};");
@@ -204,12 +227,6 @@ public static class TypeScriptEmit
                     var setterName = ToCamelCase("set" + prop.TsAlias);
                     builder.AppendLine($"{indent}{modifiers}{setterName}(value: {propertyType}): System.Void;");
                 }
-            }
-            else
-            {
-                // For classes: emit property as-is
-                var readonlyModifier = prop.IsReadonly ? "readonly " : "";
-                builder.AppendLine($"{indent}{modifiers}{readonlyModifier}{prop.TsAlias}: {propertyType};");
             }
         }
 
@@ -240,27 +257,127 @@ public static class TypeScriptEmit
     /// <summary>
     /// Emits getter/setter methods for properties to satisfy interface contracts.
     /// Classes need these methods to implement interfaces (which have methods, not properties).
+    /// Generates overloads based on implemented interfaces.
+    /// Handles name conflicts with existing methods by adding numeric suffixes.
     /// </summary>
-    private static void EmitPropertyMethods(StringBuilder builder, MemberCollectionModel members, string indent, string currentNamespace)
+    private static void EmitPropertyMethods(StringBuilder builder, MemberCollectionModel members, IReadOnlyList<TypeReference> implements, NamespaceModel namespaceModel, TypeBindings typeBindings, string indent, string currentNamespace)
     {
+        // Collect existing method names to detect conflicts
+        var existingMethodNames = new HashSet<string>(
+            members.Methods.Select(m => ToCamelCase(m.TsAlias)),
+            StringComparer.Ordinal);
+
         foreach (var prop in members.Properties)
         {
             // Skip static properties for now (interfaces don't have static members)
             if (prop.IsStatic) continue;
 
             var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
-            var getterName = ToCamelCase("get" + prop.TsAlias);
+            var baseGetterName = ToCamelCase("get" + prop.TsAlias);
+            var baseSetterName = ToCamelCase("set" + prop.TsAlias);
 
-            // Emit getter method
+            // Resolve name conflicts
+            var getterName = ResolveConflict(baseGetterName, existingMethodNames);
+            var setterName = prop.IsReadonly ? null : ResolveConflict(baseSetterName, existingMethodNames);
+
+            // Collect all return types for this property from implemented interfaces (deduplicated)
+            var interfaceTypes = new HashSet<string>();
+
+            foreach (var interfaceRef in implements)
+            {
+                // Look up the interface type in the namespace model
+                var interfaceType = FindInterfaceType(interfaceRef, namespaceModel, currentNamespace);
+                if (interfaceType != null)
+                {
+                    // Find matching property in interface
+                    var interfaceProp = interfaceType.Members.Properties
+                        .FirstOrDefault(p => p.TsAlias == prop.TsAlias);
+
+                    if (interfaceProp != null)
+                    {
+                        var interfacePropertyType = ToTypeScriptType(interfaceProp.Type, currentNamespace);
+                        // Only add if different from the property's own type
+                        if (interfacePropertyType != propertyType)
+                        {
+                            interfaceTypes.Add(interfacePropertyType);
+                        }
+                    }
+                }
+            }
+
+            // Emit overloads for each unique interface type
+            foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+            {
+                builder.AppendLine($"{indent}{getterName}(): {interfaceType};");
+            }
+
+            // Emit the implementation signature (most specific type)
             builder.AppendLine($"{indent}{getterName}(): {propertyType};");
 
-            // If not readonly, emit setter method
-            if (!prop.IsReadonly)
+            // Track getter binding
+            typeBindings.Members[getterName] = new MemberBindingInfo(
+                Kind: "method",
+                ClrName: prop.ClrName,
+                ClrMemberType: "property",
+                Access: "get",
+                Overloads: interfaceTypes.Count > 0 ? interfaceTypes.Concat(new[] { propertyType }).ToList() : null);
+
+            // If not readonly, emit setter methods
+            if (!prop.IsReadonly && setterName != null)
             {
-                var setterName = ToCamelCase("set" + prop.TsAlias);
+                // Emit overloads for setters
+                foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                {
+                    builder.AppendLine($"{indent}{setterName}(value: {interfaceType}): System.Void;");
+                }
+
+                // Implementation signature
                 builder.AppendLine($"{indent}{setterName}(value: {propertyType}): System.Void;");
+
+                // Track setter binding
+                typeBindings.Members[setterName] = new MemberBindingInfo(
+                    Kind: "method",
+                    ClrName: prop.ClrName,
+                    ClrMemberType: "property",
+                    Access: "set");
             }
         }
+    }
+
+    /// <summary>
+    /// Resolves name conflicts by appending numeric suffix.
+    /// Also adds the resolved name to the existing names set.
+    /// </summary>
+    private static string ResolveConflict(string baseName, HashSet<string> existingNames)
+    {
+        var name = baseName;
+        var counter = 1;
+
+        while (existingNames.Contains(name))
+        {
+            name = baseName + counter;
+            counter++;
+        }
+
+        existingNames.Add(name);
+        return name;
+    }
+
+    /// <summary>
+    /// Finds an interface type by TypeReference in the current namespace.
+    /// Returns null if the interface is from another namespace or not found.
+    /// </summary>
+    private static TypeModel? FindInterfaceType(TypeReference typeRef, NamespaceModel namespaceModel, string currentNamespace)
+    {
+        // Skip if interface is from different namespace (cross-namespace lookup not implemented yet)
+        if (typeRef.Namespace != null && typeRef.Namespace != currentNamespace)
+            return null;
+
+        // Find type by name in the namespace
+        var typeName = typeRef.TypeName;
+        return namespaceModel.Types.FirstOrDefault(t =>
+            t.Kind == TypeKind.Interface &&
+            t.Binding.Type.TypeName == typeName);
     }
 
     private static string FormatGenericParameters(IReadOnlyList<GenericParameterModel> parameters, string currentNamespace)
@@ -396,4 +513,27 @@ public static class TypeScriptEmit
 
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Get the bindings map generated during emit.
+    /// </summary>
+    public static IReadOnlyDictionary<string, TypeBindings> GetBindings() => _bindingsMap;
 }
+
+/// <summary>
+/// Bindings for a single type.
+/// </summary>
+public sealed record TypeBindings(
+    string ClrName,
+    string TsAlias,
+    Dictionary<string, MemberBindingInfo> Members);
+
+/// <summary>
+/// Binding information for a member (maps TS method name to CLR member).
+/// </summary>
+public sealed record MemberBindingInfo(
+    string Kind,           // "method" in TS (all are methods now)
+    string ClrName,        // CLR member name
+    string ClrMemberType,  // "method", "property", "field", "event"
+    string? Access = null, // "get" or "set" for properties
+    List<string>? Overloads = null); // Return types for overloaded methods
