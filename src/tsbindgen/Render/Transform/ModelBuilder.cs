@@ -25,41 +25,26 @@ public static class ModelBuilder
         // Build type name lookup for nested type resolution
         // Maps short CLR type names to their qualified TypeScript names within this namespace
         var typeNameLookup = new Dictionary<string, string>();
-        Console.WriteLine($"\n=== Building lookup for namespace: {bundle.ClrName} ===");
         foreach (var type in bundle.Types)
         {
-            Console.WriteLine($"\n[TYPE] ClrName: '{type.ClrName}' | FullName: '{type.FullName}'");
-
             var tsName = BuildTypeScriptName(type.FullName, type.ClrName);
-            Console.WriteLine($"  -> TS Name: '{tsName}'");
-
             var shortName = type.ClrName.Replace('`', '_');
-            Console.WriteLine($"  -> Short Name (backticks replaced): '{shortName}'");
 
             // For nested types, also register by their simple name (e.g., "Enumerator")
             // This handles cases where return types use just the simple name
             if (type.FullName.Contains('+'))
             {
                 var parts = type.ClrName.Split('+');
-                Console.WriteLine($"  -> Split parts: [{string.Join(", ", parts)}]");
                 var simpleName = parts[parts.Length - 1].Replace('`', '_');
-                Console.WriteLine($"  -> Simple name (last part): '{simpleName}'");
 
                 if (!typeNameLookup.ContainsKey(simpleName))
                 {
-                    Console.WriteLine($"  -> [LOOKUP ADD] '{simpleName}' -> '{tsName}' (nested type - FIRST occurrence)");
                     typeNameLookup[simpleName] = tsName;
-                }
-                else
-                {
-                    Console.WriteLine($"  -> [LOOKUP SKIP] '{simpleName}' (already exists: '{typeNameLookup[simpleName]}')");
                 }
             }
 
-            Console.WriteLine($"  -> [LOOKUP ADD] '{shortName}' -> '{tsName}'");
             typeNameLookup[shortName] = tsName;
         }
-        Console.WriteLine($"=== Lookup table complete: {typeNameLookup.Count} entries ===\n");
 
         var types = bundle.Types
             .Select(t => BuildType(t, config, bundle.ClrName, importAliases, typeNameLookup))

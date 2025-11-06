@@ -799,89 +799,84 @@ public static class Reflect
                 if (!iface.IsPublic && !iface.IsNestedPublic)
                     continue;
 
-                try
+                // GetInterfaceMap() doesn't work with MetadataLoadContext
+                // Instead, manually iterate through interface methods
+                var interfaceMethods = iface.GetMethods(
+                    BindingFlags.Public | BindingFlags.Instance);
+
+                foreach (var interfaceMethod in interfaceMethods)
                 {
-                    var map = type.GetInterfaceMap(iface);
-                    for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                    // Skip property getters/setters - properties can't have overloads in TypeScript
+                    if (interfaceMethod.IsSpecialName)
+                        continue;
+
+                    // Skip explicit interface implementations (method name contains dot)
+                    if (interfaceMethod.Name.Contains('.'))
+                        continue;
+
+                    // Skip methods with non-public parameter or return types
+                    if (!interfaceMethod.ReturnType.IsPublic &&
+                        !interfaceMethod.ReturnType.IsNestedPublic &&
+                        interfaceMethod.ReturnType.FullName != "System.Void")
+                        continue;
+
+                    bool hasNonPublicParam = false;
+                    foreach (var param in interfaceMethod.GetParameters())
                     {
-                        var interfaceMethod = map.InterfaceMethods[i];
-
-                        // Skip property getters/setters - properties can't have overloads in TypeScript
-                        if (interfaceMethod.IsSpecialName)
-                            continue;
-
-                        // Skip explicit interface implementations (method name contains dot)
-                        if (interfaceMethod.Name.Contains('.'))
-                            continue;
-
-                        // Skip methods with non-public parameter or return types
-                        if (!interfaceMethod.ReturnType.IsPublic &&
-                            !interfaceMethod.ReturnType.IsNestedPublic &&
-                            interfaceMethod.ReturnType != typeof(void))
-                            continue;
-
-                        bool hasNonPublicParam = false;
-                        foreach (var param in interfaceMethod.GetParameters())
+                        if (!param.ParameterType.IsPublic && !param.ParameterType.IsNestedPublic)
                         {
-                            if (!param.ParameterType.IsPublic && !param.ParameterType.IsNestedPublic)
-                            {
-                                hasNonPublicParam = true;
-                                break;
-                            }
-                        }
-                        if (hasNonPublicParam)
-                            continue;
-
-                        // Create interface method snapshot
-                        var interfaceReturnType = CreateTypeReference(interfaceMethod.ReturnType, assembly);
-                        var interfaceParams = ReflectParameters(interfaceMethod.GetParameters(), assembly);
-
-                        // Check if we already have this exact method signature
-                        var hasExactMatch = methods.Any(m =>
-                            m.ClrName == interfaceMethod.Name &&
-                            TypeReferencesMatch(m.ReturnType, interfaceReturnType) &&
-                            ParameterListsMatch(m.Parameters, interfaceParams));
-
-                        if (!hasExactMatch)
-                        {
-                            // Add interface-compatible method signature
-                            var genericParams = interfaceMethod.IsGenericMethod
-                                ? ReflectGenericParameters(interfaceMethod)
-                                : Array.Empty<GenericParameter>();
-
-                            methods.Add(new MethodSnapshot(
-                                interfaceMethod.Name,
-                                false, // Instance method (interface methods are never static)
-                                false, // Not virtual (it's an overload)
-                                false, // Not override
-                                false, // Not abstract
-                                "public",
-                                genericParams,
-                                interfaceParams,
-                                interfaceReturnType,
-                                new MemberBinding(
-                                    assembly.GetName().Name ?? "",
-                                    CreateTypeReference(type, assembly),
-                                    interfaceMethod.Name))
-                            {
-                                SyntheticOverload = new SyntheticOverloadInfo(
-                                    iface.FullName ?? iface.Name,
-                                    interfaceMethod.Name,
-                                    SyntheticOverloadReason.InterfaceSignatureMismatch)
-                            });
+                            hasNonPublicParam = true;
+                            break;
                         }
                     }
-                }
-                catch
-                {
-                    // GetInterfaceMap can fail for some types in MetadataLoadContext
-                    // Skip and continue
+                    if (hasNonPublicParam)
+                        continue;
+
+                    // Create interface method snapshot
+                    var interfaceReturnType = CreateTypeReference(interfaceMethod.ReturnType, assembly);
+                    var interfaceParams = ReflectParameters(interfaceMethod.GetParameters(), assembly);
+
+                    // Check if we already have this exact method signature
+                    var hasExactMatch = methods.Any(m =>
+                        m.ClrName == interfaceMethod.Name &&
+                        TypeReferencesMatch(m.ReturnType, interfaceReturnType) &&
+                        ParameterListsMatch(m.Parameters, interfaceParams));
+
+                    if (!hasExactMatch)
+                    {
+                        // Add interface-compatible method signature
+                        var genericParams = interfaceMethod.IsGenericMethod
+                            ? ReflectGenericParameters(interfaceMethod)
+                            : Array.Empty<GenericParameter>();
+
+                        methods.Add(new MethodSnapshot(
+                            interfaceMethod.Name,
+                            false, // Instance method (interface methods are never static)
+                            false, // Not virtual (it's an overload)
+                            false, // Not override
+                            false, // Not abstract
+                            "public",
+                            genericParams,
+                            interfaceParams,
+                            interfaceReturnType,
+                            new MemberBinding(
+                                assembly.GetName().Name ?? "",
+                                CreateTypeReference(type, assembly),
+                                interfaceMethod.Name))
+                        {
+                            SyntheticOverload = new SyntheticOverloadInfo(
+                                iface.FullName ?? iface.Name,
+                                interfaceMethod.Name,
+                                SyntheticOverloadReason.InterfaceSignatureMismatch)
+                        });
+                    }
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Type may not support interface mapping
+            Console.WriteLine($"[OVERLOAD] ⚠ GetInterfaces failed for {type.Name}: {ex.Message}");
         }
     }
 
