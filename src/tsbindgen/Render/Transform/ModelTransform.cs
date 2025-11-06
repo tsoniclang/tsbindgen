@@ -8,7 +8,7 @@ namespace tsbindgen.Render.Transform;
 /// Converts NamespaceBundle (from Phase 2) to NamespaceModel (for Phase 3).
 /// Applies naming transforms and normalizes structure.
 /// </summary>
-public static class ModelBuilder
+public static class ModelTransform
 {
     public static NamespaceModel Build(
         NamespaceBundle bundle,

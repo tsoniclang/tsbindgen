@@ -25,7 +25,7 @@ public static class NamespacePipeline
         foreach (var (clrName, bundle) in bundles)
         {
             // Normalize
-            var model = ModelBuilder.Build(bundle, config);
+            var model = ModelTransform.Build(bundle, config);
 
             // Apply analysis passes
             model = DiamondAnalysis.Apply(model);
