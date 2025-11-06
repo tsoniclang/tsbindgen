@@ -273,6 +273,35 @@ public static class TypeScriptEmit
             var genericParams = FormatGenericParameters(methodGenericParams, currentNamespace);
             var parameters = string.Join(", ", method.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
 
+            // Check if this method has a name collision with a base class method
+            // Even if not marked as override (e.g., interface implementation with same name as Object method)
+            // If base method has different arity, emit the base signature(s) first to satisfy TypeScript
+            if (!method.IsStatic && typeModel?.BaseType != null)
+            {
+                var baseMethods = FindBaseClassMethods(typeModel.BaseType, method.ClrName, currentNamespace);
+
+                // Track which base signatures we've already emitted to avoid duplicates
+                var emittedSignatures = new HashSet<string>();
+                var currentSignature = $"{method.TsAlias}_{method.Parameters.Count}";
+                emittedSignatures.Add(currentSignature);
+
+                foreach (var baseMethod in baseMethods)
+                {
+                    // Only emit if arity differs (different parameter count)
+                    if (baseMethod.Parameters.Count != method.Parameters.Count)
+                    {
+                        var baseSignature = $"{baseMethod.TsAlias}_{baseMethod.Parameters.Count}";
+                        if (!emittedSignatures.Contains(baseSignature))
+                        {
+                            var baseGenericParams = FormatGenericParameters(baseMethod.GenericParameters, currentNamespace);
+                            var baseParameters = string.Join(", ", baseMethod.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
+                            builder.AppendLine($"{indent}{modifiers}{method.TsAlias}{baseGenericParams}({baseParameters}): {ToTypeScriptType(baseMethod.ReturnType, currentNamespace)};");
+                            emittedSignatures.Add(baseSignature);
+                        }
+                    }
+                }
+            }
+
             builder.AppendLine($"{indent}{modifiers}{method.TsAlias}{genericParams}({parameters}): {ToTypeScriptType(method.ReturnType, currentNamespace)};");
 
             // Track binding
@@ -438,6 +467,15 @@ public static class TypeScriptEmit
                 }
             }
 
+            // Check if this property overrides/hides a base class property
+            // If base has setter but this doesn't, we need to emit base setter to satisfy TypeScript
+            // Note: Check even if not marked as override, as property hiding also causes TS2416
+            PropertyModel? baseProperty = null;
+            if (typeModel.BaseType != null)
+            {
+                baseProperty = FindBaseClassProperty(typeModel.BaseType, prop.ClrName, currentNamespace);
+            }
+
             // Emit getter overloads for each unique interface type
             foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
             {
@@ -447,19 +485,33 @@ public static class TypeScriptEmit
             // Emit the getter implementation signature (most specific type)
             builder.AppendLine($"{indent}{methodName}(): {propertyType};");
 
-            // If not readonly, emit setter overloads as additional overloads of the same method
-            if (!prop.IsReadonly)
+            // Determine if we need to emit setter
+            // 1. If this property is not readonly, emit setter
+            // 2. If this property IS readonly but base property has setter, emit base setter to satisfy LSP
+            var shouldEmitSetter = !prop.IsReadonly || (baseProperty != null && !baseProperty.IsReadonly);
+
+            if (shouldEmitSetter)
             {
                 var voidType = currentNamespace == "System" ? "Void" : "System.Void";
 
-                // Emit setter overloads
-                foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                // If this is readonly but base has setter, emit base property type setter first
+                if (prop.IsReadonly && baseProperty != null && !baseProperty.IsReadonly)
                 {
-                    builder.AppendLine($"{indent}{methodName}(value: {interfaceType}): {voidType};");
+                    var basePropertyType = ToTypeScriptType(baseProperty.Type, currentNamespace);
+                    builder.AppendLine($"{indent}{methodName}(value: {basePropertyType}): {voidType};");
                 }
+                // Otherwise emit setter overloads as usual
+                else
+                {
+                    // Emit setter overloads
+                    foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                    {
+                        builder.AppendLine($"{indent}{methodName}(value: {interfaceType}): {voidType};");
+                    }
 
-                // Emit setter implementation signature
-                builder.AppendLine($"{indent}{methodName}(value: {propertyType}): {voidType};");
+                    // Emit setter implementation signature
+                    builder.AppendLine($"{indent}{methodName}(value: {propertyType}): {voidType};");
+                }
             }
 
             // Track binding (single entry for both getter and setter)
@@ -777,6 +829,74 @@ public static class TypeScriptEmit
     /// Get the bindings map generated during emit.
     /// </summary>
     public static IReadOnlyDictionary<string, TypeBindings> GetBindings() => _bindingsMap;
+
+    /// <summary>
+    /// Finds all methods with the given CLR name in the base class hierarchy.
+    /// Returns empty list if base type is not found or has no matching methods.
+    /// </summary>
+    private static List<MethodModel> FindBaseClassMethods(TypeReference baseTypeRef, string clrMethodName, string currentNamespace)
+    {
+        var result = new List<MethodModel>();
+
+        // Look up the base type in all namespace models
+        var baseNamespace = baseTypeRef.Namespace ?? currentNamespace;
+        if (!_allModels.TryGetValue(baseNamespace, out var namespaceModel))
+            return result;
+
+        // Find the base type by name (without generic args)
+        var baseTypeName = baseTypeRef.TypeName;
+        var baseType = namespaceModel.Types.FirstOrDefault(t => t.Binding.Type.TypeName == baseTypeName);
+        if (baseType == null)
+            return result;
+
+        // Find methods with matching CLR name
+        foreach (var method in baseType.Members.Methods)
+        {
+            if (method.ClrName == clrMethodName)
+            {
+                result.Add(method);
+            }
+        }
+
+        // Recursively check base class's base class
+        if (baseType.BaseType != null)
+        {
+            result.AddRange(FindBaseClassMethods(baseType.BaseType, clrMethodName, baseNamespace));
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Finds a property with the given CLR name in the base class hierarchy.
+    /// Returns null if base type is not found or has no matching property.
+    /// </summary>
+    private static PropertyModel? FindBaseClassProperty(TypeReference baseTypeRef, string clrPropertyName, string currentNamespace)
+    {
+        // Look up the base type in all namespace models
+        var baseNamespace = baseTypeRef.Namespace ?? currentNamespace;
+        if (!_allModels.TryGetValue(baseNamespace, out var namespaceModel))
+            return null;
+
+        // Find the base type by name (without generic args)
+        var baseTypeName = baseTypeRef.TypeName;
+        var baseType = namespaceModel.Types.FirstOrDefault(t => t.Binding.Type.TypeName == baseTypeName);
+        if (baseType == null)
+            return null;
+
+        // Find property with matching CLR name
+        var property = baseType.Members.Properties.FirstOrDefault(p => p.ClrName == clrPropertyName);
+        if (property != null)
+            return property;
+
+        // Recursively check base class's base class
+        if (baseType.BaseType != null)
+        {
+            return FindBaseClassProperty(baseType.BaseType, clrPropertyName, baseNamespace);
+        }
+
+        return null;
+    }
 }
 
 /// <summary>
