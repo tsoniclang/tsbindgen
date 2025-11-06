@@ -106,7 +106,8 @@ public static class TypeScriptEmit
         builder.AppendLine($"{indent}export interface {typeName}{genericParams}{extends} {{");
 
         // Members - skip static members (TypeScript doesn't support static interface members)
-        EmitMembers(builder, type.Members, indent + "    ", skipStatic: true, currentNamespace: currentNamespace);
+        // For interfaces, emit properties as getter/setter methods
+        EmitMembers(builder, type.Members, indent + "    ", skipStatic: true, currentNamespace: currentNamespace, isInterface: true);
 
         builder.AppendLine($"{indent}}}");
     }
@@ -123,8 +124,12 @@ public static class TypeScriptEmit
         var modifiers = type.IsAbstract ? "abstract " : "";
         builder.AppendLine($"{indent}export {modifiers}class {typeName}{genericParams}{extends}{implements} {{");
 
-        // Members
+        // Members - emit properties and methods
         EmitMembers(builder, type.Members, indent + "    ", currentNamespace: currentNamespace);
+
+        // Emit getter/setter methods for properties to satisfy interface contracts
+        // Pass the implemented interfaces so we can create overloads
+        EmitPropertyMethods(builder, type.Members, type.Implements, indent + "    ", currentNamespace: currentNamespace);
 
         builder.AppendLine($"{indent}}}");
     }
@@ -152,7 +157,7 @@ public static class TypeScriptEmit
         builder.AppendLine($"{indent}}}");
     }
 
-    private static void EmitMembers(StringBuilder builder, MemberCollectionModel members, string indent, bool staticOnly = false, bool skipStatic = false, string currentNamespace = "")
+    private static void EmitMembers(StringBuilder builder, MemberCollectionModel members, string indent, bool staticOnly = false, bool skipStatic = false, string currentNamespace = "", bool isInterface = false)
     {
         // Constructors (if not staticOnly and not skipStatic)
         if (!staticOnly && !skipStatic)
@@ -184,13 +189,28 @@ public static class TypeScriptEmit
             if (skipStatic && prop.IsStatic) continue;
 
             var modifiers = prop.IsStatic ? "static " : "";
-            var readonlyModifier = prop.IsReadonly ? "readonly " : "";
-
-            // Use the specific type directly - TypeScript will accept it for all implemented interfaces
-            // ContractType detection is kept for potential future use but not applied
             var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
 
-            builder.AppendLine($"{indent}{modifiers}{readonlyModifier}{prop.TsAlias}: {propertyType};");
+            if (isInterface)
+            {
+                // For interfaces: emit getter/setter methods instead of properties
+                // Convert PascalCase property name to camelCase method name
+                var getterName = ToCamelCase("get" + prop.TsAlias);
+                builder.AppendLine($"{indent}{modifiers}{getterName}(): {propertyType};");
+
+                // If not readonly, also emit setter
+                if (!prop.IsReadonly)
+                {
+                    var setterName = ToCamelCase("set" + prop.TsAlias);
+                    builder.AppendLine($"{indent}{modifiers}{setterName}(value: {propertyType}): System.Void;");
+                }
+            }
+            else
+            {
+                // For classes: emit property as-is
+                var readonlyModifier = prop.IsReadonly ? "readonly " : "";
+                builder.AppendLine($"{indent}{modifiers}{readonlyModifier}{prop.TsAlias}: {propertyType};");
+            }
         }
 
         // Fields
@@ -217,6 +237,32 @@ public static class TypeScriptEmit
         }
     }
 
+    /// <summary>
+    /// Emits getter/setter methods for properties to satisfy interface contracts.
+    /// Classes need these methods to implement interfaces (which have methods, not properties).
+    /// </summary>
+    private static void EmitPropertyMethods(StringBuilder builder, MemberCollectionModel members, string indent, string currentNamespace)
+    {
+        foreach (var prop in members.Properties)
+        {
+            // Skip static properties for now (interfaces don't have static members)
+            if (prop.IsStatic) continue;
+
+            var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
+            var getterName = ToCamelCase("get" + prop.TsAlias);
+
+            // Emit getter method
+            builder.AppendLine($"{indent}{getterName}(): {propertyType};");
+
+            // If not readonly, emit setter method
+            if (!prop.IsReadonly)
+            {
+                var setterName = ToCamelCase("set" + prop.TsAlias);
+                builder.AppendLine($"{indent}{setterName}(value: {propertyType}): System.Void;");
+            }
+        }
+    }
+
     private static string FormatGenericParameters(IReadOnlyList<GenericParameterModel> parameters, string currentNamespace)
     {
         if (parameters.Count == 0)
@@ -231,6 +277,22 @@ public static class TypeScriptEmit
         });
 
         return $"<{string.Join(", ", formatted)}>";
+    }
+
+    /// <summary>
+    /// Converts PascalCase identifier to camelCase.
+    /// </summary>
+    private static string ToCamelCase(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return name;
+
+        // If first character is already lowercase, return as-is
+        if (char.IsLower(name[0]))
+            return name;
+
+        // Convert first character to lowercase
+        return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
 
     /// <summary>
