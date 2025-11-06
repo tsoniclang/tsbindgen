@@ -1,4 +1,5 @@
 using System.Text;
+using tsbindgen.Config;
 using tsbindgen.Render;
 using tsbindgen.Snapshot;
 
@@ -112,12 +113,12 @@ public static class FacadeEmit
 
             // Add all generic types
             importNames.AddRange(typesByBaseName.Values
-                .SelectMany(list => list.Select(t => ConvertNestedTypeName(t.TsAlias))));
+                .SelectMany(list => list.Select(t => t.TsEmitName)));
 
             // Add non-generic types that collide with generic types (import with alias)
             var collidingNonGenerics = nonGenericTypesByName
                 .Where(kvp => typesByBaseName.ContainsKey(kvp.Key))
-                .Select(kvp => $"{ConvertNestedTypeName(kvp.Value.TsAlias)} as {ConvertNestedTypeName(kvp.Value.TsAlias)}_0");
+                .Select(kvp => $"{kvp.Value.TsEmitName} as {kvp.Value.TsEmitName}_0");
             importNames.AddRange(collidingNonGenerics);
 
             // Deduplicate
@@ -138,9 +139,7 @@ public static class FacadeEmit
         {
             sb.AppendLine("// Re-export non-generic types");
             sb.Append("export { ");
-            // Convert nested type separators: Console_Error → Console$Error
-            // This matches what TypeScriptEmit outputs
-            sb.Append(string.Join(", ", nonCollidingNonGenerics.Select(t => ConvertNestedTypeName(t.TsAlias))));
+            sb.Append(string.Join(", ", nonCollidingNonGenerics.Select(t => t.TsEmitName)));
             sb.AppendLine(" } from './internal/index';");
             sb.AppendLine();
         }
@@ -180,7 +179,7 @@ public static class FacadeEmit
 
     private static void GenerateSingleArityFacade(StringBuilder sb, string cleanName, TypeModel type, string currentNamespace)
     {
-        var internalName = ConvertNestedTypeName(type.TsAlias);
+        var internalName = type.TsEmitName;
 
         // Generate type alias with mirrored constraints
         sb.Append($"export type {cleanName}");
@@ -265,8 +264,8 @@ public static class FacadeEmit
                 sb.Append($"[{checkParam}] extends [__] ? ");
             }
 
-            // Emit the type (convert nested names)
-            var internalName = ConvertNestedTypeName(type.TsAlias);
+            // Emit the type
+            var internalName = type.TsEmitName;
 
             // For non-generic types that collide, we imported them with _0 suffix
             if (arity == 0)
@@ -328,7 +327,7 @@ public static class FacadeEmit
                     continue;
                 }
 
-                var internalName = ConvertNestedTypeName(type.TsAlias);
+                var internalName = type.TsEmitName;
                 var arity = type.GenericParameters.Count;
 
                 // For non-generic types that collide, we imported them with _0 suffix
@@ -416,50 +415,6 @@ public static class FacadeEmit
     }
 
     /// <summary>
-    /// Converts nested type names from Phase 3 format (underscore) to Phase 4 format (dollar).
-    /// E.g., "Console_Error" → "Console$Error"
-    /// This must match what TypeScriptEmit outputs in the internal .d.ts file.
-    /// </summary>
-    private static string ConvertNestedTypeName(string tsAlias)
-    {
-        // Nested types in Phase 3 use underscore: Console_Error, ReadOnlySequence_1_Enumerator
-        // TypeScriptEmit converts nested separators to dollar: Console$Error, ReadOnlySequence_1$Enumerator
-        // But keeps arity suffixes as underscore: _1, _2
-        //
-        // Algorithm:
-        // 1. Scan from end for _digit pattern (arity suffix)
-        // 2. Everything after last arity becomes nested separator (→ $)
-        // 3. Keep all arity suffixes as underscore
-
-        var result = new StringBuilder();
-        var i = 0;
-        var len = tsAlias.Length;
-
-        while (i < len)
-        {
-            if (tsAlias[i] == '_' && i + 1 < len && char.IsDigit(tsAlias[i + 1]))
-            {
-                // Found _digit pattern - this is arity suffix, keep underscore
-                result.Append('_');
-                i++;
-            }
-            else if (tsAlias[i] == '_')
-            {
-                // Found underscore NOT followed by digit - this is nested separator
-                result.Append('$');
-                i++;
-            }
-            else
-            {
-                result.Append(tsAlias[i]);
-                i++;
-            }
-        }
-
-        return result.ToString();
-    }
-
-    /// <summary>
     /// Partitions constraint type references into three buckets:
     /// 1. Type parameters (typeParameterNames) - don't import
     /// 2. Same-namespace types (sameNamespaceTypes) - import from ./internal/index
@@ -483,7 +438,7 @@ public static class FacadeEmit
         if (typeRef.Namespace == null || typeRef.Namespace == currentNamespace)
         {
             // Same namespace - add to named imports
-            sameNamespaceTypes.Add(ConvertNestedTypeName(typeRef.TypeName));
+            sameNamespaceTypes.Add(TsNaming.ForEmit(typeRef));
         }
         else
         {
@@ -530,11 +485,10 @@ public static class FacadeEmit
             sb.Append('.');
         }
 
-        // Add type name (with nested type conversion for same-namespace,
-        // plain name for type parameters)
+        // Add type name (emit name for actual types, plain name for type parameters)
         if (!isTypeParameter)
         {
-            sb.Append(ConvertNestedTypeName(typeRef.TypeName));
+            sb.Append(TsNaming.ForEmit(typeRef));
         }
         else
         {
