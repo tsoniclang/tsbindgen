@@ -574,12 +574,30 @@ public static class Reflect
             foreach (var iface in type.Implements)
                 ExtractTypeReferenceDependencies(iface, currentNamespace, deps);
 
+            // Extract from type-level generic parameter constraints
+            foreach (var genericParam in type.GenericParameters)
+            {
+                foreach (var constraint in genericParam.Constraints)
+                {
+                    ExtractTypeReferenceDependencies(constraint, currentNamespace, deps);
+                }
+            }
+
             foreach (var method in type.Members.Methods)
             {
                 ExtractTypeReferenceDependencies(method.ReturnType, currentNamespace, deps);
                 foreach (var param in method.Parameters)
                 {
                     ExtractTypeReferenceDependencies(param.Type, currentNamespace, deps);
+                }
+
+                // Extract from method-level generic parameter constraints
+                foreach (var genericParam in method.GenericParameters)
+                {
+                    foreach (var constraint in genericParam.Constraints)
+                    {
+                        ExtractTypeReferenceDependencies(constraint, currentNamespace, deps);
+                    }
                 }
             }
 
@@ -591,6 +609,19 @@ public static class Reflect
             foreach (var field in type.Members.Fields)
             {
                 ExtractTypeReferenceDependencies(field.Type, currentNamespace, deps);
+            }
+
+            foreach (var ctor in type.Members.Constructors)
+            {
+                foreach (var param in ctor.Parameters)
+                {
+                    ExtractTypeReferenceDependencies(param.Type, currentNamespace, deps);
+                }
+            }
+
+            foreach (var evt in type.Members.Events)
+            {
+                ExtractTypeReferenceDependencies(evt.Type, currentNamespace, deps);
             }
         }
 
