@@ -53,7 +53,7 @@ function generateTypes() {
 
     try {
         const output = execSync(
-            `dotnet run --project "${projectPath}" -- generate -d "${DOTNET_RUNTIME_PATH}" -o "${VALIDATION_DIR}"`,
+            `dotnet run --project "${projectPath}" -- generate -d "${DOTNET_RUNTIME_PATH}" -o "${VALIDATION_DIR}" --debug-typelist`,
             {
                 stdio: 'pipe',
                 encoding: 'utf-8',

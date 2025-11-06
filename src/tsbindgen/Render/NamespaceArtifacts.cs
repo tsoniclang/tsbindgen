@@ -11,4 +11,5 @@ public sealed record NamespaceArtifacts(
     string MetadataContent,
     string? BindingsContent,
     string JsStubContent,
-    string SnapshotContent);
+    string SnapshotContent,
+    string TypeListContent);

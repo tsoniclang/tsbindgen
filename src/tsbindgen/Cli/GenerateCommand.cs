@@ -78,6 +78,11 @@ public static class GenerateCommand
             getDefaultValue: () => false,
             description: "Write snapshots to disk for debugging");
 
+        var debugTypeListOption = new Option<bool>(
+            name: "--debug-typelist",
+            getDefaultValue: () => false,
+            description: "Write TypeScript type lists for debugging/comparison");
+
         command.AddOption(assemblyOption);
         command.AddOption(assemblyDirOption);
         command.AddOption(outDirOption);
@@ -90,6 +95,7 @@ public static class GenerateCommand
         command.AddOption(enumMemberNamesOption);
         command.AddOption(verboseOption);
         command.AddOption(debugSnapshotOption);
+        command.AddOption(debugTypeListOption);
 
         command.SetHandler(async (context) =>
         {
@@ -105,6 +111,7 @@ public static class GenerateCommand
             var enumMemberNames = context.ParseResult.GetValueForOption(enumMemberNamesOption);
             var verbose = context.ParseResult.GetValueForOption(verboseOption);
             var debugSnapshot = context.ParseResult.GetValueForOption(debugSnapshotOption);
+            var debugTypeList = context.ParseResult.GetValueForOption(debugTypeListOption);
 
             await ExecuteAsync(
                 assemblies,
@@ -118,7 +125,8 @@ public static class GenerateCommand
                 propertyNames,
                 enumMemberNames,
                 verbose,
-                debugSnapshot);
+                debugSnapshot,
+                debugTypeList);
         });
 
         return command;
@@ -136,7 +144,8 @@ public static class GenerateCommand
         string? propertyNames,
         string? enumMemberNames,
         bool verbose,
-        bool debugSnapshot)
+        bool debugSnapshot,
+        bool debugTypeList)
     {
         try
         {
@@ -281,7 +290,7 @@ public static class GenerateCommand
             Console.WriteLine();
 
             // Render TypeScript declarations
-            Render.Pipeline.NamespacePipeline.Run(outDir, bundles, config, verbose);
+            Render.Pipeline.NamespacePipeline.Run(outDir, bundles, config, verbose, debugTypeList);
 
             // TODO: Old view code moved to _old/Views
             /*

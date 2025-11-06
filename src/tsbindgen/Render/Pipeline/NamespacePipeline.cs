@@ -101,6 +101,9 @@ public static class NamespacePipeline
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase
         });
 
+        // Generate simplified type list for debugging/comparison
+        var typeListContent = TypeScriptTypeListEmit.Emit(model);
+
         return new NamespaceArtifacts(
             model.ClrName,
             model.TsAlias,
@@ -109,7 +112,8 @@ public static class NamespacePipeline
             metadataContent,
             bindingsContent,
             jsStubContent,
-            snapshotContent);
+            snapshotContent,
+            typeListContent);
     }
 
     /// <summary>
@@ -119,7 +123,8 @@ public static class NamespacePipeline
         string outputDir,
         IReadOnlyDictionary<string, NamespaceBundle> bundles,
         GeneratorConfig config,
-        bool verbose)
+        bool verbose,
+        bool debugTypeList = false)
     {
         Console.WriteLine("Phase 3: Transforming to TypeScript models...");
         Console.WriteLine("Phase 4: Rendering TypeScript declarations...");
@@ -162,6 +167,12 @@ public static class NamespacePipeline
 
             // Write post-analysis snapshot for debugging
             File.WriteAllText(Path.Combine(nsDir, "snapshot.json"), artifacts.SnapshotContent);
+
+            // Write TypeScript type list for debugging/comparison (optional)
+            if (debugTypeList)
+            {
+                File.WriteAllText(Path.Combine(nsDir, "typelist.json"), artifacts.TypeListContent);
+            }
 
             totalTypes += model.Types.Count;
             totalDiagnostics += model.Diagnostics.Count;
