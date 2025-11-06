@@ -603,15 +603,27 @@ public static class TypeScriptEmit
     /// <summary>
     /// Recursively collects all type parameter names referenced in a type.
     /// Example: List_1<T> returns ["T"], Dictionary_2<TKey, TValue> returns ["TKey", "TValue"]
+    /// Also handles arrays: T[] returns ["T"]
     /// </summary>
     private static HashSet<string> CollectTypeParameters(TypeReference typeRef)
     {
         var result = new HashSet<string>();
 
-        // If this is a type parameter itself, add it
-        if (IsTypeParameter(typeRef))
+        // Check if base type (ignoring arrays/pointers) is a type parameter
+        // For T[], we want to detect T
+        if (typeRef.DeclaringType == null && typeRef.GenericArgs.Count == 0)
         {
-            result.Add(typeRef.TypeName);
+            var name = typeRef.TypeName;
+            // Single letter: T, U, V
+            if (name.Length == 1 && char.IsUpper(name[0]))
+            {
+                result.Add(name);
+            }
+            // TKey, TValue, TResult, etc.
+            else if (name.Length > 1 && name[0] == 'T' && char.IsUpper(name[1]))
+            {
+                result.Add(name);
+            }
         }
 
         // Recursively collect from generic arguments
