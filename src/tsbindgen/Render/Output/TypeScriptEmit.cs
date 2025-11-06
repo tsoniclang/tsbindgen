@@ -12,10 +12,16 @@ public static class TypeScriptEmit
     // Track bindings during emit for later generation
     private static Dictionary<string, TypeBindings> _bindingsMap = new();
 
-    public static string Emit(NamespaceModel model)
+    // Store all namespace models for cross-namespace lookups
+    private static IReadOnlyDictionary<string, NamespaceModel> _allModels = new Dictionary<string, NamespaceModel>();
+
+    public static string Emit(NamespaceModel model, IReadOnlyDictionary<string, NamespaceModel> allModels)
     {
         // Reset bindings for this namespace
         _bindingsMap = new Dictionary<string, TypeBindings>();
+
+        // Store all models for cross-namespace interface lookups
+        _allModels = allModels;
 
         var builder = new StringBuilder();
 
@@ -217,15 +223,16 @@ public static class TypeScriptEmit
                 var modifiers = prop.IsStatic ? "static " : "";
                 var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
 
-                // Convert PascalCase property name to camelCase method name
-                var getterName = ToCamelCase("get" + prop.TsAlias);
-                builder.AppendLine($"{indent}{modifiers}{getterName}(): {propertyType};");
+                // Use property name directly (camelCase) - no "get"/"set" prefix
+                var methodName = ToCamelCase(prop.TsAlias);
 
-                // If not readonly, also emit setter
+                // Emit getter
+                builder.AppendLine($"{indent}{modifiers}{methodName}(): {propertyType};");
+
+                // If not readonly, emit setter as overload of same method
                 if (!prop.IsReadonly)
                 {
-                    var setterName = ToCamelCase("set" + prop.TsAlias);
-                    builder.AppendLine($"{indent}{modifiers}{setterName}(value: {propertyType}): System.Void;");
+                    builder.AppendLine($"{indent}{modifiers}{methodName}(value: {propertyType}): System.Void;");
                 }
             }
         }
@@ -273,12 +280,13 @@ public static class TypeScriptEmit
             if (prop.IsStatic) continue;
 
             var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
-            var baseGetterName = ToCamelCase("get" + prop.TsAlias);
-            var baseSetterName = ToCamelCase("set" + prop.TsAlias);
 
-            // Resolve name conflicts
-            var getterName = ResolveConflict(baseGetterName, existingMethodNames);
-            var setterName = prop.IsReadonly ? null : ResolveConflict(baseSetterName, existingMethodNames);
+            // Use property name directly (camelCase) - no "get"/"set" prefix
+            // C# doesn't allow property and method with same name, so no conflicts
+            var baseMethodName = ToCamelCase(prop.TsAlias);
+
+            // Resolve name conflicts (shouldn't happen, but defensive)
+            var methodName = ResolveConflict(baseMethodName, existingMethodNames);
 
             // Collect all return types for this property from implemented interfaces (deduplicated)
             var interfaceTypes = new HashSet<string>();
@@ -295,6 +303,7 @@ public static class TypeScriptEmit
 
                     if (interfaceProp != null)
                     {
+                        // Always use current namespace for type resolution so cross-namespace types get prefixed
                         var interfacePropertyType = ToTypeScriptType(interfaceProp.Type, currentNamespace);
                         // Only add if different from the property's own type
                         if (interfacePropertyType != propertyType)
@@ -305,42 +314,35 @@ public static class TypeScriptEmit
                 }
             }
 
-            // Emit overloads for each unique interface type
+            // Emit getter overloads for each unique interface type
             foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
             {
-                builder.AppendLine($"{indent}{getterName}(): {interfaceType};");
+                builder.AppendLine($"{indent}{methodName}(): {interfaceType};");
             }
 
-            // Emit the implementation signature (most specific type)
-            builder.AppendLine($"{indent}{getterName}(): {propertyType};");
+            // Emit the getter implementation signature (most specific type)
+            builder.AppendLine($"{indent}{methodName}(): {propertyType};");
 
-            // Track getter binding
-            typeBindings.Members[getterName] = new MemberBindingInfo(
+            // If not readonly, emit setter overloads as additional overloads of the same method
+            if (!prop.IsReadonly)
+            {
+                // Emit setter overloads
+                foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                {
+                    builder.AppendLine($"{indent}{methodName}(value: {interfaceType}): System.Void;");
+                }
+
+                // Emit setter implementation signature
+                builder.AppendLine($"{indent}{methodName}(value: {propertyType}): System.Void;");
+            }
+
+            // Track binding (single entry for both getter and setter)
+            typeBindings.Members[methodName] = new MemberBindingInfo(
                 Kind: "method",
                 ClrName: prop.ClrName,
                 ClrMemberType: "property",
-                Access: "get",
+                Access: prop.IsReadonly ? "get" : "get+set",
                 Overloads: interfaceTypes.Count > 0 ? interfaceTypes.Concat(new[] { propertyType }).ToList() : null);
-
-            // If not readonly, emit setter methods
-            if (!prop.IsReadonly && setterName != null)
-            {
-                // Emit overloads for setters
-                foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
-                {
-                    builder.AppendLine($"{indent}{setterName}(value: {interfaceType}): System.Void;");
-                }
-
-                // Implementation signature
-                builder.AppendLine($"{indent}{setterName}(value: {propertyType}): System.Void;");
-
-                // Track setter binding
-                typeBindings.Members[setterName] = new MemberBindingInfo(
-                    Kind: "method",
-                    ClrName: prop.ClrName,
-                    ClrMemberType: "property",
-                    Access: "set");
-            }
         }
     }
 
@@ -364,20 +366,33 @@ public static class TypeScriptEmit
     }
 
     /// <summary>
-    /// Finds an interface type by TypeReference in the current namespace.
-    /// Returns null if the interface is from another namespace or not found.
+    /// Finds an interface type by TypeReference, searching current namespace first, then all other namespaces.
+    /// Returns null if not found.
     /// </summary>
     private static TypeModel? FindInterfaceType(TypeReference typeRef, NamespaceModel namespaceModel, string currentNamespace)
     {
-        // Skip if interface is from different namespace (cross-namespace lookup not implemented yet)
-        if (typeRef.Namespace != null && typeRef.Namespace != currentNamespace)
-            return null;
-
-        // Find type by name in the namespace
+        var targetNamespace = typeRef.Namespace ?? currentNamespace;
         var typeName = typeRef.TypeName;
-        return namespaceModel.Types.FirstOrDefault(t =>
-            t.Kind == TypeKind.Interface &&
-            t.Binding.Type.TypeName == typeName);
+
+        // Try current namespace first
+        if (targetNamespace == currentNamespace)
+        {
+            var localType = namespaceModel.Types.FirstOrDefault(t =>
+                t.Kind == TypeKind.Interface &&
+                t.Binding.Type.TypeName == typeName);
+            if (localType != null)
+                return localType;
+        }
+
+        // Search in target namespace from all models
+        if (_allModels.TryGetValue(targetNamespace, out var targetModel))
+        {
+            return targetModel.Types.FirstOrDefault(t =>
+                t.Kind == TypeKind.Interface &&
+                t.Binding.Type.TypeName == typeName);
+        }
+
+        return null;
     }
 
     private static string FormatGenericParameters(IReadOnlyList<GenericParameterModel> parameters, string currentNamespace)
@@ -398,18 +413,44 @@ public static class TypeScriptEmit
 
     /// <summary>
     /// Converts PascalCase identifier to camelCase.
+    /// Escapes TypeScript reserved keywords by prefixixng with "$$".
     /// </summary>
     private static string ToCamelCase(string name)
     {
         if (string.IsNullOrEmpty(name))
             return name;
 
-        // If first character is already lowercase, return as-is
-        if (char.IsLower(name[0]))
-            return name;
+        // Convert first character to lowercase if needed
+        var camelName = char.IsLower(name[0])
+            ? name
+            : char.ToLowerInvariant(name[0]) + name.Substring(1);
 
-        // Convert first character to lowercase
-        return char.ToLowerInvariant(name[0]) + name.Substring(1);
+        // Escape TypeScript reserved keywords
+        if (IsTypeScriptReservedWord(camelName))
+            return "$$" + camelName;
+
+        return camelName;
+    }
+
+    /// <summary>
+    /// Checks if a name is a TypeScript reserved keyword.
+    /// </summary>
+    private static bool IsTypeScriptReservedWord(string name)
+    {
+        // TypeScript/JavaScript reserved keywords that can conflict with property names
+        return name switch
+        {
+            "break" or "case" or "catch" or "class" or "const" or "continue" or
+            "debugger" or "default" or "delete" or "do" or "else" or "enum" or
+            "export" or "extends" or "false" or "finally" or "for" or "function" or
+            "if" or "import" or "in" or "instanceof" or "new" or "null" or
+            "return" or "super" or "switch" or "this" or "throw" or "true" or
+            "try" or "typeof" or "var" or "void" or "while" or "with" or "yield" or
+            "let" or "static" or "implements" or "interface" or "package" or
+            "private" or "protected" or "public" or "as" or "async" or "await" or
+            "constructor" or "get" or "set" or "from" or "of" => true,
+            _ => false
+        };
     }
 
     /// <summary>

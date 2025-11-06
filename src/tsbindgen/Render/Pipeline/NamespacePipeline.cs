@@ -43,9 +43,9 @@ public static class NamespacePipeline
     /// <summary>
     /// Renders a single namespace to all artifacts.
     /// </summary>
-    public static NamespaceArtifacts RenderNamespace(NamespaceModel model)
+    public static NamespaceArtifacts RenderNamespace(NamespaceModel model, IReadOnlyDictionary<string, NamespaceModel> allModels)
     {
-        var dtsContent = TypeScriptEmit.Emit(model);
+        var dtsContent = TypeScriptEmit.Emit(model, allModels);
         var metadataContent = MetadataEmit.Emit(model);
         var bindingsContent = BindingEmit.Emit(model);
         var jsStubContent = ModuleStubEmit.Emit(model);
@@ -91,7 +91,7 @@ public static class NamespacePipeline
 
         foreach (var model in models.Values)
         {
-            var artifacts = RenderNamespace(model);
+            var artifacts = RenderNamespace(model, models);
 
             // Create namespace directory
             var nsDir = Path.Combine(namespacesDir, model.TsAlias);
