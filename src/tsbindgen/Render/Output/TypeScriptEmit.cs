@@ -35,18 +35,6 @@ public static class TypeScriptEmit
             builder.AppendLine();
         }
 
-        // Check if any type in this namespace uses covariant properties
-        bool hasCovariantProperties = model.Types.Any(t =>
-            t.Members.Properties.Any(p => p.ContractType != null));
-
-        // Emit Covariant helper type if needed
-        if (hasCovariantProperties)
-        {
-            builder.AppendLine("// Helper type for property covariance - allows readonly properties to have more specific types than interfaces require");
-            builder.AppendLine("export type Covariant<TSpecific, TContract> = TSpecific & { readonly __contract?: TContract };");
-            builder.AppendLine();
-        }
-
         // Helper declarations first - export them directly
         foreach (var type in model.Types)
         {
@@ -198,11 +186,9 @@ public static class TypeScriptEmit
             var modifiers = prop.IsStatic ? "static " : "";
             var readonlyModifier = prop.IsReadonly ? "readonly " : "";
 
-            // For covariant properties, wrap with Covariant<Specific, Contract> helper type
-            // This preserves type precision while satisfying TypeScript's interface requirements
-            var propertyType = prop.ContractType != null
-                ? $"Covariant<{ToTypeScriptType(prop.Type, currentNamespace)}, {ToTypeScriptType(prop.ContractType, currentNamespace)}>"
-                : ToTypeScriptType(prop.Type, currentNamespace);
+            // Use the specific type directly - TypeScript will accept it for all implemented interfaces
+            // ContractType detection is kept for potential future use but not applied
+            var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
 
             builder.AppendLine($"{indent}{modifiers}{readonlyModifier}{prop.TsAlias}: {propertyType};");
         }
