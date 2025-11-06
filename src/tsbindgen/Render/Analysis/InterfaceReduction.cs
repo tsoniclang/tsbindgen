@@ -15,23 +15,32 @@ namespace tsbindgen.Render.Analysis;
 /// </summary>
 public static class InterfaceReduction
 {
-    public static NamespaceModel Apply(NamespaceModel model)
+    public static NamespaceModel Apply(NamespaceModel model, IReadOnlyDictionary<string, NamespaceModel> allModels)
     {
-        // Build a lookup of all types in this namespace
-        var typeLookup = model.Types.ToDictionary(t => GetTypeKey(t.Binding.Type), t => t);
+        // Build a global type lookup across all namespaces
+        var globalTypeLookup = new Dictionary<string, TypeModel>();
+
+        foreach (var ns in allModels.Values)
+        {
+            foreach (var type in ns.Types)
+            {
+                var key = GetTypeKey(type.Binding.Type);
+                globalTypeLookup[key] = type;
+            }
+        }
 
         // Process each type
-        var updatedTypes = model.Types.Select(type => ReduceInterfaces(type, typeLookup, model)).ToList();
+        var updatedTypes = model.Types.Select(type => ReduceInterfaces(type, globalTypeLookup)).ToList();
 
         return model with { Types = updatedTypes };
     }
 
-    private static TypeModel ReduceInterfaces(TypeModel type, Dictionary<string, TypeModel> typeLookup, NamespaceModel model)
+    private static TypeModel ReduceInterfaces(TypeModel type, Dictionary<string, TypeModel> typeLookup)
     {
         if (type.Implements.Count <= 1)
             return type; // Nothing to reduce
 
-        var reduced = PerformTransitiveReduction(type.Implements, typeLookup, model);
+        var reduced = PerformTransitiveReduction(type.Implements, typeLookup);
 
         return type with { Implements = reduced };
     }
@@ -41,8 +50,7 @@ public static class InterfaceReduction
     /// </summary>
     private static IReadOnlyList<TypeReference> PerformTransitiveReduction(
         IReadOnlyList<TypeReference> interfaces,
-        Dictionary<string, TypeModel> typeLookup,
-        NamespaceModel model)
+        Dictionary<string, TypeModel> typeLookup)
     {
         var toKeep = new List<TypeReference>();
 
@@ -57,7 +65,7 @@ public static class InterfaceReduction
                     continue; // Skip self
 
                 // Check if otherInterface inherits from interfaceRef
-                if (InheritsFrom(otherInterfaceRef, interfaceRef, typeLookup, model, new HashSet<string>()))
+                if (InheritsFrom(otherInterfaceRef, interfaceRef, typeLookup, new HashSet<string>()))
                 {
                     isRedundant = true;
                     break;
@@ -75,12 +83,12 @@ public static class InterfaceReduction
 
     /// <summary>
     /// Checks if 'derived' inherits from 'base' (directly or transitively).
+    /// Uses global type lookup to resolve cross-namespace references.
     /// </summary>
     private static bool InheritsFrom(
         TypeReference derived,
         TypeReference baseType,
         Dictionary<string, TypeModel> typeLookup,
-        NamespaceModel model,
         HashSet<string> visited)
     {
         var derivedKey = GetTypeKey(derived);
@@ -91,18 +99,9 @@ public static class InterfaceReduction
 
         visited.Add(derivedKey);
 
-        // Try to find the derived type definition
-        TypeModel? derivedTypeDef = null;
-
-        // First check in current namespace
-        if (typeLookup.TryGetValue(derivedKey, out var localType))
-        {
-            derivedTypeDef = localType;
-        }
-        // TODO: Could also check in imported namespaces, but for now we only check locally
-
-        if (derivedTypeDef == null)
-            return false; // Can't determine, assume not inherited
+        // Try to find the derived type definition in global lookup
+        if (!typeLookup.TryGetValue(derivedKey, out var derivedTypeDef))
+            return false; // Can't find type, assume not inherited
 
         var baseKey = GetTypeKey(baseType);
 
@@ -113,7 +112,7 @@ public static class InterfaceReduction
                 return true; // Direct match
 
             // Check transitive inheritance
-            if (InheritsFrom(parent, baseType, typeLookup, model, visited))
+            if (InheritsFrom(parent, baseType, typeLookup, visited))
                 return true;
         }
 

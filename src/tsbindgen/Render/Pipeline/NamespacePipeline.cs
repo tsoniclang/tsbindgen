@@ -30,9 +30,8 @@ public static class NamespacePipeline
             // Normalize
             var model = ModelTransform.Build(bundle, config);
 
-            // Apply analysis passes
+            // Apply analysis passes (except InterfaceReduction which needs all models)
             model = DiamondAnalysis.Apply(model);
-            // model = InterfaceReduction.Apply(model);  // DISABLED - causing TS2304 errors
             model = CovarianceAdjustments.Apply(model);
             model = OverloadAdjustments.Apply(model);
             model = ExplicitInterfaceReview.Apply(model);
@@ -41,7 +40,15 @@ public static class NamespacePipeline
             models[clrName] = model;
         }
 
-        return models;
+        // Apply InterfaceReduction after all models are built (needs cross-namespace lookups)
+        var reducedModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in models)
+        {
+            var reducedModel = InterfaceReduction.Apply(model, models);
+            reducedModels[clrName] = reducedModel;
+        }
+
+        return reducedModels;
     }
 
     /// <summary>
