@@ -53,28 +53,34 @@ public static class ModelTransform
             effectiveBaseType = snapshot.Kind switch
             {
                 TypeKind.Struct => new TypeReference(
+                    Kind: TypeReferenceKind.NamedType,
                     Namespace: "System",
                     TypeName: "ValueType",
                     GenericArgs: new List<TypeReference>(),
                     ArrayRank: 0,
                     PointerDepth: 0,
                     DeclaringType: null,
+                    GenericParameter: null,
                     Assembly: null),
                 TypeKind.Enum => new TypeReference(
+                    Kind: TypeReferenceKind.NamedType,
                     Namespace: "System",
                     TypeName: "Enum",
                     GenericArgs: new List<TypeReference>(),
                     ArrayRank: 0,
                     PointerDepth: 0,
                     DeclaringType: null,
+                    GenericParameter: null,
                     Assembly: null),
                 TypeKind.Delegate => new TypeReference(
+                    Kind: TypeReferenceKind.NamedType,
                     Namespace: "System",
                     TypeName: "MulticastDelegate",
                     GenericArgs: new List<TypeReference>(),
                     ArrayRank: 0,
                     PointerDepth: 0,
                     DeclaringType: null,
+                    GenericParameter: null,
                     Assembly: null),
                 _ => null
             };

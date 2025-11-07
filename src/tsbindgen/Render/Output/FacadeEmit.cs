@@ -498,9 +498,8 @@ public static class FacadeEmit
     {
         var sb = new StringBuilder();
 
-        // Heuristic: Type parameters are simple names (T, TKey, TSelf, etc.)
-        // Never add namespace prefix for these, even if Namespace field is set
-        bool isTypeParameter = IsLikelyTypeParameter(typeRef.TypeName);
+        // Check if this is a generic parameter using Kind field
+        bool isTypeParameter = typeRef.Kind == TypeReferenceKind.GenericParameter;
 
         // Determine if this type needs a namespace prefix:
         // - Type parameters: never prefix
@@ -591,24 +590,4 @@ public static class FacadeEmit
             || type.Members.Events.Any(e => e.IsStatic);
     }
 
-    /// <summary>
-    /// Heuristic to detect if a type name is likely a type parameter.
-    /// Type parameters are usually: T, TKey, TValue, TSelf, etc.
-    /// </summary>
-    private static bool IsLikelyTypeParameter(string typeName)
-    {
-        // Single uppercase letter: T, K, V, etc.
-        if (typeName.Length == 1 && char.IsUpper(typeName[0]))
-        {
-            return true;
-        }
-
-        // Starts with T followed by uppercase: TKey, TValue, TSelf, etc.
-        if (typeName.Length > 1 && typeName[0] == 'T' && char.IsUpper(typeName[1]))
-        {
-            return true;
-        }
-
-        return false;
-    }
 }

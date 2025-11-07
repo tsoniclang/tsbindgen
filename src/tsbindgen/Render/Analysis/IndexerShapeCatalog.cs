@@ -172,12 +172,17 @@ public static class IndexerShapeCatalog
                 {
                     // First generic param is TKey - create type reference
                     var tKeyRef = new TypeReference(
+                        Kind: TypeReferenceKind.GenericParameter,
                         Namespace: null,
                         TypeName: type.GenericParameters[0].Name,
                         GenericArgs: Array.Empty<TypeReference>(),
                         ArrayRank: 0,
                         PointerDepth: 0,
                         DeclaringType: null,
+                        GenericParameter: new GenericParameterInfo(
+                            DeclaringTypeFullName: type.Binding.Type.Namespace + "." + type.Binding.Type.TypeName,
+                            ClrName: type.GenericParameters[0].Name,
+                            Position: 0),
                         Assembly: null);
 
                     return new[]
@@ -335,12 +340,14 @@ public static class IndexerShapeCatalog
     private static IReadOnlyList<ParameterModel> CreateInt32IndexParameter()
     {
         var int32Type = new TypeReference(
+            Kind: TypeReferenceKind.NamedType,
             Namespace: "System",
             TypeName: "Int32",
             GenericArgs: Array.Empty<TypeReference>(),
             ArrayRank: 0,
             PointerDepth: 0,
             DeclaringType: null,
+            GenericParameter: null,
             Assembly: "System.Private.CoreLib");
 
         return new[]

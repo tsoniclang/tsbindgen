@@ -88,12 +88,14 @@ public static class GenericSubstitution
         {
             var substitutedElement = SubstituteTypeInternal(
                 new TypeReference(
+                    type.Kind,
                     type.Namespace,
                     type.TypeName,
                     type.GenericArgs,
                     0, // Remove array rank temporarily
                     type.PointerDepth,
                     type.DeclaringType,
+                    type.GenericParameter,
                     type.Assembly
                 ),
                 substitutions,
@@ -102,12 +104,14 @@ public static class GenericSubstitution
 
             // Reapply the array rank
             return new TypeReference(
+                substitutedElement.Kind,
                 substitutedElement.Namespace,
                 substitutedElement.TypeName,
                 substitutedElement.GenericArgs,
                 type.ArrayRank,
                 substitutedElement.PointerDepth,
                 substitutedElement.DeclaringType,
+                substitutedElement.GenericParameter,
                 substitutedElement.Assembly
             );
         }
@@ -117,12 +121,14 @@ public static class GenericSubstitution
         {
             var substitutedPointed = SubstituteTypeInternal(
                 new TypeReference(
+                    type.Kind,
                     type.Namespace,
                     type.TypeName,
                     type.GenericArgs,
                     type.ArrayRank,
                     0, // Remove pointer depth temporarily
                     type.DeclaringType,
+                    type.GenericParameter,
                     type.Assembly
                 ),
                 substitutions,
@@ -131,12 +137,14 @@ public static class GenericSubstitution
 
             // Reapply the pointer depth
             return new TypeReference(
+                substitutedPointed.Kind,
                 substitutedPointed.Namespace,
                 substitutedPointed.TypeName,
                 substitutedPointed.GenericArgs,
                 substitutedPointed.ArrayRank,
                 type.PointerDepth,
                 substitutedPointed.DeclaringType,
+                substitutedPointed.GenericParameter,
                 substitutedPointed.Assembly
             );
         }
@@ -147,12 +155,14 @@ public static class GenericSubstitution
             var substitutedDeclaring = SubstituteTypeInternal(type.DeclaringType, substitutions, visiting);
 
             return new TypeReference(
+                type.Kind,
                 type.Namespace,
                 type.TypeName,
                 type.GenericArgs,
                 type.ArrayRank,
                 type.PointerDepth,
                 substitutedDeclaring,
+                type.GenericParameter,
                 type.Assembly
             );
         }
@@ -165,12 +175,14 @@ public static class GenericSubstitution
                 .ToList();
 
             return new TypeReference(
+                type.Kind,
                 type.Namespace,
                 type.TypeName,
                 substitutedArgs,
                 type.ArrayRank,
                 type.PointerDepth,
                 type.DeclaringType,
+                type.GenericParameter,
                 type.Assembly
             );
         }

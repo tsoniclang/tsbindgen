@@ -178,16 +178,38 @@ public sealed record EventSnapshot(
     MemberBinding Binding);
 
 /// <summary>
+/// Kind of type reference (named type, generic parameter, etc.).
+/// </summary>
+public enum TypeReferenceKind
+{
+    /// <summary>Named type (class, interface, struct, enum, delegate)</summary>
+    NamedType,
+    /// <summary>Generic parameter (e.g., T, TKey, TSelf)</summary>
+    GenericParameter
+}
+
+/// <summary>
+/// Identity of a generic parameter, linking it to its declaring scope.
+/// </summary>
+public sealed record GenericParameterInfo(
+    string DeclaringTypeFullName,  // Full CLR name of declaring type (e.g., "System.Collections.Generic.IComparable`1")
+    string ClrName,                // CLR name of the parameter (e.g., "T", "TKey", "TSelf")
+    int Position);                 // 0-based position in declaring generic parameter list
+
+/// <summary>
 /// Type reference - recursive structure for CLR types.
 /// Fully parsed with namespace, type name, generic arguments, arrays, and pointers.
+/// Supports both named types and generic parameters with proper identity tracking.
 /// </summary>
 public sealed record TypeReference(
-    string? Namespace,                           // "System.Collections.Generic" (null if no namespace or primitive)
-    string TypeName,                             // "Enumerator", "LinkedList_1", "Int32", "T" (generic param)
+    TypeReferenceKind Kind,                      // Kind of type reference (NamedType or GenericParameter)
+    string? Namespace,                           // "System.Collections.Generic" (null if no namespace, primitive, or generic param)
+    string TypeName,                             // "Enumerator", "LinkedList_1", "Int32", "T" (for display/emit)
     IReadOnlyList<TypeReference> GenericArgs,    // Recursive: generic type arguments
     int ArrayRank,                                // 0 = not array, 1 = [], 2 = [][], etc.
     int PointerDepth,                            // 0 = not pointer, 1 = *, 2 = **, etc.
     TypeReference? DeclaringType,                // Recursive: parent type for nested types (null for top-level)
+    GenericParameterInfo? GenericParameter,      // Non-null when Kind == GenericParameter
     string? Assembly = null)                     // Assembly alias for cross-assembly refs
 {
     /// <summary>
@@ -249,19 +271,28 @@ public sealed record TypeReference(
     }
 
     /// <summary>
-    /// Creates a simple TypeReference (no generics, arrays, pointers, declaring type).
+    /// Creates a simple named type TypeReference (no generics, arrays, pointers, declaring type).
     /// </summary>
     public static TypeReference CreateSimple(string? ns, string typeName, string? assembly = null)
     {
-        return new TypeReference(ns, typeName, Array.Empty<TypeReference>(), 0, 0, null, assembly);
+        return new TypeReference(TypeReferenceKind.NamedType, ns, typeName, Array.Empty<TypeReference>(), 0, 0, null, null, assembly);
     }
 
     /// <summary>
-    /// Creates a generic TypeReference.
+    /// Creates a generic named type TypeReference.
     /// </summary>
     public static TypeReference CreateGeneric(string? ns, string typeName, IReadOnlyList<TypeReference> genericArgs, string? assembly = null)
     {
-        return new TypeReference(ns, typeName, genericArgs, 0, 0, null, assembly);
+        return new TypeReference(TypeReferenceKind.NamedType, ns, typeName, genericArgs, 0, 0, null, null, assembly);
+    }
+
+    /// <summary>
+    /// Creates a generic parameter TypeReference.
+    /// </summary>
+    public static TypeReference CreateGenericParameter(string declaringTypeFullName, string clrName, int position)
+    {
+        var gpInfo = new GenericParameterInfo(declaringTypeFullName, clrName, position);
+        return new TypeReference(TypeReferenceKind.GenericParameter, null, clrName, Array.Empty<TypeReference>(), 0, 0, null, gpInfo, null);
     }
 
     /// <summary>
@@ -269,7 +300,7 @@ public sealed record TypeReference(
     /// </summary>
     public static TypeReference CreateArray(TypeReference elementType, int rank)
     {
-        return new TypeReference(elementType.Namespace, elementType.TypeName, elementType.GenericArgs, rank, elementType.PointerDepth, elementType.DeclaringType, elementType.Assembly);
+        return new TypeReference(elementType.Kind, elementType.Namespace, elementType.TypeName, elementType.GenericArgs, rank, elementType.PointerDepth, elementType.DeclaringType, elementType.GenericParameter, elementType.Assembly);
     }
 
     /// <summary>
@@ -277,7 +308,7 @@ public sealed record TypeReference(
     /// </summary>
     public static TypeReference CreatePointer(TypeReference elementType)
     {
-        return new TypeReference(elementType.Namespace, elementType.TypeName, elementType.GenericArgs, elementType.ArrayRank, elementType.PointerDepth + 1, elementType.DeclaringType, elementType.Assembly);
+        return new TypeReference(elementType.Kind, elementType.Namespace, elementType.TypeName, elementType.GenericArgs, elementType.ArrayRank, elementType.PointerDepth + 1, elementType.DeclaringType, elementType.GenericParameter, elementType.Assembly);
     }
 };
 

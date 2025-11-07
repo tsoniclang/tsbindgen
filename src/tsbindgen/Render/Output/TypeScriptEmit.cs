@@ -955,22 +955,8 @@ public static class TypeScriptEmit
     /// </summary>
     private static bool IsTypeParameter(TypeReference typeRef)
     {
-        // Type parameters have no declaring type and no generic args
-        // Note: ArrayRank and PointerDepth can be > 0 (e.g., T[], T*)
-        // We check the base TypeName to see if it's a type parameter pattern
-        if (typeRef.DeclaringType != null) return false;
-        if (typeRef.GenericArgs.Count > 0) return false;
-
-        // Type parameters typically start with 'T' followed by uppercase or end immediately
-        // Examples: T, TKey, TValue, TResult, TSource, TElement, etc.
-        var name = typeRef.TypeName;
-        if (name.Length == 1 && char.IsUpper(name[0]))
-            return true; // Single letter: T, U, V, etc.
-
-        if (name.Length > 1 && name[0] == 'T' && char.IsUpper(name[1]))
-            return true; // TKey, TValue, TResult, etc.
-
-        return false;
+        // Now we have proper Kind tracking, so just check the Kind field
+        return typeRef.Kind == TypeReferenceKind.GenericParameter;
     }
 
     /// <summary>

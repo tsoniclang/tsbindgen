@@ -435,6 +435,14 @@ public static class Reflect
         // Handle ref/out parameters - strip the & suffix
         var actualType = type.IsByRef ? type.GetElementType()! : type;
 
+        // Handle generic parameters (e.g., T, TKey, TSelf)
+        if (actualType.IsGenericParameter)
+        {
+            // Get declaring type's full name for identity tracking
+            var declaringTypeFullName = actualType.DeclaringType?.FullName ?? actualType.DeclaringMethod?.DeclaringType?.FullName ?? "Unknown";
+            return TypeReference.CreateGenericParameter(declaringTypeFullName, actualType.Name, actualType.GenericParameterPosition);
+        }
+
         // Handle pointer types
         if (actualType.IsPointer)
         {
@@ -475,14 +483,14 @@ public static class Reflect
         if (actualType.IsFunctionPointer)
         {
             // Store as special marker - Phase 3 will transform to 'any'
-            return new TypeReference(null, "__FunctionPointer", Array.Empty<TypeReference>(), 0, 0, null, null);
+            return new TypeReference(TypeReferenceKind.NamedType, null, "__FunctionPointer", Array.Empty<TypeReference>(), 0, 0, null, null, null);
         }
 
         // Check for other exotic types with empty names
         if (string.IsNullOrEmpty(typeName))
         {
             // Unknown type - use marker for Phase 3
-            return new TypeReference(null, "__UnknownType", Array.Empty<TypeReference>(), 0, 0, null, null);
+            return new TypeReference(TypeReferenceKind.NamedType, null, "__UnknownType", Array.Empty<TypeReference>(), 0, 0, null, null, null);
         }
 
         // Handle generic types - recursively create TypeReferences for generic arguments
@@ -495,11 +503,11 @@ public static class Reflect
                 .Select(arg => CreateTypeReference(arg, currentAssembly))
                 .ToList();
 
-            return new TypeReference(ns, typeName, genericArgs, 0, 0, declaringTypeRef, assembly);
+            return new TypeReference(TypeReferenceKind.NamedType, ns, typeName, genericArgs, 0, 0, declaringTypeRef, null, assembly);
         }
 
         // Simple type (no generics)
-        return new TypeReference(ns, typeName, Array.Empty<TypeReference>(), 0, 0, declaringTypeRef, assembly);
+        return new TypeReference(TypeReferenceKind.NamedType, ns, typeName, Array.Empty<TypeReference>(), 0, 0, declaringTypeRef, null, assembly);
     }
 
     /// <summary>
