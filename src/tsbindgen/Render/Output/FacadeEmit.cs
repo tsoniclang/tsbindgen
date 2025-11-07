@@ -189,6 +189,11 @@ public static class FacadeEmit
         // Constraints are resolved via import type, no cross-namespace references
         if (type.GenericParameters.Count > 0)
         {
+            // Build generic parameter scope map: CLR name → facade name
+            var gpMap = type.GenericParameters.ToDictionary(
+                gp => gp.Name,
+                gp => ctx.GetGenericParameterIdentifier(gp));
+
             sb.Append('<');
             sb.Append(string.Join(", ", type.GenericParameters.Select(gp =>
             {
@@ -196,7 +201,8 @@ public static class FacadeEmit
                 if (gp.Constraints.Count > 0)
                 {
                     // Format constraints: only add namespace prefix for cross-namespace types
-                    param += " extends " + string.Join(" & ", gp.Constraints.Select(c => FormatConstraintReference(c, currentNamespace)));
+                    param += " extends " + string.Join(" & ", gp.Constraints.Select(c =>
+                        FormatConstraintReference(c, currentNamespace, gpMap)));
                 }
                 return param;
             })));
@@ -282,6 +288,16 @@ public static class FacadeEmit
                 // T & ConstraintType resolves constraint via import type
                 sb.Append('<');
                 var args = new List<string>();
+
+                // Build generic parameter scope map: CLR name → facade name
+                var gpMap = new Dictionary<string, string>();
+                for (int j = 0; j < arity; j++)
+                {
+                    var gp = type.GenericParameters[j];
+                    var facadeName = $"T{j + 1}";
+                    gpMap[gp.Name] = facadeName;
+                }
+
                 for (int j = 0; j < arity; j++)
                 {
                     var paramName = $"T{j + 1}";
@@ -290,7 +306,8 @@ public static class FacadeEmit
                     if (gp.Constraints.Count > 0)
                     {
                         // Apply intersection: T1 & (IEquatable_1<T1> & ValueType)
-                        var constraints = string.Join(" & ", gp.Constraints.Select(c => FormatConstraintReference(c, currentNamespace)));
+                        var constraints = string.Join(" & ", gp.Constraints.Select(c =>
+                            FormatConstraintReference(c, currentNamespace, gpMap)));
                         args.Add($"{paramName} & ({constraints})");
                     }
                     else
@@ -344,6 +361,11 @@ public static class FacadeEmit
                 // Type parameters WITH constraints (mirrored from internal type)
                 if (arity > 0)
                 {
+                    // Build generic parameter scope map: CLR name → facade name
+                    var gpMap = type.GenericParameters.ToDictionary(
+                        gp => gp.Name,
+                        gp => ctx.GetGenericParameterIdentifier(gp));
+
                     sb.Append('<');
                     sb.Append(string.Join(", ", type.GenericParameters.Select(gp =>
                     {
@@ -351,7 +373,7 @@ public static class FacadeEmit
                         if (gp.Constraints.Count > 0)
                         {
                             // Mirror constraints from internal type
-                            param += " extends " + string.Join(" & ", gp.Constraints.Select(c => FormatConstraintReference(c, currentNamespace)));
+                            param += " extends " + string.Join(" & ", gp.Constraints.Select(c => FormatConstraintReference(c, currentNamespace, gpMap)));
                         }
                         return param;
                     })));
@@ -466,7 +488,13 @@ public static class FacadeEmit
     /// Uses namespace aliases (Namespace$Subnamespace.TypeName) for cross-namespace types only.
     /// Same-namespace types use unqualified names. Type parameters are never prefixed.
     /// </summary>
-    private static string FormatConstraintReference(TypeReference typeRef, string currentNamespace)
+    /// <param name="typeRef">The type reference to format</param>
+    /// <param name="currentNamespace">Current namespace for relative references</param>
+    /// <param name="genericParamMap">Maps CLR generic parameter names (e.g., "T") to facade names (e.g., "T1")</param>
+    private static string FormatConstraintReference(
+        TypeReference typeRef,
+        string currentNamespace,
+        IReadOnlyDictionary<string, string>? genericParamMap = null)
     {
         var sb = new StringBuilder();
 
@@ -488,20 +516,30 @@ public static class FacadeEmit
             sb.Append('.');
         }
 
-        // Add type name (emit name for actual types, plain name for type parameters)
+        // Add type name (emit name for actual types, mapped name for type parameters)
         if (!isTypeParameter)
         {
             sb.Append(TsNaming.ForEmit(typeRef));
         }
         else
         {
-            sb.Append(typeRef.TypeName); // Type parameters used as-is
+            // Use mapped name from scope (e.g., T1, TSelf) if available,
+            // otherwise fall back to CLR name
+            if (genericParamMap != null && genericParamMap.TryGetValue(typeRef.TypeName, out var mappedName))
+            {
+                sb.Append(mappedName);
+            }
+            else
+            {
+                sb.Append(typeRef.TypeName); // Fallback to CLR name
+            }
         }
 
         if (typeRef.GenericArgs.Count > 0)
         {
             sb.Append('<');
-            sb.Append(string.Join(", ", typeRef.GenericArgs.Select(arg => FormatConstraintReference(arg, currentNamespace))));
+            sb.Append(string.Join(", ", typeRef.GenericArgs.Select(arg =>
+                FormatConstraintReference(arg, currentNamespace, genericParamMap))));
             sb.Append('>');
         }
 

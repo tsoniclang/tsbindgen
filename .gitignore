@@ -63,3 +63,4 @@ package-lock.json
 # Project-specific temporary directories
 .tests/
 .analysis/
+.codespin/

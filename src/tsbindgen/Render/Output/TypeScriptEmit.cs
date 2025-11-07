@@ -360,11 +360,26 @@ public static class TypeScriptEmit
                 }
             }
 
+            // Build generic parameter scope map: CLR name → TS name
+            // This includes both class-level and method-level generic parameters
+            var gpMap = new Dictionary<string, string>();
+            if (typeModel != null)
+            {
+                foreach (var gp in typeModel.GenericParameters)
+                {
+                    gpMap[gp.Name] = _ctx.GetGenericParameterIdentifier(gp);
+                }
+            }
+            foreach (var gp in methodGenericParams)
+            {
+                gpMap[gp.Name] = _ctx.GetGenericParameterIdentifier(gp);
+            }
+
             var genericParams = FormatGenericParameters(methodGenericParams, currentNamespace);
-            var parameters = string.Join(", ", method.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
+            var parameters = string.Join(", ", method.Parameters.Select(p => $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace, genericParamMap: gpMap)}"));
 
             // Note: Base class method overloads are now added in Phase 3 by BaseClassOverloadFix analysis pass
-            builder.AppendLine($"{indent}{modifiers}{methodName}{genericParams}({parameters}): {ToTypeScriptType(method.ReturnType, currentNamespace)};");
+            builder.AppendLine($"{indent}{modifiers}{methodName}{genericParams}({parameters}): {ToTypeScriptType(method.ReturnType, currentNamespace, genericParamMap: gpMap)};");
 
             // Track binding
             if (typeBindings != null)
@@ -1108,7 +1123,7 @@ public static class TypeScriptEmit
     /// <param name="currentNamespace">Current namespace context (for determining if cross-namespace prefix needed)</param>
     /// <param name="includeNamespacePrefix">If true, includes namespace prefix for cross-namespace types. If false, only includes type name.</param>
     /// <param name="includeGenericArgs">If true, includes generic type arguments. If false, omits them (for type declarations).</param>
-    private static string ToTypeScriptType(TypeReference typeRef, string currentNamespace, bool includeNamespacePrefix = true, bool includeGenericArgs = true)
+    private static string ToTypeScriptType(TypeReference typeRef, string currentNamespace, bool includeNamespacePrefix = true, bool includeGenericArgs = true, IReadOnlyDictionary<string, string>? genericParamMap = null)
     {
         // Function pointers are mapped to 'any'
         if (typeRef.TypeName == "__FunctionPointer")
@@ -1158,7 +1173,17 @@ public static class TypeScriptEmit
                 sb.Append(typeRef.Namespace.Replace(".", "$"));
                 sb.Append(".");
             }
-            sb.Append(typeRef.TypeName);
+
+            // Use mapped name from scope (e.g., TSelf, T1) if available for type parameters,
+            // otherwise fall back to CLR name
+            if (isTypeParameter && genericParamMap != null && genericParamMap.TryGetValue(typeRef.TypeName, out var mappedName))
+            {
+                sb.Append(mappedName);
+            }
+            else
+            {
+                sb.Append(typeRef.TypeName);
+            }
         }
 
         // Generic arguments
@@ -1168,7 +1193,7 @@ public static class TypeScriptEmit
             for (int i = 0; i < typeRef.GenericArgs.Count; i++)
             {
                 if (i > 0) sb.Append(", ");
-                sb.Append(ToTypeScriptType(typeRef.GenericArgs[i], currentNamespace, includeNamespacePrefix, includeGenericArgs));
+                sb.Append(ToTypeScriptType(typeRef.GenericArgs[i], currentNamespace, includeNamespacePrefix, includeGenericArgs, genericParamMap));
             }
             sb.Append('>');
         }
