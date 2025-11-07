@@ -216,8 +216,9 @@ public static class FacadeEmit
         sb.AppendLine(";");
 
         // Generate value export (for constructor)
-        // Skip for interfaces since they are type-only in TypeScript
-        if (type.Kind != TypeKind.Interface)
+        // Only emit for runtime-bearing types: class and struct
+        // Skip type-only: interface, delegate
+        if (IsConstructible(type))
         {
             sb.AppendLine($"export const {cleanName}: typeof {internalName};");
         }
@@ -312,17 +313,18 @@ public static class FacadeEmit
 
         sb.AppendLine();
 
-        // Generate value export (constructor interface) - Fix Issue 1
-        // Skip if all types are interfaces (type-only, no runtime constructors)
-        bool hasNonInterface = sorted.Any(t => t.Kind != TypeKind.Interface);
+        // Generate value export (constructor interface)
+        // Only emit if at least one type is constructible (class or struct)
+        // Skip if all types are type-only (interface, delegate)
+        bool hasConstructible = sorted.Any(IsConstructible);
 
-        if (hasNonInterface)
+        if (hasConstructible)
         {
             sb.AppendLine($"export interface {baseName}Constructor {{");
             foreach (var type in sorted)
             {
-                // Skip interface types in constructor interface
-                if (type.Kind == TypeKind.Interface)
+                // Skip type-only types in constructor interface
+                if (!IsConstructible(type))
                 {
                     continue;
                 }
@@ -503,6 +505,16 @@ public static class FacadeEmit
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Checks if a type is constructible (has runtime representation).
+    /// Returns true for class and struct (runtime-bearing types).
+    /// Returns false for interface and delegate (type-only).
+    /// </summary>
+    private static bool IsConstructible(TypeModel type)
+    {
+        return type.Kind == TypeKind.Class || type.Kind == TypeKind.Struct;
     }
 
     /// <summary>
