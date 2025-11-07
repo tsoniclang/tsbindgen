@@ -101,7 +101,16 @@ public static class NamespacePipeline
             interfaceOverloadModels[clrName] = fixedModel;
         }
 
-        return interfaceOverloadModels;
+        // Apply InterfaceHierarchyNormalizer to resolve TS2430 Category A errors
+        // Breaks generic→non-generic inheritance (IEnumerator_1 → IEnumerator, etc.)
+        var hierarchyNormalizedModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in interfaceOverloadModels)
+        {
+            var fixedModel = InterfaceHierarchyNormalizer.Apply(model, interfaceOverloadModels, ctx);
+            hierarchyNormalizedModels[clrName] = fixedModel;
+        }
+
+        return hierarchyNormalizedModels;
     }
 
     /// <summary>
