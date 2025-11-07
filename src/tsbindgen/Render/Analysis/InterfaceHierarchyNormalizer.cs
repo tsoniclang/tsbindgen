@@ -24,8 +24,8 @@ namespace tsbindgen.Render.Analysis;
 public static class InterfaceHierarchyNormalizer
 {
     /// <summary>
-    /// Breaks generic→non-generic inheritance edges in interfaces.
-    /// Only processes interfaces (not classes/structs).
+    /// Breaks generic→non-generic inheritance edges in interfaces and structs.
+    /// Processes both interfaces and structs that implement interfaces.
     /// </summary>
     public static NamespaceModel Apply(
         NamespaceModel model,
@@ -34,11 +34,11 @@ public static class InterfaceHierarchyNormalizer
     {
         var updatedTypes = model.Types.Select(type =>
         {
-            // Only process interfaces
-            if (type.Kind != TypeKind.Interface)
+            // Process interfaces and structs that implement interfaces
+            if (type.Kind != TypeKind.Interface && type.Kind != TypeKind.Struct)
                 return type;
 
-            // Only process interfaces that implement other interfaces
+            // Only process types that implement other interfaces
             if (type.Implements.Count == 0)
                 return type;
 

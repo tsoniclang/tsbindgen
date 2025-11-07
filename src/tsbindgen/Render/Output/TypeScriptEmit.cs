@@ -390,14 +390,35 @@ public static class TypeScriptEmit
                 var modifiers = (prop.IsStatic && !isInterface) ? "static " : "";
                 var propertyType = ToTypeScriptType(prop.Type, currentNamespace);
 
-                // Emit getter
-                builder.AppendLine($"{indent}{modifiers}{methodName}(): {propertyType};");
-
-                // If not readonly, emit setter as overload of same method
-                if (!prop.IsReadonly)
+                // A2: If this is an indexer, emit as method-pair with explicit index parameters
+                if (prop.IsIndexer && prop.IndexerParameters.Count > 0)
                 {
-                    var voidType = currentNamespace == "System" ? "Void" : "System.Void";
-                    builder.AppendLine($"{indent}{modifiers}{methodName}(value: {propertyType}): {voidType};");
+                    // Format index parameters
+                    var indexParams = string.Join(", ", prop.IndexerParameters.Select(p =>
+                        $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
+
+                    // Emit getter with index parameters
+                    builder.AppendLine($"{indent}{modifiers}{methodName}({indexParams}): {propertyType};");
+
+                    // If not readonly, emit setter with index parameters + value
+                    if (!prop.IsReadonly)
+                    {
+                        var voidType = currentNamespace == "System" ? "Void" : "System.Void";
+                        builder.AppendLine($"{indent}{modifiers}{methodName}({indexParams}, value: {propertyType}): {voidType};");
+                    }
+                }
+                else
+                {
+                    // Regular property: emit as parameterless getter/setter
+                    // Emit getter
+                    builder.AppendLine($"{indent}{modifiers}{methodName}(): {propertyType};");
+
+                    // If not readonly, emit setter as overload of same method
+                    if (!prop.IsReadonly)
+                    {
+                        var voidType = currentNamespace == "System" ? "Void" : "System.Void";
+                        builder.AppendLine($"{indent}{modifiers}{methodName}(value: {propertyType}): {voidType};");
+                    }
                 }
             }
         }
@@ -573,41 +594,88 @@ public static class TypeScriptEmit
                 }
             }
 
-            // Emit getter overloads for each unique interface type
-            foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+            // A2: If this is an indexer, emit with explicit index parameters
+            if (prop.IsIndexer && prop.IndexerParameters.Count > 0)
             {
-                builder.AppendLine($"{indent}{methodName}(): {interfaceType};");
-            }
+                // Format index parameters
+                var indexParams = string.Join(", ", prop.IndexerParameters.Select(p =>
+                    $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
 
-            // Emit the getter implementation signature (most specific type)
-            builder.AppendLine($"{indent}{methodName}(): {propertyType};");
-
-            // Determine if we need to emit setter
-            // 1. If this property is not readonly, emit setter
-            // 2. If this property IS readonly but base property has setter, emit base setter to satisfy LSP
-            var shouldEmitSetter = !prop.IsReadonly || (baseProperty != null && !baseProperty.IsReadonly);
-
-            if (shouldEmitSetter)
-            {
-                var voidType = currentNamespace == "System" ? "Void" : "System.Void";
-
-                // If this is readonly but base has setter, emit base property type setter first
-                if (prop.IsReadonly && baseProperty != null && !baseProperty.IsReadonly && substitutedBasePropertyType != null)
+                // Emit getter overloads for each unique interface type (with index parameters)
+                foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
                 {
-                    var basePropertyType = ToTypeScriptType(substitutedBasePropertyType, currentNamespace);
-                    builder.AppendLine($"{indent}{methodName}(value: {basePropertyType}): {voidType};");
+                    builder.AppendLine($"{indent}{methodName}({indexParams}): {interfaceType};");
                 }
-                // Otherwise emit setter overloads as usual
-                else
-                {
-                    // Emit setter overloads
-                    foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
-                    {
-                        builder.AppendLine($"{indent}{methodName}(value: {interfaceType}): {voidType};");
-                    }
 
-                    // Emit setter implementation signature
-                    builder.AppendLine($"{indent}{methodName}(value: {propertyType}): {voidType};");
+                // Emit the getter implementation signature (most specific type, with index parameters)
+                builder.AppendLine($"{indent}{methodName}({indexParams}): {propertyType};");
+
+                // Determine if we need to emit setter
+                var shouldEmitSetter = !prop.IsReadonly || (baseProperty != null && !baseProperty.IsReadonly);
+
+                if (shouldEmitSetter)
+                {
+                    var voidType = currentNamespace == "System" ? "Void" : "System.Void";
+
+                    // If this is readonly but base has setter, emit base property type setter first
+                    if (prop.IsReadonly && baseProperty != null && !baseProperty.IsReadonly && substitutedBasePropertyType != null)
+                    {
+                        var basePropertyType = ToTypeScriptType(substitutedBasePropertyType, currentNamespace);
+                        builder.AppendLine($"{indent}{methodName}({indexParams}, value: {basePropertyType}): {voidType};");
+                    }
+                    // Otherwise emit setter overloads as usual
+                    else
+                    {
+                        // Emit setter overloads (with index parameters + value)
+                        foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                        {
+                            builder.AppendLine($"{indent}{methodName}({indexParams}, value: {interfaceType}): {voidType};");
+                        }
+
+                        // Emit setter implementation signature (with index parameters + value)
+                        builder.AppendLine($"{indent}{methodName}({indexParams}, value: {propertyType}): {voidType};");
+                    }
+                }
+            }
+            else
+            {
+                // Regular property: emit as parameterless getter/setter
+                // Emit getter overloads for each unique interface type
+                foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                {
+                    builder.AppendLine($"{indent}{methodName}(): {interfaceType};");
+                }
+
+                // Emit the getter implementation signature (most specific type)
+                builder.AppendLine($"{indent}{methodName}(): {propertyType};");
+
+                // Determine if we need to emit setter
+                // 1. If this property is not readonly, emit setter
+                // 2. If this property IS readonly but base property has setter, emit base setter to satisfy LSP
+                var shouldEmitSetter = !prop.IsReadonly || (baseProperty != null && !baseProperty.IsReadonly);
+
+                if (shouldEmitSetter)
+                {
+                    var voidType = currentNamespace == "System" ? "Void" : "System.Void";
+
+                    // If this is readonly but base has setter, emit base property type setter first
+                    if (prop.IsReadonly && baseProperty != null && !baseProperty.IsReadonly && substitutedBasePropertyType != null)
+                    {
+                        var basePropertyType = ToTypeScriptType(substitutedBasePropertyType, currentNamespace);
+                        builder.AppendLine($"{indent}{methodName}(value: {basePropertyType}): {voidType};");
+                    }
+                    // Otherwise emit setter overloads as usual
+                    else
+                    {
+                        // Emit setter overloads
+                        foreach (var interfaceType in interfaceTypes.OrderBy(t => t))
+                        {
+                            builder.AppendLine($"{indent}{methodName}(value: {interfaceType}): {voidType};");
+                        }
+
+                        // Emit setter implementation signature
+                        builder.AppendLine($"{indent}{methodName}(value: {propertyType}): {voidType};");
+                    }
                 }
             }
 
@@ -668,14 +736,35 @@ public static class TypeScriptEmit
                     var propertyType = ToTypeScriptType(interfaceProp.Type, currentNamespace);
                     var modifiers = interfaceProp.IsStatic ? "static " : "";
 
-                    // Emit getter
-                    builder.AppendLine($"{indent}{modifiers}{memberName}(): {propertyType};");
-
-                    // Emit setter if not readonly
-                    if (!interfaceProp.IsReadonly)
+                    // A2: Check if this is an indexer
+                    if (interfaceProp.IsIndexer && interfaceProp.IndexerParameters.Count > 0)
                     {
-                        var voidType = currentNamespace == "System" ? "Void" : "System.Void";
-                        builder.AppendLine($"{indent}{modifiers}{memberName}(value: {propertyType}): {voidType};");
+                        // Format index parameters
+                        var indexParams = string.Join(", ", interfaceProp.IndexerParameters.Select(p =>
+                            $"{EscapeIdentifier(p.Name)}: {ToTypeScriptType(p.Type, currentNamespace)}"));
+
+                        // Emit getter with index parameters
+                        builder.AppendLine($"{indent}{modifiers}{memberName}({indexParams}): {propertyType};");
+
+                        // Emit setter if not readonly (with index parameters + value)
+                        if (!interfaceProp.IsReadonly)
+                        {
+                            var voidType = currentNamespace == "System" ? "Void" : "System.Void";
+                            builder.AppendLine($"{indent}{modifiers}{memberName}({indexParams}, value: {propertyType}): {voidType};");
+                        }
+                    }
+                    else
+                    {
+                        // Regular property: emit as parameterless getter/setter
+                        // Emit getter
+                        builder.AppendLine($"{indent}{modifiers}{memberName}(): {propertyType};");
+
+                        // Emit setter if not readonly
+                        if (!interfaceProp.IsReadonly)
+                        {
+                            var voidType = currentNamespace == "System" ? "Void" : "System.Void";
+                            builder.AppendLine($"{indent}{modifiers}{memberName}(value: {propertyType}): {voidType};");
+                        }
                     }
 
                     // Track in bindings

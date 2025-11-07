@@ -110,7 +110,27 @@ public static class NamespacePipeline
             hierarchyNormalizedModels[clrName] = fixedModel;
         }
 
-        return hierarchyNormalizedModels;
+        // Apply IndexerShapeCatalog in TWO phases to break circular dependencies (A2)
+        // Phase A: Annotate interface indexers across all namespaces
+        // Phase B: Propagate to classes via interface inference
+
+        // Phase A: Process all interfaces first
+        var phaseAModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in hierarchyNormalizedModels)
+        {
+            var interfaceOnlyModel = IndexerShapeCatalog.ApplyPhaseA(model, hierarchyNormalizedModels, ctx);
+            phaseAModels[clrName] = interfaceOnlyModel;
+        }
+
+        // Phase B: Process all classes with Phase A results available
+        var indexerAnnotatedModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in phaseAModels)
+        {
+            var fullyAnnotatedModel = IndexerShapeCatalog.ApplyPhaseB(model, phaseAModels, ctx);
+            indexerAnnotatedModels[clrName] = fullyAnnotatedModel;
+        }
+
+        return indexerAnnotatedModels;
     }
 
     /// <summary>

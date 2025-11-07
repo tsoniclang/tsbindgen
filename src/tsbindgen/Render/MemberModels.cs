@@ -47,6 +47,18 @@ public sealed record PropertyModel(
     TypeReference? ContractType)  // If not null, property has covariant return type
 {
     public bool SyntheticMember { get; init; }  // If true, added by analysis pass
+
+    /// <summary>
+    /// True if this property is a C# indexer (Item property with index parameters).
+    /// When true, should be emitted as method-pair with index parameters.
+    /// </summary>
+    public bool IsIndexer { get; init; }
+
+    /// <summary>
+    /// Index parameters for indexers. Empty for non-indexer properties.
+    /// Example: Item[int index] → [(name: "index", type: System.Int32)]
+    /// </summary>
+    public IReadOnlyList<ParameterModel> IndexerParameters { get; init; } = Array.Empty<ParameterModel>();
 }
 
 /// <summary>
