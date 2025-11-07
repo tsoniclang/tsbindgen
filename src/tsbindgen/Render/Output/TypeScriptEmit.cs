@@ -283,7 +283,7 @@ public static class TypeScriptEmit
             // For static methods, check if they reference class-level type parameters
             // If so, add those type parameters to the method level
             var methodGenericParams = method.GenericParameters.ToList();
-            if (method.IsStatic && typeModel != null && typeModel.GenericParameters.Count > 0)
+            if (method.IsStatic && typeModel != null)
             {
                 // Collect all type parameters referenced in parameters and return type
                 var referencedTypeParams = new HashSet<string>();
@@ -293,19 +293,29 @@ public static class TypeScriptEmit
                 }
                 referencedTypeParams.UnionWith(CollectTypeParameters(method.ReturnType));
 
-                // Check which class-level type parameters are referenced
-                var classTypeParamNames = new HashSet<string>(typeModel.GenericParameters.Select(p => _ctx.GetGenericParameterIdentifier(p)));
-                var referencedClassTypeParams = referencedTypeParams.Where(tp => classTypeParamNames.Contains(tp)).ToList();
-
-                // Add referenced class type parameters to method's generic parameters (at the beginning)
-                foreach (var classTypeParam in typeModel.GenericParameters)
+                // If this class is non-generic but the method references type parameters,
+                // skip the method (it's from a generic base and can't be represented)
+                if (typeModel.GenericParameters.Count == 0 && referencedTypeParams.Count > 0)
                 {
-                    if (referencedClassTypeParams.Contains(_ctx.GetGenericParameterIdentifier(classTypeParam)))
+                    continue;  // Skip methods with orphaned type parameters
+                }
+
+                // If the class is generic, check which class-level type parameters are referenced
+                if (typeModel.GenericParameters.Count > 0)
+                {
+                    var classTypeParamNames = new HashSet<string>(typeModel.GenericParameters.Select(p => _ctx.GetGenericParameterIdentifier(p)));
+                    var referencedClassTypeParams = referencedTypeParams.Where(tp => classTypeParamNames.Contains(tp)).ToList();
+
+                    // Add referenced class type parameters to method's generic parameters (at the beginning)
+                    foreach (var classTypeParam in typeModel.GenericParameters)
                     {
-                        // Only add if not already in method's generic parameters
-                        if (!methodGenericParams.Any(mp => _ctx.GetGenericParameterIdentifier(mp) == _ctx.GetGenericParameterIdentifier(classTypeParam)))
+                        if (referencedClassTypeParams.Contains(_ctx.GetGenericParameterIdentifier(classTypeParam)))
                         {
-                            methodGenericParams.Insert(0, classTypeParam);
+                            // Only add if not already in method's generic parameters
+                            if (!methodGenericParams.Any(mp => _ctx.GetGenericParameterIdentifier(mp) == _ctx.GetGenericParameterIdentifier(classTypeParam)))
+                            {
+                                methodGenericParams.Insert(0, classTypeParam);
+                            }
                         }
                     }
                 }
@@ -370,16 +380,28 @@ public static class TypeScriptEmit
 
             // For static fields that reference class type parameters, add them as method-level generics
             var methodGenericParams = new List<GenericParameterModel>();
-            if (field.IsStatic && typeModel != null && typeModel.GenericParameters.Count > 0)
+            if (field.IsStatic && typeModel != null)
             {
                 var referencedTypeParams = CollectTypeParameters(field.Type);
-                var classTypeParamNames = new HashSet<string>(typeModel.GenericParameters.Select(p => _ctx.GetGenericParameterIdentifier(p)));
 
-                foreach (var classTypeParam in typeModel.GenericParameters)
+                // If this class is non-generic but the field references type parameters,
+                // skip the field (it's from a generic base and can't be represented)
+                if (typeModel.GenericParameters.Count == 0 && referencedTypeParams.Count > 0)
                 {
-                    if (referencedTypeParams.Contains(_ctx.GetGenericParameterIdentifier(classTypeParam)))
+                    continue;  // Skip fields with orphaned type parameters
+                }
+
+                // If the class is generic, add referenced type parameters to method-level generics
+                if (typeModel.GenericParameters.Count > 0)
+                {
+                    var classTypeParamNames = new HashSet<string>(typeModel.GenericParameters.Select(p => _ctx.GetGenericParameterIdentifier(p)));
+
+                    foreach (var classTypeParam in typeModel.GenericParameters)
                     {
-                        methodGenericParams.Add(classTypeParam);
+                        if (referencedTypeParams.Contains(_ctx.GetGenericParameterIdentifier(classTypeParam)))
+                        {
+                            methodGenericParams.Add(classTypeParam);
+                        }
                     }
                 }
             }
