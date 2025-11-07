@@ -59,6 +59,7 @@ public static class ModelTransform
             snapshot.Binding,
             Array.Empty<Diagnostic>(), // Type-level diagnostics added by analysis passes
             Array.Empty<HelperDeclaration>(), // Helpers added by analysis passes
+            null, // ConflictingInterfaces - populated by ExplicitInterfaceViewDetection pass
             snapshot.UnderlyingType,
             snapshot.EnumMembers,
             snapshot.DelegateParameters?.Select(p => BuildParameter(p)).ToList(),

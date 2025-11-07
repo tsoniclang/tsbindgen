@@ -21,6 +21,8 @@ public sealed record TypeModel(
     BindingInfo Binding,
     IReadOnlyList<Diagnostic> Diagnostics,
     IReadOnlyList<HelperDeclaration> Helpers,
+    // Explicit interface views (for TS2416 covariance conflicts)
+    IReadOnlyList<TypeReference>? ConflictingInterfaces = null,
     // Enum-specific
     string? UnderlyingType = null,
     IReadOnlyList<EnumMember>? EnumMembers = null,

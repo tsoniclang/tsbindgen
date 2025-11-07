@@ -83,7 +83,15 @@ public static class NamespacePipeline
             staticFixedModels[clrName] = fixedModel;
         }
 
-        return staticFixedModels;
+        // Apply ExplicitInterfaceViewDetection to identify covariance conflicts (TS2416)
+        var viewDetectedModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in staticFixedModels)
+        {
+            var fixedModel = ExplicitInterfaceViewDetection.Apply(model, staticFixedModels, ctx);
+            viewDetectedModels[clrName] = fixedModel;
+        }
+
+        return viewDetectedModels;
     }
 
     /// <summary>

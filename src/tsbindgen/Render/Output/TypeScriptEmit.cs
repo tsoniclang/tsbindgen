@@ -205,9 +205,15 @@ public static class TypeScriptEmit
             extends = "";
         }
 
-        // Filter out implements that reference undefined types (internal types)
+        // Filter out:
+        // 1. Implements that reference undefined types (internal types)
+        // 2. Conflicting interfaces (will be exposed as explicit views)
+        var conflictingSet = type.ConflictingInterfaces != null
+            ? new HashSet<string>(type.ConflictingInterfaces.Select(i => GetTypeReferenceKey(i)))
+            : new HashSet<string>();
+
         var validImplements = type.Implements
-            .Where(i => IsTypeDefinedInCurrentNamespace(i, currentNamespace))
+            .Where(i => IsTypeDefinedInCurrentNamespace(i, currentNamespace) && !conflictingSet.Contains(GetTypeReferenceKey(i)))
             .ToList();
 
         var implements = validImplements.Count > 0
@@ -230,6 +236,12 @@ public static class TypeScriptEmit
         // Emit getter/setter methods for properties to satisfy interface contracts
         // Pass the namespace model so we can look up interface types
         EmitPropertyMethods(builder, type.Members, type.Implements, namespaceModel, typeBindings, indent + "    ", currentNamespace, type);
+
+        // Emit explicit interface views for conflicting interfaces (TS2416 covariance conflicts)
+        if (type.ConflictingInterfaces != null && type.ConflictingInterfaces.Count > 0)
+        {
+            EmitExplicitInterfaceViews(builder, type.ConflictingInterfaces, indent + "    ", currentNamespace);
+        }
 
         // Note: Missing interface members are now added in Phase 3 by ExplicitInterfaceImplementation analysis pass
 
@@ -1090,6 +1102,37 @@ public static class TypeScriptEmit
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Gets a unique key for a TypeReference for equality comparison.
+    /// </summary>
+    private static string GetTypeReferenceKey(TypeReference typeRef)
+    {
+        var ns = typeRef.Namespace != null ? typeRef.Namespace + "." : "";
+        return ns + typeRef.TypeName;
+    }
+
+    /// <summary>
+    /// Emits explicit interface view properties for interfaces with covariance conflicts.
+    /// These allow access to interface-accurate signatures without polluting the class surface.
+    /// </summary>
+    private static void EmitExplicitInterfaceViews(
+        StringBuilder builder,
+        IReadOnlyList<TypeReference> conflictingInterfaces,
+        string indent,
+        string currentNamespace)
+    {
+        foreach (var interfaceRef in conflictingInterfaces)
+        {
+            // Generate view property name: As_InterfaceName
+            var interfaceTypeName = ToTypeScriptType(interfaceRef, currentNamespace, includeNamespacePrefix: false, includeGenericArgs: false);
+            var viewPropertyName = $"As_{interfaceTypeName}";
+
+            // Emit readonly property with full interface type
+            var interfaceType = ToTypeScriptType(interfaceRef, currentNamespace);
+            builder.AppendLine($"{indent}readonly {viewPropertyName}: {interfaceType};");
+        }
     }
 }
 
