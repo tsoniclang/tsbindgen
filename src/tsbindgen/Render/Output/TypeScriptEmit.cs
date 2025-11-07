@@ -96,7 +96,6 @@ public static class TypeScriptEmit
     private static void EmitKindBrandingTypes(StringBuilder builder)
     {
         builder.AppendLine("// .NET kind markers for Tsonic compatibility");
-        builder.AppendLine("export interface ValueType {}");
         builder.AppendLine("export interface struct { readonly __brand: \"struct\"; }");
         builder.AppendLine();
     }
@@ -131,8 +130,12 @@ public static class TypeScriptEmit
         var typeName = ToTypeScriptType(type.Binding.Type, currentNamespace, includeNamespacePrefix: false, includeGenericArgs: false);
 
         // Emit as branded number type for Tsonic compatibility
-        // Format: type EnumName = number & ValueType & struct & { readonly __enum: "EnumName" }
-        builder.AppendLine($"{indent}export type {typeName} = number & ValueType & struct & {{ readonly __enum: \"{typeName}\" }};");
+        // Format: type EnumName = number & System.ValueType & struct & { readonly __enum: "EnumName" }
+        // Use fully qualified System.ValueType to satisfy generic constraints
+        var valueTypeRef = currentNamespace == "System"
+            ? "ValueType"
+            : "System.ValueType";
+        builder.AppendLine($"{indent}export type {typeName} = number & {valueTypeRef} & struct & {{ readonly __enum: \"{typeName}\" }};");
 
         // Emit namespace with enum members as const declarations (no initializers in .d.ts)
         builder.AppendLine($"{indent}export namespace {typeName} {{");
