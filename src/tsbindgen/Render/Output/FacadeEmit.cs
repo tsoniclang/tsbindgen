@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using tsbindgen.Config;
 using tsbindgen.Render;
@@ -104,7 +105,7 @@ public static class FacadeEmit
         // Generate same-namespace imports (named imports)
         if (typesByBaseName.Count > 0 || sameNamespaceTypes.Count > 0)
         {
-            sb.Append("import type { ");
+            sb.Append("import { ");
 
             var importNames = new List<string>();
 
@@ -548,7 +549,8 @@ public static class FacadeEmit
     {
         return type.Members.Methods.Any(m => m.IsStatic)
             || type.Members.Properties.Any(p => p.IsStatic)
-            || type.Members.Fields.Any(f => f.IsStatic);
+            || type.Members.Fields.Any(f => f.IsStatic)
+            || type.Members.Events.Any(e => e.IsStatic);
     }
 
     /// <summary>
