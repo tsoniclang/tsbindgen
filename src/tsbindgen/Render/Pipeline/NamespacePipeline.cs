@@ -92,7 +92,16 @@ public static class NamespacePipeline
             covariancePartitionedModels[clrName] = fixedModel;
         }
 
-        return covariancePartitionedModels;
+        // Apply InterfaceOverloadFanIn to resolve TS2430 Category B errors
+        // Adds parent method signatures as overloads in child interfaces
+        var interfaceOverloadModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in covariancePartitionedModels)
+        {
+            var fixedModel = InterfaceOverloadFanIn.Apply(model, covariancePartitionedModels, ctx);
+            interfaceOverloadModels[clrName] = fixedModel;
+        }
+
+        return interfaceOverloadModels;
     }
 
     /// <summary>
