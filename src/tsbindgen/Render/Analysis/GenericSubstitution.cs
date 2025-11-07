@@ -45,23 +45,123 @@ public static class GenericSubstitution
     }
 
     /// <summary>
-    /// Substitutes generic type parameters in a TypeReference.
+    /// Substitutes generic type parameters in a TypeReference with full recursion.
+    /// Handles nested generics, arrays, pointers, and declaring types.
+    /// When a type parameter is found, substitutes it and then recursively processes the result.
     /// </summary>
     public static TypeReference SubstituteType(
         TypeReference type,
         Dictionary<string, TypeReference> substitutions)
     {
+        return SubstituteTypeInternal(type, substitutions, new HashSet<string>());
+    }
+
+    private static TypeReference SubstituteTypeInternal(
+        TypeReference type,
+        Dictionary<string, TypeReference> substitutions,
+        HashSet<string> visiting)
+    {
         // Check if this is a type parameter that needs substitution
         if (substitutions.TryGetValue(type.TypeName, out var concreteType))
         {
-            return concreteType;
+            // Cycle detection: if we're already visiting this type parameter, return it as-is to break the cycle
+            if (visiting.Contains(type.TypeName))
+            {
+                return type;
+            }
+
+            // Mark this type parameter as being visited
+            visiting.Add(type.TypeName);
+
+            // CRITICAL: Recursively substitute the concrete type itself
+            // This handles cases like T → KeyValuePair_2<TKey, TValue> where TKey/TValue need substitution
+            var result = SubstituteTypeInternal(concreteType, substitutions, visiting);
+
+            // Unmark after substitution (backtrack)
+            visiting.Remove(type.TypeName);
+
+            return result;
+        }
+
+        // Handle arrays: substitute the element type
+        if (type.ArrayRank > 0)
+        {
+            var substitutedElement = SubstituteTypeInternal(
+                new TypeReference(
+                    type.Namespace,
+                    type.TypeName,
+                    type.GenericArgs,
+                    0, // Remove array rank temporarily
+                    type.PointerDepth,
+                    type.DeclaringType,
+                    type.Assembly
+                ),
+                substitutions,
+                visiting
+            );
+
+            // Reapply the array rank
+            return new TypeReference(
+                substitutedElement.Namespace,
+                substitutedElement.TypeName,
+                substitutedElement.GenericArgs,
+                type.ArrayRank,
+                substitutedElement.PointerDepth,
+                substitutedElement.DeclaringType,
+                substitutedElement.Assembly
+            );
+        }
+
+        // Handle pointers: substitute the pointed-to type
+        if (type.PointerDepth > 0)
+        {
+            var substitutedPointed = SubstituteTypeInternal(
+                new TypeReference(
+                    type.Namespace,
+                    type.TypeName,
+                    type.GenericArgs,
+                    type.ArrayRank,
+                    0, // Remove pointer depth temporarily
+                    type.DeclaringType,
+                    type.Assembly
+                ),
+                substitutions,
+                visiting
+            );
+
+            // Reapply the pointer depth
+            return new TypeReference(
+                substitutedPointed.Namespace,
+                substitutedPointed.TypeName,
+                substitutedPointed.GenericArgs,
+                substitutedPointed.ArrayRank,
+                type.PointerDepth,
+                substitutedPointed.DeclaringType,
+                substitutedPointed.Assembly
+            );
+        }
+
+        // Handle declaring types: substitute the declaring type
+        if (type.DeclaringType != null)
+        {
+            var substitutedDeclaring = SubstituteTypeInternal(type.DeclaringType, substitutions, visiting);
+
+            return new TypeReference(
+                type.Namespace,
+                type.TypeName,
+                type.GenericArgs,
+                type.ArrayRank,
+                type.PointerDepth,
+                substitutedDeclaring,
+                type.Assembly
+            );
         }
 
         // If this type has generic arguments, recursively substitute them
         if (type.GenericArgs.Count > 0)
         {
             var substitutedArgs = type.GenericArgs
-                .Select(arg => SubstituteType(arg, substitutions))
+                .Select(arg => SubstituteTypeInternal(arg, substitutions, visiting))
                 .ToList();
 
             return new TypeReference(
