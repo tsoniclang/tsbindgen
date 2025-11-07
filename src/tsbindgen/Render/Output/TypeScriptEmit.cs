@@ -280,10 +280,9 @@ public static class TypeScriptEmit
             // Don't emit 'static' modifier in interfaces - it's implied by context
             var modifiers = (method.IsStatic && !isInterface) ? "static " : "";
 
-            // For static methods, check if they reference class-level type parameters
-            // If so, add those type parameters to the method level
+            // Check if method references orphaned type parameters
             var methodGenericParams = method.GenericParameters.ToList();
-            if (method.IsStatic && typeModel != null)
+            if (typeModel != null)
             {
                 // Collect all type parameters referenced in parameters and return type
                 var referencedTypeParams = new HashSet<string>();
@@ -300,8 +299,8 @@ public static class TypeScriptEmit
                     continue;  // Skip methods with orphaned type parameters
                 }
 
-                // If the class is generic, check which class-level type parameters are referenced
-                if (typeModel.GenericParameters.Count > 0)
+                // For static methods with class-level type parameters, add them to method-level
+                if (method.IsStatic && typeModel.GenericParameters.Count > 0)
                 {
                     var classTypeParamNames = new HashSet<string>(typeModel.GenericParameters.Select(p => _ctx.GetGenericParameterIdentifier(p)));
                     var referencedClassTypeParams = referencedTypeParams.Where(tp => classTypeParamNames.Contains(tp)).ToList();
