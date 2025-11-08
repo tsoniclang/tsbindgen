@@ -26,11 +26,23 @@ public static class BindingEmit
                 alias = model.TsAlias
             },
             types = model.Types
-                .Where(t => t.ClrName != ctx.GetTypeIdentifier(t) || HasMemberBindings(t, ctx))
+                .Where(t => t.ClrName != ctx.GetTypeIdentifier(t) || HasMemberBindings(t, ctx) || HasExplicitViews(t))
                 .Select(t => new
                 {
                     name = t.ClrName,
-                    alias = ctx.GetTypeIdentifier(t)
+                    alias = ctx.GetTypeIdentifier(t),
+                    explicitViews = t.ExplicitViews != null && t.ExplicitViews.Count > 0
+                        ? t.ExplicitViews.ToDictionary(
+                            v => v.ViewName,
+                            v => new
+                            {
+                                interface_ = $"{v.Interface.Namespace}.{v.Interface.TypeName}",
+                                members = v.ViewOnlyMethods.ToDictionary(
+                                    m => SignatureNormalization.GetNormalizedSignature(m, ctx),
+                                    m => m.ClrName
+                                )
+                            })
+                        : null
                 })
         };
 
@@ -47,5 +59,10 @@ public static class BindingEmit
                type.Members.Properties.Any(p => p.ClrName != ctx.GetPropertyIdentifier(p)) ||
                type.Members.Fields.Any(f => f.ClrName != ctx.GetFieldIdentifier(f)) ||
                type.Members.Events.Any(e => e.ClrName != ctx.GetEventIdentifier(e));
+    }
+
+    private static bool HasExplicitViews(TypeModel type)
+    {
+        return type.ExplicitViews != null && type.ExplicitViews.Count > 0;
     }
 }

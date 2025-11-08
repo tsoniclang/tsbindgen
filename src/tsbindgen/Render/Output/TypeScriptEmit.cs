@@ -1091,9 +1091,63 @@ public static class TypeScriptEmit
         builder.AppendLine($"{indent}}}");
         builder.AppendLine();
 
-        // Public type alias (use names-only for references)
+        // Emit non-exported companion views interface if there are any views
+        var hasViews = (type.ConflictingInterfaces != null && type.ConflictingInterfaces.Count > 0) ||
+                       (type.ExplicitViews != null && type.ExplicitViews.Count > 0);
+
+        if (hasViews)
+        {
+            builder.AppendLine($"{indent}interface __{typeName}$views{genericParams} {{");
+
+            // Collect all views (deduplicated between TS2416 ConflictingInterfaces and TS2420 ExplicitViews)
+            var viewSet = new HashSet<string>();
+            var viewList = new List<(string ViewName, TypeReference Interface)>();
+
+            // Prefer ExplicitViews (from TS2420) over ConflictingInterfaces (from TS2416)
+            // because ExplicitViews have full metadata (viewName, methods, disambiguator)
+            if (type.ExplicitViews != null)
+            {
+                foreach (var view in type.ExplicitViews)
+                {
+                    var key = GetTypeReferenceKey(view.Interface);
+                    if (viewSet.Add(key))
+                    {
+                        viewList.Add((view.ViewName, view.Interface));
+                    }
+                }
+            }
+
+            // Add ConflictingInterfaces that aren't already in ExplicitViews
+            if (type.ConflictingInterfaces != null)
+            {
+                foreach (var iface in type.ConflictingInterfaces)
+                {
+                    var key = GetTypeReferenceKey(iface);
+                    if (viewSet.Add(key))
+                    {
+                        // Generate view name from interface
+                        var ifaceName = ToTypeScriptType(iface, currentNamespace, includeNamespacePrefix: false, includeGenericArgs: false);
+                        var viewName = $"As_{ifaceName}";
+                        viewList.Add((viewName, iface));
+                    }
+                }
+            }
+
+            // Emit view properties
+            foreach (var (viewName, iface) in viewList)
+            {
+                var ifaceType = ToTypeScriptType(iface, currentNamespace);
+                builder.AppendLine($"{indent}    readonly {viewName}: {ifaceType};");
+            }
+
+            builder.AppendLine($"{indent}}}");
+            builder.AppendLine();
+        }
+
+        // Public type alias - Include companion views interface if present
         var genericNames = FormatGenericParameterNames(type.GenericParameters);
-        builder.AppendLine($"{indent}export type {typeName}{genericParams} = {typeName}$instance{genericNames};");
+        var viewsIntersection = hasViews ? $" & __{typeName}$views{genericNames}" : "";
+        builder.AppendLine($"{indent}export type {typeName}{genericParams} = {typeName}$instance{genericNames}{viewsIntersection};");
 
         // Only emit const declaration for non-generic types
         // Generic types can't have ambient const declarations with type parameters

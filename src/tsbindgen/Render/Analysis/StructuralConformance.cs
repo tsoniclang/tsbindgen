@@ -133,7 +133,8 @@ public static class StructuralConformance
                     {
                         // Not structurally equal - create explicit view
                         var viewName = GenerateViewName(interfaceRef);
-                        explicitViews.Add(new InterfaceView(viewName, interfaceRef, Disambiguator: null));
+                        var viewOnlyMethods = GetViewOnlyMethodsForInterface(type, globalInterfaceSurface, ctx);
+                        explicitViews.Add(new InterfaceView(viewName, interfaceRef, viewOnlyMethods, Disambiguator: null));
                         continue; // Don't add to keptImplements
                     }
                 }
@@ -164,7 +165,8 @@ public static class StructuralConformance
             {
                 // Not structurally equal - create explicit view
                 var viewName = GenerateViewName(interfaceRef);
-                explicitViews.Add(new InterfaceView(viewName, interfaceRef, Disambiguator: null));
+                var viewOnlyMethods = GetViewOnlyMethodsForInterface(type, interfaceSurface, ctx);
+                explicitViews.Add(new InterfaceView(viewName, interfaceRef, viewOnlyMethods, Disambiguator: null));
             }
         }
 
@@ -548,5 +550,47 @@ public static class StructuralConformance
             }
             signatures.Add(signature);
         }
+    }
+
+    /// <summary>
+    /// Gets ViewOnly methods from the type that match the specified interface surface.
+    /// This ensures each explicit view only claims methods that actually implement that specific interface.
+    /// </summary>
+    private static IReadOnlyList<MethodModel> GetViewOnlyMethodsForInterface(
+        TypeModel type,
+        MemberSurface interfaceSurface,
+        AnalysisContext ctx)
+    {
+        var viewOnlyMethods = type.Members.Methods
+            .Where(m => m.EmitScope == EmitScope.ViewOnly)
+            .ToList();
+
+        if (viewOnlyMethods.Count == 0)
+            return Array.Empty<MethodModel>();
+
+        // Build set of interface method signatures for fast lookup
+        var interfaceSignatures = new HashSet<string>();
+        foreach (var (methodName, signatures) in interfaceSurface.Methods)
+        {
+            foreach (var sig in signatures)
+            {
+                interfaceSignatures.Add($"{methodName}:{sig}");
+            }
+        }
+
+        // Filter ViewOnly methods to only those that match interface surface
+        var filtered = new List<MethodModel>();
+        foreach (var method in viewOnlyMethods)
+        {
+            var signature = NormalizeMethodSignature(method);
+            var key = $"{method.ClrName}:{signature}";
+
+            if (interfaceSignatures.Contains(key))
+            {
+                filtered.Add(method);
+            }
+        }
+
+        return filtered;
     }
 }
