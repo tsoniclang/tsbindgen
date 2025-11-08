@@ -35,6 +35,11 @@ public static class PhaseGate
         ValidateImports(ctx, graph, imports, validationContext);
         ValidatePolicyCompliance(ctx, graph, validationContext);
 
+        // Step 9: PhaseGate Hardening - Additional validation checks
+        ValidateViews(ctx, graph, validationContext);
+        ValidateFinalNames(ctx, graph, validationContext);
+        ValidateAliases(ctx, graph, imports, validationContext);
+
         // Report results
         ctx.Log($"PhaseGate: Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings");
 
@@ -471,6 +476,358 @@ public static class PhaseGate
         path.RemoveAt(path.Count - 1);
         recursionStack.Remove(node);
         return false;
+    }
+
+    // ========== Step 9: PhaseGate Hardening - New Validation Methods ==========
+
+    /// <summary>
+    /// Validates that all ViewOnly members appear in at least one explicit view.
+    /// Checks that view interface types are available (either in graph or will be imported).
+    /// </summary>
+    private static void ValidateViews(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate: Validating explicit interface views...");
+
+        int totalViewOnlyMembers = 0;
+        int orphanedViewOnlyMembers = 0;
+        int totalViews = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                // Collect all ViewOnly members
+                var viewOnlyMethods = type.Members.Methods
+                    .Where(m => m.EmitScope == EmitScope.ViewOnly)
+                    .ToList();
+
+                var viewOnlyProperties = type.Members.Properties
+                    .Where(p => p.EmitScope == EmitScope.ViewOnly)
+                    .ToList();
+
+                totalViewOnlyMembers += viewOnlyMethods.Count + viewOnlyProperties.Count;
+
+                if (viewOnlyMethods.Count == 0 && viewOnlyProperties.Count == 0)
+                    continue;
+
+                // Get planned views for this type
+                var plannedViews = Shape.ViewPlanner.GetPlannedViews(type.ClrFullName);
+
+                if (plannedViews.Count == 0)
+                {
+                    // ViewOnly members but no views planned - this is an error
+                    validationCtx.ErrorCount++;
+                    validationCtx.Diagnostics.Add(
+                        $"ERROR: Type {type.ClrFullName} has {viewOnlyMethods.Count + viewOnlyProperties.Count} ViewOnly members but no explicit views planned");
+                    orphanedViewOnlyMembers += viewOnlyMethods.Count + viewOnlyProperties.Count;
+                    continue;
+                }
+
+                totalViews += plannedViews.Count;
+
+                // Check that each ViewOnly member appears in at least one view
+                foreach (var method in viewOnlyMethods)
+                {
+                    var appearsInView = plannedViews.Any(v =>
+                        v.ViewMembers.Any(vm =>
+                            vm.Kind == Shape.ViewPlanner.ViewMemberKind.Method &&
+                            vm.Symbol is MethodSymbol ms &&
+                            ms.StableId.Equals(method.StableId)));
+
+                    if (!appearsInView)
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: ViewOnly method {method.ClrName} in {type.ClrFullName} does not appear in any explicit view");
+                        orphanedViewOnlyMembers++;
+                    }
+                }
+
+                foreach (var property in viewOnlyProperties)
+                {
+                    var appearsInView = plannedViews.Any(v =>
+                        v.ViewMembers.Any(vm =>
+                            vm.Kind == Shape.ViewPlanner.ViewMemberKind.Property &&
+                            vm.Symbol is PropertySymbol ps &&
+                            ps.StableId.Equals(property.StableId)));
+
+                    if (!appearsInView)
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: ViewOnly property {property.ClrName} in {type.ClrFullName} does not appear in any explicit view");
+                        orphanedViewOnlyMembers++;
+                    }
+                }
+
+                // Check that view interface types are resolvable
+                foreach (var view in plannedViews)
+                {
+                    var ifaceExists = FindInterface(graph, view.InterfaceReference) != null;
+
+                    if (!ifaceExists)
+                    {
+                        // Interface not in graph - it should be external and importable
+                        // This is a warning, not an error (external interfaces are expected)
+                        validationCtx.WarningCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"WARNING: View {view.ViewPropertyName} in {type.ClrFullName} references external interface (should be imported)");
+                    }
+                }
+            }
+        }
+
+        ctx.Log($"PhaseGate: Validated {totalViewOnlyMembers} ViewOnly members across {totalViews} views");
+
+        if (orphanedViewOnlyMembers > 0)
+        {
+            ctx.Log($"PhaseGate: Found {orphanedViewOnlyMembers} orphaned ViewOnly members");
+        }
+    }
+
+    /// <summary>
+    /// Validates that there are no duplicate final identifiers within the same scope.
+    /// Checks both type-level (class/interface names) and member-level (methods/properties/fields).
+    /// Separates static and instance member scopes.
+    /// </summary>
+    private static void ValidateFinalNames(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate: Validating final names from Renamer...");
+
+        int totalTypes = 0;
+        int totalMembers = 0;
+        int duplicateTypes = 0;
+        int duplicateMembers = 0;
+
+        // Validate type names (namespace scope)
+        foreach (var ns in graph.Namespaces)
+        {
+            var typeNamesInNamespace = new HashSet<string>();
+
+            var namespaceScope = new Core.Renaming.NamespaceScope
+            {
+                Namespace = ns.Name,
+                IsInternal = true,
+                ScopeKey = ns.Name
+            };
+
+            foreach (var type in ns.Types)
+            {
+                totalTypes++;
+
+                // Get final name from Renamer
+                var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, namespaceScope);
+
+                if (string.IsNullOrWhiteSpace(finalName))
+                {
+                    validationCtx.ErrorCount++;
+                    validationCtx.Diagnostics.Add(
+                        $"ERROR: Type {type.ClrFullName} has no final name from Renamer");
+                    continue;
+                }
+
+                // Check for duplicates within namespace
+                if (!typeNamesInNamespace.Add(finalName))
+                {
+                    validationCtx.ErrorCount++;
+                    validationCtx.Diagnostics.Add(
+                        $"ERROR: Duplicate final type name '{finalName}' in namespace {ns.Name}");
+                    duplicateTypes++;
+                }
+            }
+        }
+
+        // Validate member names (type scope, separated by static vs instance)
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                var instanceMemberNames = new HashSet<string>();
+                var staticMemberNames = new HashSet<string>();
+
+                var typeScope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = false, // Will be overridden per member
+                    ScopeKey = type.ClrFullName
+                };
+
+                // Validate method names
+                foreach (var method in type.Members.Methods)
+                {
+                    totalMembers++;
+
+                    var finalName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+
+                    if (string.IsNullOrWhiteSpace(finalName))
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: Method {method.ClrName} in {type.ClrFullName} has no final name from Renamer");
+                        continue;
+                    }
+
+                    // Add to appropriate scope
+                    var scopeSet = method.IsStatic ? staticMemberNames : instanceMemberNames;
+                    var scopeName = method.IsStatic ? "static" : "instance";
+
+                    // Methods can have overloads, so we use signature for uniqueness
+                    var signature = $"{finalName}({method.Parameters.Count})";
+
+                    if (!scopeSet.Add(signature))
+                    {
+                        // This is a warning, not an error (overloads are allowed)
+                        validationCtx.WarningCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"WARNING: Duplicate {scopeName} method signature '{signature}' in {type.ClrFullName}");
+                    }
+                }
+
+                // Validate property names
+                foreach (var property in type.Members.Properties)
+                {
+                    totalMembers++;
+
+                    var finalName = ctx.Renamer.GetFinalMemberName(property.StableId, typeScope, property.IsStatic);
+
+                    if (string.IsNullOrWhiteSpace(finalName))
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: Property {property.ClrName} in {type.ClrFullName} has no final name from Renamer");
+                        continue;
+                    }
+
+                    // Add to appropriate scope
+                    var scopeSet = property.IsStatic ? staticMemberNames : instanceMemberNames;
+                    var scopeName = property.IsStatic ? "static" : "instance";
+
+                    if (!scopeSet.Add(finalName))
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: Duplicate {scopeName} property name '{finalName}' in {type.ClrFullName}");
+                        duplicateMembers++;
+                    }
+                }
+
+                // Validate field names
+                foreach (var field in type.Members.Fields)
+                {
+                    totalMembers++;
+
+                    var finalName = ctx.Renamer.GetFinalMemberName(field.StableId, typeScope, field.IsStatic);
+
+                    if (string.IsNullOrWhiteSpace(finalName))
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: Field {field.ClrName} in {type.ClrFullName} has no final name from Renamer");
+                        continue;
+                    }
+
+                    // Add to appropriate scope
+                    var scopeSet = field.IsStatic ? staticMemberNames : instanceMemberNames;
+                    var scopeName = field.IsStatic ? "static" : "instance";
+
+                    if (!scopeSet.Add(finalName))
+                    {
+                        validationCtx.ErrorCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"ERROR: Duplicate {scopeName} field name '{finalName}' in {type.ClrFullName}");
+                        duplicateMembers++;
+                    }
+                }
+            }
+        }
+
+        ctx.Log($"PhaseGate: Validated {totalTypes} type names and {totalMembers} member names from Renamer");
+
+        if (duplicateTypes > 0 || duplicateMembers > 0)
+        {
+            ctx.Log($"PhaseGate: Found {duplicateTypes} duplicate types, {duplicateMembers} duplicate members");
+        }
+    }
+
+    /// <summary>
+    /// Validates that import aliases don't collide after Renamer resolution.
+    /// Checks that all aliased names are unique within their import scope.
+    /// </summary>
+    private static void ValidateAliases(BuildContext ctx, SymbolGraph graph, ImportPlan imports, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate: Validating import aliases...");
+
+        int totalAliases = 0;
+        int aliasCollisions = 0;
+
+        foreach (var (ns, importList) in imports.NamespaceImports)
+        {
+            var aliasesInScope = new HashSet<string>();
+            var typeNamesInScope = new HashSet<string>();
+
+            var namespaceScope = new Core.Renaming.NamespaceScope
+            {
+                Namespace = ns,
+                IsInternal = true,
+                ScopeKey = ns
+            };
+
+            foreach (var import in importList)
+            {
+                // Each import statement contains multiple type imports
+                foreach (var typeImport in import.TypeImports)
+                {
+                    var effectiveName = typeImport.Alias ?? typeImport.TypeName;
+
+                    // Check if this import uses an alias
+                    if (!string.IsNullOrWhiteSpace(typeImport.Alias))
+                    {
+                        totalAliases++;
+
+                        // Check for alias collisions
+                        if (!aliasesInScope.Add(typeImport.Alias))
+                        {
+                            validationCtx.ErrorCount++;
+                            validationCtx.Diagnostics.Add(
+                                $"ERROR: Import alias '{typeImport.Alias}' collides in namespace {ns}");
+                            aliasCollisions++;
+                        }
+                    }
+
+                    // Check that imported type names don't collide with each other
+                    if (!typeNamesInScope.Add(effectiveName))
+                    {
+                        validationCtx.WarningCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"WARNING: Imported type name '{effectiveName}' appears multiple times in namespace {ns}");
+                    }
+                }
+            }
+
+            // Also check that imported names don't collide with local types
+            var localNamespace = graph.Namespaces.FirstOrDefault(n => n.Name == ns);
+            if (localNamespace != null)
+            {
+                foreach (var localType in localNamespace.Types)
+                {
+                    var localTypeName = ctx.Renamer.GetFinalTypeName(localType.StableId, namespaceScope);
+
+                    if (typeNamesInScope.Contains(localTypeName))
+                    {
+                        validationCtx.WarningCount++;
+                        validationCtx.Diagnostics.Add(
+                            $"WARNING: Imported type name '{localTypeName}' in namespace {ns} collides with local type {localType.ClrFullName}");
+                    }
+                }
+            }
+        }
+
+        ctx.Log($"PhaseGate: Validated {totalAliases} import aliases");
+
+        if (aliasCollisions > 0)
+        {
+            ctx.Log($"PhaseGate: Found {aliasCollisions} alias collisions");
+        }
     }
 }
 
