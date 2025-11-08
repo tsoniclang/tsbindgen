@@ -108,13 +108,22 @@ public static class ImportPlanner
     {
         var exports = new List<ExportStatement>();
 
+        // Create namespace scope for name resolution
+        var nsScope = new Core.Renaming.NamespaceScope
+        {
+            Namespace = ns.Name,
+            IsInternal = true,
+            ScopeKey = $"ns:{ns.Name}:internal"
+        };
+
         // Export all public types in the namespace
         foreach (var type in ns.Types)
         {
             if (type.Accessibility == Model.Symbols.Accessibility.Public)
             {
+                var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
                 exports.Add(new ExportStatement(
-                    ExportName: type.TsEmitName,
+                    ExportName: finalName,
                     ExportKind: DetermineExportKind(type)));
             }
         }

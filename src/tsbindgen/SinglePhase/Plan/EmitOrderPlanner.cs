@@ -47,10 +47,19 @@ public sealed class EmitOrderPlanner
 
         // Sort types by:
         // 1. Kind (Enum < Delegate < Interface < Struct < Class < StaticNamespace)
-        // 2. CLR name (for determinism)
+        // 2. Final TS name from Renamer (for stable diffs when names change)
         // 3. Arity (for overloaded generic types)
+
+        // Get namespace scope for name resolution (assuming all types in same namespace)
+        var nsScope = types.Count > 0 ? new Core.Renaming.NamespaceScope
+        {
+            Namespace = types[0].Namespace,
+            IsInternal = true,
+            ScopeKey = $"ns:{types[0].Namespace}:internal"
+        } : null;
+
         var sorted = types.OrderBy(t => GetKindSortOrder(t.Kind))
-                          .ThenBy(t => t.ClrName)
+                          .ThenBy(t => nsScope != null ? _ctx.Renamer.GetFinalTypeName(t.StableId, nsScope) : t.ClrName)
                           .ThenBy(t => t.Arity)
                           .ToList();
 
@@ -80,7 +89,7 @@ public sealed class EmitOrderPlanner
         // Sort members by:
         // 1. Kind (Constructor < Field < Property < Event < Method)
         // 2. IsStatic (instance first, then static)
-        // 3. CLR name
+        // 3. Final TS name from Renamer (for stable diffs)
         // 4. Canonical signature (for overloads)
 
         var orderedConstructors = type.Members.Constructors
@@ -90,23 +99,55 @@ public sealed class EmitOrderPlanner
 
         var orderedFields = type.Members.Fields
             .OrderBy(f => f.IsStatic)
-            .ThenBy(f => f.ClrName)
+            .ThenBy(f => {
+                var scope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = f.IsStatic,
+                    ScopeKey = $"type:{type.ClrFullName}#{(f.IsStatic ? "static" : "instance")}"
+                };
+                return _ctx.Renamer.GetFinalMemberName(f.StableId, scope, f.IsStatic);
+            })
             .ToList();
 
         var orderedProperties = type.Members.Properties
             .OrderBy(p => p.IsStatic)
-            .ThenBy(p => p.ClrName)
+            .ThenBy(p => {
+                var scope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = p.IsStatic,
+                    ScopeKey = $"type:{type.ClrFullName}#{(p.IsStatic ? "static" : "instance")}"
+                };
+                return _ctx.Renamer.GetFinalMemberName(p.StableId, scope, p.IsStatic);
+            })
             .ThenBy(p => p.StableId.CanonicalSignature)
             .ToList();
 
         var orderedEvents = type.Members.Events
             .OrderBy(e => e.IsStatic)
-            .ThenBy(e => e.ClrName)
+            .ThenBy(e => {
+                var scope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = e.IsStatic,
+                    ScopeKey = $"type:{type.ClrFullName}#{(e.IsStatic ? "static" : "instance")}"
+                };
+                return _ctx.Renamer.GetFinalMemberName(e.StableId, scope, e.IsStatic);
+            })
             .ToList();
 
         var orderedMethods = type.Members.Methods
             .OrderBy(m => m.IsStatic)
-            .ThenBy(m => m.ClrName)
+            .ThenBy(m => {
+                var scope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = m.IsStatic,
+                    ScopeKey = $"type:{type.ClrFullName}#{(m.IsStatic ? "static" : "instance")}"
+                };
+                return _ctx.Renamer.GetFinalMemberName(m.StableId, scope, m.IsStatic);
+            })
             .ThenBy(m => m.Arity)
             .ThenBy(m => m.StableId.CanonicalSignature)
             .ToList();
