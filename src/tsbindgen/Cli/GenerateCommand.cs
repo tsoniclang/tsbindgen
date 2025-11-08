@@ -83,6 +83,11 @@ public static class GenerateCommand
             getDefaultValue: () => false,
             description: "Write TypeScript type lists for debugging/comparison");
 
+        var useNewPipelineOption = new Option<bool>(
+            name: "--use-new-pipeline",
+            getDefaultValue: () => false,
+            description: "Use Single-Phase Architecture pipeline (experimental)");
+
         command.AddOption(assemblyOption);
         command.AddOption(assemblyDirOption);
         command.AddOption(outDirOption);
@@ -96,6 +101,7 @@ public static class GenerateCommand
         command.AddOption(verboseOption);
         command.AddOption(debugSnapshotOption);
         command.AddOption(debugTypeListOption);
+        command.AddOption(useNewPipelineOption);
 
         command.SetHandler(async (context) =>
         {
@@ -112,6 +118,7 @@ public static class GenerateCommand
             var verbose = context.ParseResult.GetValueForOption(verboseOption);
             var debugSnapshot = context.ParseResult.GetValueForOption(debugSnapshotOption);
             var debugTypeList = context.ParseResult.GetValueForOption(debugTypeListOption);
+            var useNewPipeline = context.ParseResult.GetValueForOption(useNewPipelineOption);
 
             await ExecuteAsync(
                 assemblies,
@@ -126,7 +133,8 @@ public static class GenerateCommand
                 enumMemberNames,
                 verbose,
                 debugSnapshot,
-                debugTypeList);
+                debugTypeList,
+                useNewPipeline);
         });
 
         return command;
@@ -145,7 +153,8 @@ public static class GenerateCommand
         string? enumMemberNames,
         bool verbose,
         bool debugSnapshot,
-        bool debugTypeList)
+        bool debugTypeList,
+        bool useNewPipeline)
     {
         try
         {
@@ -168,6 +177,23 @@ public static class GenerateCommand
             {
                 Console.Error.WriteLine("Error: No assemblies specified. Use --assembly or --assembly-dir");
                 Environment.Exit(2);
+            }
+
+            // Route to appropriate pipeline
+            if (useNewPipeline)
+            {
+                await ExecuteNewPipelineAsync(
+                    allAssemblies,
+                    outDir,
+                    namespaceFilter,
+                    namespaceNames,
+                    classNames,
+                    interfaceNames,
+                    methodNames,
+                    propertyNames,
+                    enumMemberNames,
+                    verbose);
+                return;
             }
 
             // Create configuration
@@ -394,5 +420,84 @@ public static class GenerateCommand
             "camel" => NameTransformOption.CamelCase,
             _ => throw new ArgumentException($"Unknown naming transform: '{value}'. Supported values: camelCase")
         };
+    }
+
+    /// <summary>
+    /// Execute using Single-Phase Architecture pipeline (experimental).
+    /// </summary>
+    private static async Task ExecuteNewPipelineAsync(
+        List<string> allAssemblies,
+        string outDir,
+        string[] namespaceFilter,
+        string? namespaceNames,
+        string? classNames,
+        string? interfaceNames,
+        string? methodNames,
+        string? propertyNames,
+        string? enumMemberNames,
+        bool verbose)
+    {
+        Console.WriteLine("=== Using Single-Phase Architecture Pipeline (Experimental) ===");
+        Console.WriteLine();
+
+        // Build policy from CLI options
+        var policy = Core.Policy.PolicyDefaults.Create();
+
+        // Apply name transforms to policy if specified
+        if (!string.IsNullOrWhiteSpace(namespaceNames) ||
+            !string.IsNullOrWhiteSpace(classNames) ||
+            !string.IsNullOrWhiteSpace(interfaceNames) ||
+            !string.IsNullOrWhiteSpace(methodNames) ||
+            !string.IsNullOrWhiteSpace(propertyNames))
+        {
+            // Parse name transform option
+            var transform = ParseNameTransformOption(namespaceNames ?? classNames ?? interfaceNames ?? methodNames ?? propertyNames);
+
+            // Update emission policy
+            policy = policy with
+            {
+                Emission = policy.Emission with
+                {
+                    NameTransform = transform == NameTransformOption.CamelCase
+                        ? Core.Policy.NameTransformStrategy.CamelCase
+                        : Core.Policy.NameTransformStrategy.None
+                }
+            };
+        }
+
+        // Create logger that respects verbose flag
+        Action<string>? logger = verbose ? Console.WriteLine : null;
+
+        // Run single-phase pipeline
+        var result = SinglePhase.SinglePhaseBuilder.Build(
+            allAssemblies,
+            outDir,
+            policy,
+            logger);
+
+        // Report results
+        Console.WriteLine();
+        if (result.Success)
+        {
+            Console.WriteLine("✓ Single-phase generation complete");
+            Console.WriteLine($"  Output directory: {Path.GetFullPath(outDir)}");
+            Console.WriteLine($"  Namespaces: {result.Statistics.NamespaceCount}");
+            Console.WriteLine($"  Types: {result.Statistics.TypeCount}");
+            Console.WriteLine($"  Members: {result.Statistics.TotalMembers}");
+        }
+        else
+        {
+            Console.Error.WriteLine("✗ Single-phase generation failed");
+            Console.Error.WriteLine($"  Errors: {result.Diagnostics.Count(d => d.Severity == Core.Diagnostics.DiagnosticSeverity.Error)}");
+
+            foreach (var diagnostic in result.Diagnostics.Where(d => d.Severity == Core.Diagnostics.DiagnosticSeverity.Error))
+            {
+                Console.Error.WriteLine($"    {diagnostic.Code}: {diagnostic.Message}");
+            }
+
+            Environment.Exit(1);
+        }
+
+        await Task.CompletedTask;
     }
 }
