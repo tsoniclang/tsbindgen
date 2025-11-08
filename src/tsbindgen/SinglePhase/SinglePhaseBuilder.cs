@@ -85,6 +85,7 @@ public static class SinglePhaseBuilder
         catch (Exception ex)
         {
             ctx.Log($"\n!!! Build Exception: {ex.Message}");
+            ctx.Log($"Stack trace:\n{ex.StackTrace}");
             ctx.Diagnostics.Error("BUILD_EXCEPTION", $"Build failed with exception: {ex.Message}");
 
             return new BuildResult

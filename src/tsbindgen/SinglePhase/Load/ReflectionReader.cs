@@ -225,7 +225,7 @@ public sealed class ReflectionReader
             IsStatic = method.IsStatic,
             IsAbstract = method.IsAbstract,
             IsVirtual = method.IsVirtual,
-            IsOverride = method.GetBaseDefinition() != method,
+            IsOverride = IsMethodOverride(method),
             IsSealed = method.IsFinal,
             Visibility = GetVisibility(method),
             Provenance = MemberProvenance.Original
@@ -257,7 +257,7 @@ public sealed class ReflectionReader
             HasSetter = setter != null,
             IsStatic = (getter ?? setter)?.IsStatic ?? false,
             IsVirtual = (getter ?? setter)?.IsVirtual ?? false,
-            IsOverride = getter != null && getter.GetBaseDefinition() != getter,
+            IsOverride = getter != null && IsMethodOverride(getter),
             IsAbstract = (getter ?? setter)?.IsAbstract ?? false,
             Visibility = GetPropertyVisibility(property),
             Provenance = MemberProvenance.Original
@@ -309,7 +309,7 @@ public sealed class ReflectionReader
             EventHandlerType = _typeFactory.Create(evt.EventHandlerType!),
             IsStatic = addMethod?.IsStatic ?? false,
             IsVirtual = addMethod?.IsVirtual ?? false,
-            IsOverride = addMethod != null && addMethod.GetBaseDefinition() != addMethod,
+            IsOverride = addMethod != null && IsMethodOverride(addMethod),
             Visibility = GetEventVisibility(evt),
             Provenance = MemberProvenance.Original
         };
@@ -343,9 +343,10 @@ public sealed class ReflectionReader
             Type = _typeFactory.Create(param.ParameterType),
             IsRef = param.ParameterType.IsByRef && !param.IsOut,
             IsOut = param.IsOut,
-            IsParams = param.GetCustomAttributes(typeof(ParamArrayAttribute), false).Any(),
+            IsParams = param.GetCustomAttributesData()
+                .Any(attr => attr.AttributeType.Name == "ParamArrayAttribute"),
             HasDefaultValue = param.HasDefaultValue,
-            DefaultValue = param.HasDefaultValue ? param.DefaultValue : null
+            DefaultValue = param.HasDefaultValue ? param.RawDefaultValue : null
         };
     }
 
@@ -401,6 +402,16 @@ public sealed class ReflectionReader
     {
         var addMethod = evt.GetAddMethod(true);
         return addMethod != null ? GetVisibility(addMethod) : Visibility.Private;
+    }
+
+    /// <summary>
+    /// Check if a method is an override (vs new virtual or original virtual).
+    /// Uses MethodAttributes flags which work with MetadataLoadContext.
+    /// Overrides are virtual and do NOT have NewSlot set (they reuse vtable slot).
+    /// </summary>
+    private static bool IsMethodOverride(MethodInfo method)
+    {
+        return method.IsVirtual && !method.Attributes.HasFlag(MethodAttributes.NewSlot);
     }
 
     private Visibility GetConstructorVisibility(ConstructorInfo ctor)

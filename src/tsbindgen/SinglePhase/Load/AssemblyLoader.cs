@@ -23,13 +23,12 @@ public sealed class AssemblyLoader
     {
         _ctx.Log("Creating MetadataLoadContext...");
 
-        // Find reference assemblies directory
-        var referenceAssembliesPath = FindReferenceAssembliesPath();
-        _ctx.Log($"Reference assemblies: {referenceAssembliesPath}");
+        // Get reference assemblies directory from the assemblies being loaded
+        var referenceAssembliesPath = GetReferenceAssembliesPath(assemblyPaths);
 
         // Create resolver that looks in:
         // 1. The directory containing the target assemblies
-        // 2. The reference assemblies directory
+        // 2. The reference assemblies directory (same as target for version consistency)
         var resolver = new PathAssemblyResolver(
             GetResolverPaths(assemblyPaths, referenceAssembliesPath));
 
@@ -43,19 +42,41 @@ public sealed class AssemblyLoader
 
     /// <summary>
     /// Load all assemblies into the context.
+    /// Deduplicates by assembly identity to avoid loading the same assembly twice.
+    /// Skips mscorlib as it's automatically loaded by MetadataLoadContext.
     /// </summary>
     public IReadOnlyList<Assembly> LoadAssemblies(
         MetadataLoadContext loadContext,
         IReadOnlyList<string> assemblyPaths)
     {
         var assemblies = new List<Assembly>();
+        var loadedIdentities = new HashSet<string>();
 
         foreach (var path in assemblyPaths)
         {
             try
             {
+                // Get assembly name without loading it first
+                var assemblyName = AssemblyName.GetAssemblyName(path);
+                var identity = $"{assemblyName.Name}, Version={assemblyName.Version}";
+
+                // Skip mscorlib - it's automatically loaded by MetadataLoadContext as core assembly
+                if (assemblyName.Name == "mscorlib")
+                {
+                    _ctx.Log($"Skipping mscorlib (core assembly, automatically loaded)");
+                    continue;
+                }
+
+                // Skip if already loaded
+                if (loadedIdentities.Contains(identity))
+                {
+                    _ctx.Log($"Skipping duplicate: {assemblyName.Name} (already loaded)");
+                    continue;
+                }
+
                 var assembly = loadContext.LoadFromAssemblyPath(path);
                 assemblies.Add(assembly);
+                loadedIdentities.Add(identity);
                 _ctx.Log($"Loaded: {assembly.GetName().Name}");
             }
             catch (Exception ex)
@@ -70,67 +91,55 @@ public sealed class AssemblyLoader
     }
 
     /// <summary>
-    /// Find the .NET reference assemblies directory.
-    /// Tries common locations for different .NET versions.
+    /// Get reference assemblies directory from the first assembly path.
+    /// Uses the same directory as the assemblies being loaded to ensure version compatibility.
     /// </summary>
-    private string FindReferenceAssembliesPath()
+    private string GetReferenceAssembliesPath(IReadOnlyList<string> assemblyPaths)
     {
-        // Try to find the shared framework directory
-        var dotnetRoot = Environment.GetEnvironmentVariable("DOTNET_ROOT")
-            ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "dotnet");
-
-        if (OperatingSystem.IsLinux() || OperatingSystem.IsMacOS())
+        // Use the directory containing the first assembly as the reference path
+        // This ensures we're using the same .NET version for all type resolution
+        if (assemblyPaths.Count > 0)
         {
-            dotnetRoot = "/usr/local/share/dotnet";
-            if (!Directory.Exists(dotnetRoot))
-                dotnetRoot = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".dotnet");
-        }
-
-        // Look for shared/Microsoft.NETCore.App
-        var sharedPath = Path.Combine(dotnetRoot, "shared", "Microsoft.NETCore.App");
-        if (Directory.Exists(sharedPath))
-        {
-            // Find the latest version
-            var versions = Directory.GetDirectories(sharedPath)
-                .Select(Path.GetFileName)
-                .Where(v => v != null)
-                .OrderByDescending(v => v)
-                .ToList();
-
-            if (versions.Any())
+            var firstAssemblyDir = Path.GetDirectoryName(assemblyPaths[0]);
+            if (firstAssemblyDir != null && Directory.Exists(firstAssemblyDir))
             {
-                var latestVersion = versions.First()!;
-                var refPath = Path.Combine(sharedPath, latestVersion);
-                if (Directory.Exists(refPath))
-                    return refPath;
+                _ctx.Log($"Using assembly directory as reference path: {firstAssemblyDir}");
+                return firstAssemblyDir;
             }
         }
 
-        // Fallback: use runtime directory
+        // Fallback: use runtime directory (should rarely happen)
         var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
         if (runtimeDir != null && Directory.Exists(runtimeDir))
+        {
+            _ctx.Log($"Fallback to runtime directory: {runtimeDir}");
             return runtimeDir;
+        }
 
         throw new InvalidOperationException(
-            "Could not find .NET reference assemblies. " +
-            "Please ensure .NET SDK is installed.");
+            "Could not determine reference assemblies directory from assembly paths.");
     }
 
     /// <summary>
     /// Get all paths that the resolver should search.
+    /// Deduplicates by assembly name to avoid loading the same assembly twice.
     /// </summary>
     private IEnumerable<string> GetResolverPaths(
         IReadOnlyList<string> assemblyPaths,
         string referenceAssembliesPath)
     {
-        var paths = new HashSet<string>();
+        var pathsByName = new Dictionary<string, string>();
 
         // Add reference assemblies directory
         if (Directory.Exists(referenceAssembliesPath))
         {
             foreach (var dll in Directory.GetFiles(referenceAssembliesPath, "*.dll"))
             {
-                paths.Add(dll);
+                var name = Path.GetFileNameWithoutExtension(dll);
+                if (!pathsByName.ContainsKey(name))
+                {
+                    pathsByName[name] = dll;
+                }
             }
         }
 
@@ -142,11 +151,15 @@ public sealed class AssemblyLoader
             {
                 foreach (var dll in Directory.GetFiles(dir, "*.dll"))
                 {
-                    paths.Add(dll);
+                    var name = Path.GetFileNameWithoutExtension(dll);
+                    if (!pathsByName.ContainsKey(name))
+                    {
+                        pathsByName[name] = dll;
+                    }
                 }
             }
         }
 
-        return paths;
+        return pathsByName.Values;
     }
 }
