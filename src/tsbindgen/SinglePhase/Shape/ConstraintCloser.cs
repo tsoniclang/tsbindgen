@@ -17,6 +17,9 @@ public static class ConstraintCloser
     {
         ctx.Log("ConstraintCloser: Closing generic constraints...");
 
+        // Step 1: Resolve raw constraint types into TypeReferences
+        ResolveAllConstraints(ctx, graph);
+
         var allTypes = graph.Namespaces
             .SelectMany(ns => ns.Types)
             .ToList();
@@ -50,6 +53,65 @@ public static class ConstraintCloser
         }
 
         ctx.Log($"ConstraintCloser: Closed {totalClosed} generic parameter constraints");
+    }
+
+    /// <summary>
+    /// Resolve raw System.Type constraints into TypeReferences.
+    /// Uses the memoized TypeReferenceFactory with cycle detection.
+    /// </summary>
+    private static void ResolveAllConstraints(BuildContext ctx, SymbolGraph graph)
+    {
+        ctx.Log("ConstraintCloser: Resolving constraint types...");
+
+        // Create TypeReferenceFactory for constraint resolution
+        var typeFactory = new Load.TypeReferenceFactory(ctx);
+        int totalResolved = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                // Resolve type-level generic parameter constraints
+                foreach (var gp in type.GenericParameters)
+                {
+                    if (gp.RawConstraintTypes != null && gp.RawConstraintTypes.Length > 0)
+                    {
+                        var constraints = (List<TypeReference>)gp.Constraints;
+                        constraints.Clear();
+
+                        foreach (var rawType in gp.RawConstraintTypes)
+                        {
+                            // Uses memoized factory with cycle detection
+                            var resolved = typeFactory.Create(rawType);
+                            constraints.Add(resolved);
+                            totalResolved++;
+                        }
+                    }
+                }
+
+                // Resolve method-level generic parameter constraints
+                foreach (var method in type.Members.Methods)
+                {
+                    foreach (var gp in method.GenericParameters)
+                    {
+                        if (gp.RawConstraintTypes != null && gp.RawConstraintTypes.Length > 0)
+                        {
+                            var constraints = (List<TypeReference>)gp.Constraints;
+                            constraints.Clear();
+
+                            foreach (var rawType in gp.RawConstraintTypes)
+                            {
+                                var resolved = typeFactory.Create(rawType);
+                                constraints.Add(resolved);
+                                totalResolved++;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        ctx.Log($"ConstraintCloser: Resolved {totalResolved} constraint types");
     }
 
     private static void CloseConstraints(BuildContext ctx, GenericParameterSymbol gp)
@@ -150,6 +212,7 @@ public static class ConstraintCloser
             ArrayTypeReference arr => $"{GetTypeFullName(arr.ElementType)}[]",
             PointerTypeReference ptr => $"{GetTypeFullName(ptr.PointeeType)}*",
             ByRefTypeReference byref => $"{GetTypeFullName(byref.ReferencedType)}&",
+            PlaceholderTypeReference placeholder => placeholder.DebugName,
             _ => typeRef.ToString() ?? "Unknown"
         };
     }

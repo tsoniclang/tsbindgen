@@ -138,9 +138,15 @@ public sealed class GenericParameterSymbol
     public required int Position { get; init; }
 
     /// <summary>
-    /// Constraints on this parameter.
+    /// Constraints on this parameter (resolved by ConstraintCloser).
     /// </summary>
     public required IReadOnlyList<TypeReference> Constraints { get; init; }
+
+    /// <summary>
+    /// Raw CLR constraint types from reflection (resolved in Shape phase).
+    /// Populated during Load, resolved by ConstraintCloser.
+    /// </summary>
+    public System.Type[]? RawConstraintTypes { get; init; }
 
     /// <summary>
     /// Variance (Covariant, Contravariant, None).

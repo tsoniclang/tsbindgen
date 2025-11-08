@@ -17,6 +17,8 @@ public static class TypeRefPrinter
     {
         return typeRef switch
         {
+            // Defensive guard: Placeholders should never reach output after ConstraintCloser
+            PlaceholderTypeReference placeholder => PrintPlaceholder(placeholder, ctx),
             NamedTypeReference named => PrintNamed(named, ctx),
             GenericParameterReference gp => PrintGenericParameter(gp),
             ArrayTypeReference arr => PrintArray(arr, ctx),
@@ -25,6 +27,18 @@ public static class TypeRefPrinter
             NestedTypeReference nested => PrintNested(nested, ctx),
             _ => "any" // Fallback for unknown types
         };
+    }
+
+    private static string PrintPlaceholder(PlaceholderTypeReference placeholder, BuildContext ctx)
+    {
+        // PlaceholderTypeReference should never appear in final output
+        // It's only used internally to break recursion cycles during type construction
+        ctx.Diagnostics.Warning(
+            Core.Diagnostics.DiagnosticCodes.UnresolvedType,
+            $"Placeholder type reached output: {placeholder.DebugName}. " +
+            $"This indicates a cycle that wasn't resolved. Emitting 'any'.");
+
+        return "any";
     }
 
     private static string PrintNamed(NamedTypeReference named, BuildContext ctx)

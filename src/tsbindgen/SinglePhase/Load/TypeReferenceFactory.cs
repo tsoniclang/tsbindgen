@@ -205,6 +205,7 @@ public sealed class TypeReferenceFactory
             Name = _ctx.Intern(type.Name),
             Position = type.GenericParameterPosition,
             Constraints = new List<TypeReference>(), // Empty - ConstraintCloser fills this
+            RawConstraintTypes = type.GetGenericParameterConstraints(), // Raw for ConstraintCloser
             Variance = variance,
             SpecialConstraints = specialConstraints
         };
