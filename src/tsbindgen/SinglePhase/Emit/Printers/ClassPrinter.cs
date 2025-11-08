@@ -167,13 +167,22 @@ public static class ClassPrinter
         sb.Append(finalName);
         sb.AppendLine(" {");
 
+        // Create type scope for enum member name resolution
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = type.ClrFullName,
+            IsStatic = true, // Enum members are like static fields
+            ScopeKey = $"type:{type.ClrFullName}#static"
+        };
+
         // Emit enum fields
         var fields = type.Members.Fields.Where(f => f.IsConst).ToList();
         for (int i = 0; i < fields.Count; i++)
         {
             var field = fields[i];
+            var memberFinalName = ctx.Renamer.GetFinalMemberName(field.StableId, typeScope, isStatic: true);
             sb.Append("    ");
-            sb.Append(field.ClrName);
+            sb.Append(memberFinalName);
 
             if (field.ConstValue != null)
             {
@@ -282,6 +291,14 @@ public static class ClassPrinter
     {
         var members = type.Members;
 
+        // Create type scope for member name resolution
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = type.ClrFullName,
+            IsStatic = false, // Instance members
+            ScopeKey = $"type:{type.ClrFullName}#instance"
+        };
+
         // Constructors
         foreach (var ctor in members.Constructors.Where(c => !c.IsStatic))
         {
@@ -293,10 +310,11 @@ public static class ClassPrinter
         // Fields
         foreach (var field in members.Fields.Where(f => !f.IsStatic))
         {
+            var finalName = ctx.Renamer.GetFinalMemberName(field.StableId, typeScope, isStatic: false);
             sb.Append("    ");
             if (field.IsReadOnly)
                 sb.Append("readonly ");
-            sb.Append(field.ClrName);
+            sb.Append(finalName);
             sb.Append(": ");
             sb.Append(TypeRefPrinter.Print(field.FieldType, ctx));
             sb.AppendLine(";");
@@ -305,10 +323,11 @@ public static class ClassPrinter
         // Properties
         foreach (var prop in members.Properties.Where(p => !p.IsStatic))
         {
+            var finalName = ctx.Renamer.GetFinalMemberName(prop.StableId, typeScope, isStatic: false);
             sb.Append("    ");
             if (!prop.HasSetter)
                 sb.Append("readonly ");
-            sb.Append(prop.ClrName);
+            sb.Append(finalName);
             sb.Append(": ");
             sb.Append(TypeRefPrinter.Print(prop.PropertyType, ctx));
             sb.AppendLine(";");
@@ -330,13 +349,22 @@ public static class ClassPrinter
     {
         var members = type.Members;
 
+        // Create type scope for static member name resolution
+        var staticTypeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = type.ClrFullName,
+            IsStatic = true, // Static members
+            ScopeKey = $"type:{type.ClrFullName}#static"
+        };
+
         // Static fields
         foreach (var field in members.Fields.Where(f => f.IsStatic && !f.IsConst))
         {
+            var finalName = ctx.Renamer.GetFinalMemberName(field.StableId, staticTypeScope, isStatic: true);
             sb.Append("    static ");
             if (field.IsReadOnly)
                 sb.Append("readonly ");
-            sb.Append(field.ClrName);
+            sb.Append(finalName);
             sb.Append(": ");
             sb.Append(TypeRefPrinter.Print(field.FieldType, ctx));
             sb.AppendLine(";");
@@ -345,8 +373,9 @@ public static class ClassPrinter
         // Const fields (as static readonly)
         foreach (var field in members.Fields.Where(f => f.IsConst))
         {
+            var finalName = ctx.Renamer.GetFinalMemberName(field.StableId, staticTypeScope, isStatic: true);
             sb.Append("    static readonly ");
-            sb.Append(field.ClrName);
+            sb.Append(finalName);
             sb.Append(": ");
             sb.Append(TypeRefPrinter.Print(field.FieldType, ctx));
             sb.AppendLine(";");
@@ -355,10 +384,11 @@ public static class ClassPrinter
         // Static properties
         foreach (var prop in members.Properties.Where(p => p.IsStatic))
         {
+            var finalName = ctx.Renamer.GetFinalMemberName(prop.StableId, staticTypeScope, isStatic: true);
             sb.Append("    static ");
             if (!prop.HasSetter)
                 sb.Append("readonly ");
-            sb.Append(prop.ClrName);
+            sb.Append(finalName);
             sb.Append(": ");
             sb.Append(TypeRefPrinter.Print(prop.PropertyType, ctx));
             sb.AppendLine(";");
@@ -377,13 +407,22 @@ public static class ClassPrinter
     {
         var members = type.Members;
 
+        // Create type scope for member name resolution (interfaces don't have static members)
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = type.ClrFullName,
+            IsStatic = false,
+            ScopeKey = $"type:{type.ClrFullName}#instance"
+        };
+
         // Properties
         foreach (var prop in members.Properties)
         {
+            var finalName = ctx.Renamer.GetFinalMemberName(prop.StableId, typeScope, isStatic: false);
             sb.Append("    ");
             if (!prop.HasSetter)
                 sb.Append("readonly ");
-            sb.Append(prop.ClrName);
+            sb.Append(finalName);
             sb.Append(": ");
             sb.Append(TypeRefPrinter.Print(prop.PropertyType, ctx));
             sb.AppendLine(";");

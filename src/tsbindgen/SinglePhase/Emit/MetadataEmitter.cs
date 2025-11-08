@@ -57,7 +57,7 @@ public static class MetadataEmitter
 
         foreach (var typeOrder in nsOrder.OrderedTypes)
         {
-            typeMetadata.Add(GenerateTypeMetadata(typeOrder.Type));
+            typeMetadata.Add(GenerateTypeMetadata(typeOrder.Type, ctx));
         }
 
         return new NamespaceMetadata
@@ -68,32 +68,50 @@ public static class MetadataEmitter
         };
     }
 
-    private static TypeMetadata GenerateTypeMetadata(TypeSymbol type)
+    private static TypeMetadata GenerateTypeMetadata(TypeSymbol type, BuildContext ctx)
     {
+        // Get final TypeScript name from Renamer
+        var nsScope = new Core.Renaming.NamespaceScope
+        {
+            Namespace = type.Namespace,
+            IsInternal = true,
+            ScopeKey = $"ns:{type.Namespace}:internal"
+        };
+        var tsEmitName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
+
         return new TypeMetadata
         {
             ClrName = type.ClrFullName,
-            TsEmitName = type.TsEmitName,
+            TsEmitName = tsEmitName,
             Kind = type.Kind.ToString(),
             Accessibility = type.Accessibility.ToString(),
             IsAbstract = type.IsAbstract,
             IsSealed = type.IsSealed,
             IsStatic = type.IsStatic,
             Arity = type.Arity,
-            Methods = type.Members.Methods.Select(GenerateMethodMetadata).ToList(),
-            Properties = type.Members.Properties.Select(GeneratePropertyMetadata).ToList(),
-            Fields = type.Members.Fields.Select(GenerateFieldMetadata).ToList(),
-            Events = type.Members.Events.Select(GenerateEventMetadata).ToList(),
-            Constructors = type.Members.Constructors.Select(GenerateConstructorMetadata).ToList()
+            Methods = type.Members.Methods.Select(m => GenerateMethodMetadata(m, type, ctx)).ToList(),
+            Properties = type.Members.Properties.Select(p => GeneratePropertyMetadata(p, type, ctx)).ToList(),
+            Fields = type.Members.Fields.Select(f => GenerateFieldMetadata(f, type, ctx)).ToList(),
+            Events = type.Members.Events.Select(e => GenerateEventMetadata(e, type, ctx)).ToList(),
+            Constructors = type.Members.Constructors.Select(c => GenerateConstructorMetadata(c, type, ctx)).ToList()
         };
     }
 
-    private static MethodMetadata GenerateMethodMetadata(MethodSymbol method)
+    private static MethodMetadata GenerateMethodMetadata(MethodSymbol method, TypeSymbol declaringType, BuildContext ctx)
     {
+        // Get final TS name from Renamer
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = declaringType.ClrFullName,
+            IsStatic = method.IsStatic,
+            ScopeKey = $"type:{declaringType.ClrFullName}#{(method.IsStatic ? "static" : "instance")}"
+        };
+        var tsEmitName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+
         return new MethodMetadata
         {
             ClrName = method.ClrName,
-            TsEmitName = method.TsEmitName,
+            TsEmitName = tsEmitName,
             Provenance = method.Provenance.ToString(),
             EmitScope = method.EmitScope.ToString(),
             IsStatic = method.IsStatic,
@@ -107,12 +125,21 @@ public static class MetadataEmitter
         };
     }
 
-    private static PropertyMetadata GeneratePropertyMetadata(PropertySymbol property)
+    private static PropertyMetadata GeneratePropertyMetadata(PropertySymbol property, TypeSymbol declaringType, BuildContext ctx)
     {
+        // Get final TS name from Renamer
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = declaringType.ClrFullName,
+            IsStatic = property.IsStatic,
+            ScopeKey = $"type:{declaringType.ClrFullName}#{(property.IsStatic ? "static" : "instance")}"
+        };
+        var tsEmitName = ctx.Renamer.GetFinalMemberName(property.StableId, typeScope, property.IsStatic);
+
         return new PropertyMetadata
         {
             ClrName = property.ClrName,
-            TsEmitName = property.TsEmitName,
+            TsEmitName = tsEmitName,
             Provenance = property.Provenance.ToString(),
             EmitScope = property.EmitScope.ToString(),
             IsStatic = property.IsStatic,
@@ -126,30 +153,49 @@ public static class MetadataEmitter
         };
     }
 
-    private static FieldMetadata GenerateFieldMetadata(FieldSymbol field)
+    private static FieldMetadata GenerateFieldMetadata(FieldSymbol field, TypeSymbol declaringType, BuildContext ctx)
     {
+        // Get final TS name from Renamer
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = declaringType.ClrFullName,
+            IsStatic = field.IsStatic,
+            ScopeKey = $"type:{declaringType.ClrFullName}#{(field.IsStatic ? "static" : "instance")}"
+        };
+        var tsEmitName = ctx.Renamer.GetFinalMemberName(field.StableId, typeScope, field.IsStatic);
+
         return new FieldMetadata
         {
             ClrName = field.ClrName,
-            TsEmitName = field.TsEmitName,
+            TsEmitName = tsEmitName,
             IsStatic = field.IsStatic,
             IsReadOnly = field.IsReadOnly,
             IsLiteral = field.IsConst
         };
     }
 
-    private static EventMetadata GenerateEventMetadata(EventSymbol evt)
+    private static EventMetadata GenerateEventMetadata(EventSymbol evt, TypeSymbol declaringType, BuildContext ctx)
     {
+        // Get final TS name from Renamer
+        var typeScope = new Core.Renaming.TypeScope
+        {
+            TypeFullName = declaringType.ClrFullName,
+            IsStatic = evt.IsStatic,
+            ScopeKey = $"type:{declaringType.ClrFullName}#{(evt.IsStatic ? "static" : "instance")}"
+        };
+        var tsEmitName = ctx.Renamer.GetFinalMemberName(evt.StableId, typeScope, evt.IsStatic);
+
         return new EventMetadata
         {
             ClrName = evt.ClrName,
-            TsEmitName = evt.TsEmitName,
+            TsEmitName = tsEmitName,
             IsStatic = evt.IsStatic
         };
     }
 
-    private static ConstructorMetadata GenerateConstructorMetadata(ConstructorSymbol ctor)
+    private static ConstructorMetadata GenerateConstructorMetadata(ConstructorSymbol ctor, TypeSymbol declaringType, BuildContext ctx)
     {
+        // Constructors always have name "constructor" in TypeScript, but still get it from Renamer for consistency
         return new ConstructorMetadata
         {
             IsStatic = ctor.IsStatic,

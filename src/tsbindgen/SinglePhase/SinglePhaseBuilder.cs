@@ -42,7 +42,7 @@ public static class SinglePhaseBuilder
             var stats = graph.GetStatistics();
             ctx.Log($"Loaded: {stats.NamespaceCount} namespaces, {stats.TypeCount} types, {stats.TotalMembers} members");
 
-            // Phase 2: Normalize (currently minimal - just build indices)
+            // Phase 2: Normalize (build indices)
             ctx.Log("\n--- Phase 2: Normalize ---");
             graph.BuildIndices();
             ctx.Log("Built symbol indices");
@@ -51,6 +51,11 @@ public static class SinglePhaseBuilder
             ctx.Log("\n--- Phase 3: Shape ---");
             ShapePhase(ctx, graph);
             ctx.Log("Applied all shaping transformations");
+
+            // Phase 3.5: Name Reservation (after Shape, before Plan)
+            ctx.Log("\n--- Phase 3.5: Name Reservation ---");
+            Normalize.NameReservation.ReserveAllNames(ctx, graph);
+            ctx.Log("Reserved all TypeScript names through Renamer");
 
             // Phase 4: Plan
             ctx.Log("\n--- Phase 4: Plan ---");
