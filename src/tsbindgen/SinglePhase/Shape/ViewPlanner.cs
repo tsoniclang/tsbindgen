@@ -77,8 +77,8 @@ public static class ViewPlanner
             ctx.Log($"ViewPlanner: Created view '{viewName}' for {type.ClrFullName} -> {iface.ClrFullName}");
         }
 
-        // Handle name disambiguation if multiple views would have the same name
-        DisambiguateViewNames(plannedViews);
+        // Note: View names are now self-disambiguating via type arguments (of_type_and_type pattern)
+        // No need for numeric suffix disambiguation
 
         // Store planned views
         _plannedViewsByType[type.ClrFullName] = plannedViews;
@@ -88,20 +88,55 @@ public static class ViewPlanner
 
     private static string CreateViewName(TypeReference ifaceRef)
     {
-        // Create: As_IInterface for interface names
-        // Sanitize generic arity: IEnumerable`1 → As_IEnumerable_1
+        // Create: As_IInterface for non-generic interfaces
+        // Create: As_IEnumerable_1_of_string for IEnumerable<string>
+        // Create: As_IDictionary_2_of_string_and_int for IDictionary<string, int>
 
-        var simpleName = ifaceRef switch
+        var baseName = ifaceRef switch
         {
             NamedTypeReference named => named.Name,
             NestedTypeReference nested => nested.NestedName,
             _ => "Interface"
         };
 
-        // Sanitize: replace backtick with underscore
-        simpleName = simpleName.Replace('`', '_');
+        // Sanitize: replace backtick with underscore (IEnumerable`1 → IEnumerable_1)
+        baseName = baseName.Replace('`', '_');
 
-        return $"As_{simpleName}";
+        // Build view name with type arguments for disambiguation
+        var viewName = $"As_{baseName}";
+
+        // Add type arguments if generic
+        if (ifaceRef is NamedTypeReference { TypeArguments.Count: > 0 } namedType)
+        {
+            var typeArgNames = namedType.TypeArguments
+                .Select(arg => GetTypeArgumentName(arg))
+                .ToList();
+
+            viewName += "_of_" + string.Join("_and_", typeArgNames);
+        }
+
+        return viewName;
+    }
+
+    private static string GetTypeArgumentName(TypeReference typeRef)
+    {
+        // Convert type reference to sanitized name for view naming
+        return typeRef switch
+        {
+            NamedTypeReference named => SanitizeTypeName(named.Name),
+            NestedTypeReference nested => SanitizeTypeName(nested.NestedName),
+            GenericParameterReference gp => gp.Name, // Use parameter name directly (T, U, etc.)
+            ArrayTypeReference arr => GetTypeArgumentName(arr.ElementType) + "_array",
+            PointerTypeReference ptr => GetTypeArgumentName(ptr.PointeeType) + "_ptr",
+            ByRefTypeReference byref => GetTypeArgumentName(byref.ReferencedType) + "_ref",
+            _ => "unknown"
+        };
+    }
+
+    private static string SanitizeTypeName(string name)
+    {
+        // Remove generic arity backticks and sanitize for identifier use
+        return name.Replace('`', '_').Replace('.', '_');
     }
 
     private static List<ViewMember> FilterViewMembers(TypeSymbol type, TypeSymbol iface)
@@ -171,32 +206,6 @@ public static class ViewPlanner
 
         return property.Provenance == MemberProvenance.FromInterface ||
                property.Provenance == MemberProvenance.Synthesized;
-    }
-
-    private static void DisambiguateViewNames(List<ExplicitView> views)
-    {
-        // Group by view name
-        var nameGroups = views.GroupBy(v => v.ViewPropertyName).ToList();
-
-        foreach (var group in nameGroups.Where(g => g.Count() > 1))
-        {
-            // Multiple views with the same name - add numeric suffixes
-            int index = 1;
-            foreach (var view in group)
-            {
-                // Update view name with suffix
-                var disambiguatedName = $"{view.ViewPropertyName}_{index}";
-
-                // Since ExplicitView is a record, we need to create a new one
-                var updated = view with { ViewPropertyName = disambiguatedName };
-
-                // Replace in the list
-                var originalIndex = views.IndexOf(view);
-                views[originalIndex] = updated;
-
-                index++;
-            }
-        }
     }
 
     /// <summary>
