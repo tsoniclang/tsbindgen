@@ -18,9 +18,16 @@ public sealed class AnalysisContext
     private readonly Dictionary<TypeReference, string> _analysisNameCache = new();
     private readonly Dictionary<TypeReference, string> _emitNameCache = new();
 
-    public AnalysisContext(GeneratorConfig config)
+    /// <summary>
+    /// Global interface index for cross-assembly interface lookups.
+    /// Used by StructuralConformance to check type-forwarded interfaces.
+    /// </summary>
+    public GlobalInterfaceIndex? GlobalInterfaceIndex { get; init; }
+
+    public AnalysisContext(GeneratorConfig config, GlobalInterfaceIndex? globalInterfaceIndex = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
+        GlobalInterfaceIndex = globalInterfaceIndex;
     }
 
     /// <summary>

@@ -20,10 +20,11 @@ public static class NamespacePipeline
     /// </summary>
     public static IReadOnlyDictionary<string, NamespaceModel> BuildModels(
         IReadOnlyDictionary<string, NamespaceBundle> bundles,
-        GeneratorConfig config)
+        GeneratorConfig config,
+        GlobalInterfaceIndex? globalInterfaceIndex = null)
     {
         // Create analysis context for on-demand name computation
-        var ctx = new AnalysisContext(config);
+        var ctx = new AnalysisContext(config, globalInterfaceIndex);
 
         var models = new Dictionary<string, NamespaceModel>();
 
@@ -109,13 +110,25 @@ public static class NamespacePipeline
             indexerAnnotatedModels[clrName] = fullyAnnotatedModel;
         }
 
-        // Apply StructuralConformance to decide keep/drop implements based on structural equality
-        // The gate - only keep `implements I` if class is structurally equal to I after normalization
-        // ExplicitViews are emitted directly in TypeScriptEmit as readonly properties
-        var structurallyConformantModels = new Dictionary<string, NamespaceModel>();
+        // Apply OverloadReturnConflictResolver BEFORE StructuralConformance
+        // This creates the TypeScript-representable surface by resolving return-type conflicts.
+        // Keeps one method per (name, params, static) bucket, marks explicit interface
+        // implementations as ViewOnly when they conflict with public methods.
+        var conflictResolvedModels = new Dictionary<string, NamespaceModel>();
         foreach (var (clrName, model) in indexerAnnotatedModels)
         {
-            var conformantModel = StructuralConformance.Apply(model, indexerAnnotatedModels, ctx);
+            var resolvedModel = OverloadReturnConflictResolver.Apply(model, indexerAnnotatedModels, ctx);
+            conflictResolvedModels[clrName] = resolvedModel;
+        }
+
+        // Apply StructuralConformance to decide keep/drop implements based on structural equality
+        // Now uses the TS-representable surface (only EmitScope.Class methods) after conflict resolution.
+        // The gate - only keep `implements I` if class is structurally equal to I after normalization.
+        // ExplicitViews are emitted directly in TypeScriptEmit as readonly properties.
+        var structurallyConformantModels = new Dictionary<string, NamespaceModel>();
+        foreach (var (clrName, model) in conflictResolvedModels)
+        {
+            var conformantModel = StructuralConformance.Apply(model, conflictResolvedModels, ctx);
             structurallyConformantModels[clrName] = conformantModel;
         }
 
@@ -184,6 +197,7 @@ public static class NamespacePipeline
         string outputDir,
         IReadOnlyDictionary<string, NamespaceBundle> bundles,
         GeneratorConfig config,
+        GlobalInterfaceIndex? globalInterfaceIndex,
         bool verbose,
         bool debugTypeList = false)
     {
@@ -191,10 +205,10 @@ public static class NamespacePipeline
         Console.WriteLine("Phase 4: Rendering TypeScript declarations...");
 
         // Build models
-        var models = BuildModels(bundles, config);
+        var models = BuildModels(bundles, config, globalInterfaceIndex);
 
         // Create analysis context for Phase 4 emission
-        var ctx = new AnalysisContext(config);
+        var ctx = new AnalysisContext(config, globalInterfaceIndex);
 
         // Create output directory
         var namespacesDir = Path.Combine(outputDir, "namespaces");

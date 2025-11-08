@@ -2,6 +2,8 @@ using tsbindgen.Config;
 using tsbindgen.Render;
 using tsbindgen.Snapshot;
 
+// InterfaceKey provides canonical key generation for interface lookups
+
 namespace tsbindgen.Render.Analysis;
 
 /// <summary>
@@ -61,13 +63,14 @@ public static class StructuralConformance
     {
         var lookup = new Dictionary<string, TypeModel>();
 
-        foreach (var (_, model) in allModels)
+        foreach (var (namespaceName, model) in allModels)
         {
             foreach (var type in model.Types)
             {
                 if (type.Kind == TypeKind.Interface)
                 {
-                    var key = $"{type.Binding.Type.Namespace}.{type.ClrName}";
+                    // Use InterfaceKey for consistent key generation
+                    var key = InterfaceKey.FromNames(namespaceName, type.ClrName);
                     lookup[key] = type;
                 }
             }
@@ -101,7 +104,8 @@ public static class StructuralConformance
 
         foreach (var interfaceRef in type.Implements)
         {
-            var key = $"{interfaceRef.Namespace}.{interfaceRef.TypeName}";
+            // Use InterfaceKey for consistent key generation
+            var key = InterfaceKey.FromTypeReference(interfaceRef);
 
             // Skip interfaces already in ConflictingInterfaces - they're handled by EmitExplicitInterfaceViews
             if (conflictingInterfaceKeys.Contains(key))
@@ -110,10 +114,31 @@ public static class StructuralConformance
                 continue;
             }
 
-            // Resolve interface type
+            // Resolve interface type from local lookup first
             if (!interfaceLookup.TryGetValue(key, out var interfaceType))
             {
-                // Interface not found (external assembly) - keep as-is
+                // Interface not found in local models - try GlobalInterfaceIndex
+                InterfaceSynopsis? synopsis = null;
+                var foundInGlobal = ctx.GlobalInterfaceIndex != null &&
+                    ctx.GlobalInterfaceIndex.TryGetInterface(key, out synopsis) &&
+                    synopsis != null;
+
+                if (foundInGlobal)
+                {
+                    // Found in global index - check conformance using synopsis
+                    var globalClassSurface = GetClassSurface(type);
+                    var globalInterfaceSurface = ConvertSynopsisToSurface(synopsis!);
+
+                    if (!AreSurfacesEqual(globalClassSurface, globalInterfaceSurface))
+                    {
+                        // Not structurally equal - create explicit view
+                        var viewName = GenerateViewName(interfaceRef);
+                        explicitViews.Add(new InterfaceView(viewName, interfaceRef, Disambiguator: null));
+                        continue; // Don't add to keptImplements
+                    }
+                }
+
+                // Interface not found in either lookup, or conformance check passed - keep as-is
                 keptImplements.Add(interfaceRef);
                 continue;
             }
@@ -214,14 +239,16 @@ public static class StructuralConformance
     }
 
     /// <summary>
-    /// Gets the class surface (only public instance members).
+    /// Gets the class surface (only public instance members with EmitScope.Class).
+    /// This represents the TypeScript-representable surface after conflict resolution.
     /// </summary>
     private static MemberSurface GetClassSurface(TypeModel type)
     {
         var surface = new MemberSurface();
 
         // Add members without substitution (class is concrete)
-        AddMembersToSurface(surface, type, new Dictionary<string, TypeReference>());
+        // Only include methods with EmitScope.Class (excludes ViewOnly explicit interface implementations)
+        AddMembersToSurface(surface, type, new Dictionary<string, TypeReference>(), classRepresentableSurfaceOnly: true);
 
         return surface;
     }
@@ -233,13 +260,18 @@ public static class StructuralConformance
     private static void AddMembersToSurface(
         MemberSurface surface,
         TypeModel type,
-        Dictionary<string, TypeReference> substitutions)
+        Dictionary<string, TypeReference> substitutions,
+        bool classRepresentableSurfaceOnly = false)
     {
         // Add methods (indexers are already method pairs from A2)
         foreach (var method in type.Members.Methods)
         {
             // Skip static methods (not part of instance surface)
             if (method.IsStatic)
+                continue;
+
+            // Skip ViewOnly methods when building class representable surface
+            if (classRepresentableSurfaceOnly && method.EmitScope == EmitScope.ViewOnly)
                 continue;
 
             var substitutedMethod = substitutions.Count > 0
@@ -459,6 +491,33 @@ public static class StructuralConformance
             name = name.Substring(0, backtickIndex);
         }
         return name;
+    }
+
+    /// <summary>
+    /// Converts an InterfaceSynopsis from GlobalInterfaceIndex to a MemberSurface for comparison.
+    /// </summary>
+    private static MemberSurface ConvertSynopsisToSurface(InterfaceSynopsis synopsis)
+    {
+        var surface = new MemberSurface();
+
+        // Add methods from synopsis
+        foreach (var method in synopsis.Methods)
+        {
+            var paramTypes = string.Join(",", method.Parameters.Select(TypeReferenceToString));
+            var returnType = TypeReferenceToString(method.ReturnType);
+            var signature = $"({paramTypes}):{returnType}";
+
+            surface.AddMethod(method.Name, signature);
+        }
+
+        // Add properties from synopsis
+        foreach (var property in synopsis.Properties)
+        {
+            var signature = TypeReferenceToString(property.Type);
+            surface.AddProperty(property.Name, signature);
+        }
+
+        return surface;
     }
 
     /// <summary>

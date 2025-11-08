@@ -1058,9 +1058,15 @@ public static class TypeScriptEmit
         // Use qualified name only if not in System namespace
         var valueTypeName = currentNamespace == "System" ? "ValueType" : "System.ValueType";
 
-        // Filter out implements that reference undefined types
+        // Filter out:
+        // 1. Implements that reference undefined types (internal types)
+        // 2. Conflicting interfaces (will be exposed as explicit views)
+        var conflictingSet = type.ConflictingInterfaces != null
+            ? new HashSet<string>(type.ConflictingInterfaces.Select(i => GetTypeReferenceKey(i)))
+            : new HashSet<string>();
+
         var validImplements = type.Implements
-            .Where(i => IsTypeDefinedInCurrentNamespace(i, currentNamespace))
+            .Where(i => IsTypeDefinedInCurrentNamespace(i, currentNamespace) && !conflictingSet.Contains(GetTypeReferenceKey(i)))
             .ToList();
 
         var implements = validImplements.Count > 0

@@ -255,6 +255,11 @@ public static class GenerateCommand
             Console.WriteLine($"  Total types: {snapshots.Sum(s => s.Namespaces.Sum(ns => ns.Types.Count))}");
             Console.WriteLine();
 
+            // Build GlobalInterfaceIndex for cross-assembly interface resolution
+            Console.WriteLine("Building global interface index...");
+            var globalInterfaceIndex = GlobalInterfaceIndex.Build(allAssemblies);
+            Console.WriteLine($"  Indexed {globalInterfaceIndex.Count} public interfaces");
+
             // Phase 2: Aggregate by namespace
             Console.WriteLine("Phase 2: Aggregating by namespace...");
             var bundles = Aggregate.ByNamespace(snapshots);
@@ -290,7 +295,7 @@ public static class GenerateCommand
             Console.WriteLine();
 
             // Render TypeScript declarations
-            Render.Pipeline.NamespacePipeline.Run(outDir, bundles, config, verbose, debugTypeList);
+            Render.Pipeline.NamespacePipeline.Run(outDir, bundles, config, globalInterfaceIndex, verbose, debugTypeList);
 
             // TODO: Old view code moved to _old/Views
             /*

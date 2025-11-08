@@ -3,6 +3,17 @@ using tsbindgen.Snapshot;
 namespace tsbindgen.Render;
 
 /// <summary>
+/// Specifies where a member should be emitted in TypeScript output.
+/// </summary>
+public enum EmitScope
+{
+    /// <summary>Normal emission on the class/interface surface.</summary>
+    Class,
+    /// <summary>Only emitted in explicit interface views (As_InterfaceName properties).</summary>
+    ViewOnly
+}
+
+/// <summary>
 /// Constructor model.
 /// </summary>
 public sealed record ConstructorModel(
@@ -29,6 +40,12 @@ public sealed record MethodModel(
     /// If not null, indicates this is a synthetic method added by analysis passes.
     /// </summary>
     public SyntheticOverloadInfo? SyntheticOverload { get; init; }
+
+    /// <summary>
+    /// Specifies where this method should be emitted.
+    /// Default is Class (normal emission). ViewOnly methods are emitted only in explicit interface views.
+    /// </summary>
+    public EmitScope EmitScope { get; init; } = EmitScope.Class;
 }
 
 /// <summary>
