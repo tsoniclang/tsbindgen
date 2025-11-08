@@ -62,6 +62,14 @@ public static class OverloadReturnConflictResolver
 
         foreach (var (bucketKey, methods) in buckets)
         {
+            // CRITICAL: Never touch static methods - they must stay on class surface
+            // Static side manipulation causes TS2417 regressions
+            if (methods.All(m => m.IsStatic))
+            {
+                resolvedMethods.AddRange(methods);
+                continue;
+            }
+
             if (methods.Count == 1)
             {
                 // No conflict - keep as-is
@@ -115,75 +123,106 @@ public static class OverloadReturnConflictResolver
 
     /// <summary>
     /// Selects the representative method to keep on the class surface.
-    /// Prefers public methods over explicit interface implementations.
+    /// Prefers non-void-returning methods (immutable API) over void-returning (mutators).
     /// Returns (kept, moved) where moved methods become ViewOnly.
     /// </summary>
     private static (MethodModel Kept, List<MethodModel> Moved) SelectRepresentativeMethod(
         List<MethodModel> methods)
     {
-        // Prefer public/non-explicit methods
-        var publicMethods = methods.Where(m => !IsExplicitInterfaceImplementation(m)).ToList();
-        var explicitMethods = methods.Where(IsExplicitInterfaceImplementation).ToList();
+        // Separate methods by return type: non-void (immutable) vs void (mutator)
+        var nonVoidMethods = methods.Where(m => !IsVoidReturn(m)).ToList();
+        var voidMethods = methods.Where(IsVoidReturn).ToList();
 
-        if (publicMethods.Count > 0)
+        if (nonVoidMethods.Count > 0)
         {
-            // Keep the first public method (deterministic order)
-            // Move all explicit implementations to view-only
-            var kept = publicMethods[0];
+            // Prefer non-void (immutable API) - select the best one
+            var kept = SelectBestMethod(nonVoidMethods);
             var moved = new List<MethodModel>();
-            moved.AddRange(publicMethods.Skip(1)); // Other public overloads with different returns (rare)
-            moved.AddRange(explicitMethods); // All explicit implementations
+            moved.AddRange(nonVoidMethods.Where(m => m != kept));
+            moved.AddRange(voidMethods); // All void-returning methods (mutators)
             return (kept, moved);
         }
 
-        // No public methods - keep first explicit, move rest
-        // (This is rare - usually there's a public method)
-        return (explicitMethods[0], explicitMethods.Skip(1).ToList());
+        // All methods return void - select best mutator
+        var keptMutator = SelectBestMethod(voidMethods);
+        var movedMutators = voidMethods.Where(m => m != keptMutator).ToList();
+        return (keptMutator, movedMutators);
     }
 
     /// <summary>
-    /// Determines if a method is an explicit interface implementation.
-    /// Heuristic: explicit implementations typically have interface-shaped names
-    /// or are marked in metadata. For now, check if the return type suggests
-    /// it's implementing a mutable interface (void return) vs immutable public API.
+    /// Selects the best method from a list using deterministic tiebreakers.
+    /// Prioritizes: return type specificity > non-virtual > lexical order.
     /// </summary>
-    private static bool IsExplicitInterfaceImplementation(MethodModel method)
+    private static MethodModel SelectBestMethod(List<MethodModel> methods)
     {
-        // Heuristic: If return type is void and there are other overloads with
-        // non-void returns, this is likely an explicit interface implementation
-        // of a mutable interface like IList.Add(object):void vs public Add(T):ImmutableArray<T>
+        if (methods.Count == 1)
+            return methods[0];
 
-        // For now, use a simple heuristic: if return is void and name suggests mutation
-        // (Add, Remove, Clear, Insert, etc.), it's likely explicit
-        var isVoid = method.ReturnType.TypeName == "Void" &&
-                     method.ReturnType.Namespace == "System";
-
-        var isMutatingMethod = method.ClrName switch
-        {
-            "Add" => true,
-            "Remove" => true,
-            "Clear" => true,
-            "Insert" => true,
-            "RemoveAt" => true,
-            _ => false
-        };
-
-        return isVoid && isMutatingMethod;
+        return methods
+            .OrderByDescending(m => GetReturnTypeSpecificity(m.ReturnType))
+            .ThenBy(m => m.IsVirtual ? 1 : 0) // Non-virtual first
+            .ThenBy(m => m.ReturnType.Namespace ?? "")
+            .ThenBy(m => m.ReturnType.TypeName ?? "")
+            .First();
     }
 
     /// <summary>
-    /// Generates a bucket key for a method based on name, parameters, and staticness.
-    /// Format: "name(param1Type,param2Type,...)|static=true/false"
+    /// Returns specificity ranking for return types.
+    /// Higher = more specific (concrete types > generic params > Object > void).
+    /// </summary>
+    private static int GetReturnTypeSpecificity(TypeReference returnType)
+    {
+        // Void is least specific
+        if (returnType.Namespace == "System" && returnType.TypeName == "Void")
+            return 0;
+        // Object is very unspecific
+        if (returnType.Namespace == "System" && returnType.TypeName == "Object")
+            return 1;
+        // Generic parameter is less specific than concrete types
+        if (returnType.Kind == TypeReferenceKind.GenericParameter)
+            return 2;
+        // Concrete types are most specific
+        return 3;
+    }
+
+    /// <summary>
+    /// Checks if a method returns void.
+    /// </summary>
+    private static bool IsVoidReturn(MethodModel method)
+    {
+        return method.ReturnType.TypeName == "Void" &&
+               method.ReturnType.Namespace == "System";
+    }
+
+    /// <summary>
+    /// Generates a hardened bucket key for a method with full signature details.
+    /// Format: "name`arity(kind:type:optional:params,...)|accessor=get/set/none|static=true/false"
+    /// Includes generic arity, parameter kinds (ref/out/in), optional flags, and params flags.
     /// </summary>
     private static string GetBucketKey(MethodModel method, AnalysisContext ctx)
     {
-        var paramTypes = string.Join(",",
-            method.Parameters.Select(p => NormalizeTypeReference(p.Type)));
+        var paramSignatures = string.Join(",", method.Parameters.Select(p =>
+        {
+            var typeStr = NormalizeTypeReference(p.Type);
+            var kindStr = p.Kind.ToString().ToLowerInvariant(); // in, ref, out, params
+            var optionalStr = p.IsOptional ? "opt" : "req";
+            var paramsStr = p.IsParams ? "params" : "noparams";
+            return $"{kindStr}:{typeStr}:{optionalStr}:{paramsStr}";
+        }));
 
         var methodName = ctx.GetMethodIdentifier(method);
+        var genericArity = method.GenericParameters.Count > 0 ? $"`{method.GenericParameters.Count}" : "";
+
+        // Detect accessor kind (get_/set_ prefix)
+        var accessorKind = "none";
+        if (method.ClrName.StartsWith("get_"))
+            accessorKind = "get";
+        else if (method.ClrName.StartsWith("set_"))
+            accessorKind = "set";
+
         var staticFlag = method.IsStatic ? "|static=true" : "|static=false";
 
-        return $"{methodName}({paramTypes}){staticFlag}";
+        return $"{methodName}{genericArity}({paramSignatures})|accessor={accessorKind}{staticFlag}";
     }
 
     /// <summary>

@@ -79,12 +79,19 @@ public sealed class GlobalInterfaceIndex
 
     /// <summary>
     /// Indexes all public interfaces from an assembly.
+    /// Applies deterministic sorting to ensure reproducible builds.
     /// </summary>
     private static void IndexAssembly(GlobalInterfaceIndex index, Assembly assembly)
     {
         var exportedTypes = GetExportedTypes(assembly);
 
-        foreach (var type in exportedTypes)
+        // Sort types deterministically by namespace then name for reproducible builds
+        var sortedTypes = exportedTypes
+            .OrderBy(t => t.Namespace ?? "")
+            .ThenBy(t => t.Name)
+            .ToList();
+
+        foreach (var type in sortedTypes)
         {
             // Index public interfaces only
             if (type.IsInterface && type.IsPublic)
@@ -152,9 +159,14 @@ public sealed class GlobalInterfaceIndex
                 interfaceType.GetGenericArguments().Select(t => t.Name));
         }
 
-        // Extract methods (instance only)
-        foreach (var method in interfaceType.GetMethods(
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        // Extract methods (instance only) - sort deterministically
+        var methodInfos = interfaceType.GetMethods(
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .OrderBy(m => m.Name)
+            .ThenBy(m => m.GetParameters().Length)
+            .ToList();
+
+        foreach (var method in methodInfos)
         {
             // Skip property accessors (they're handled via properties)
             if (method.IsSpecialName && (method.Name.StartsWith("get_") || method.Name.StartsWith("set_")))
@@ -172,9 +184,13 @@ public sealed class GlobalInterfaceIndex
                 returnType));
         }
 
-        // Extract properties (instance only, non-indexers)
-        foreach (var property in interfaceType.GetProperties(
-            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
+        // Extract properties (instance only, non-indexers) - sort deterministically
+        var propertyInfos = interfaceType.GetProperties(
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .OrderBy(p => p.Name)
+            .ToList();
+
+        foreach (var property in propertyInfos)
         {
             // Skip indexers (they have parameters)
             if (property.GetIndexParameters().Length > 0)

@@ -1112,7 +1112,9 @@ public static class TypeScriptEmit
                     var key = GetTypeReferenceKey(view.Interface);
                     if (viewSet.Add(key))
                     {
-                        viewList.Add((view.ViewName, view.Interface));
+                        // Apply disambiguator if present
+                        var finalViewName = view.ViewName + (view.Disambiguator ?? "");
+                        viewList.Add((finalViewName, view.Interface));
                     }
                 }
             }

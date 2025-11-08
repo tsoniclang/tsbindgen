@@ -33,7 +33,7 @@ public static class BindingEmit
                     alias = ctx.GetTypeIdentifier(t),
                     explicitViews = t.ExplicitViews != null && t.ExplicitViews.Count > 0
                         ? t.ExplicitViews.ToDictionary(
-                            v => v.ViewName,
+                            v => v.ViewName + (v.Disambiguator ?? ""), // Apply disambiguator to key
                             v => new
                             {
                                 interface_ = $"{v.Interface.Namespace}.{v.Interface.TypeName}",

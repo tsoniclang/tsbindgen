@@ -174,11 +174,14 @@ public static class StructuralConformance
         if (explicitViews.Count == 0)
             return type;
 
+        // Apply disambiguation to view names if there are collisions
+        var disambiguatedViews = DisambiguateViewNames(explicitViews);
+
         // Update type with filtered implements and explicit views
         return type with
         {
             Implements = keptImplements,
-            ExplicitViews = explicitViews
+            ExplicitViews = disambiguatedViews
         };
     }
 
@@ -592,5 +595,87 @@ public static class StructuralConformance
         }
 
         return filtered;
+    }
+
+    /// <summary>
+    /// Disambiguates view names when multiple views have the same name.
+    /// Uses FNV-1a hash of the full interface type for deterministic suffixes.
+    /// </summary>
+    private static List<InterfaceView> DisambiguateViewNames(List<InterfaceView> views)
+    {
+        // Group views by base name
+        var nameGroups = views
+            .GroupBy(v => v.ViewName)
+            .ToList();
+
+        // Check if any group has collisions
+        var hasCollisions = nameGroups.Any(g => g.Count() > 1);
+        if (!hasCollisions)
+            return views; // No collisions, return as-is
+
+        // Rebuild list with disambiguators
+        var disambiguated = new List<InterfaceView>();
+        foreach (var group in nameGroups)
+        {
+            if (group.Count() == 1)
+            {
+                // No collision for this name - keep as-is
+                disambiguated.Add(group.First());
+            }
+            else
+            {
+                // Collision - add hash-based disambiguators
+                // Sort by full interface name for deterministic ordering
+                var sorted = group
+                    .OrderBy(v => v.Interface.Namespace)
+                    .ThenBy(v => v.Interface.TypeName)
+                    .ThenBy(v => string.Join(",", v.Interface.GenericArgs.Select(GetTypeReferenceKey)))
+                    .ToList();
+
+                foreach (var view in sorted)
+                {
+                    var fullInterfaceName = GetTypeReferenceKey(view.Interface);
+                    var hash = ComputeFnv1aHash(fullInterfaceName);
+                    var disambiguator = $"_{hash:x8}"; // 8-character hex suffix
+
+                    disambiguated.Add(view with { Disambiguator = disambiguator });
+                }
+            }
+        }
+
+        return disambiguated;
+    }
+
+    /// <summary>
+    /// Gets a unique key for a TypeReference (namespace.TypeName with generic args).
+    /// </summary>
+    private static string GetTypeReferenceKey(TypeReference typeRef)
+    {
+        var genericArgs = typeRef.GenericArgs.Count > 0
+            ? $"<{string.Join(",", typeRef.GenericArgs.Select(GetTypeReferenceKey))}>"
+            : "";
+
+        var array = typeRef.ArrayRank > 0 ? "[]" : "";
+        var pointer = typeRef.PointerDepth > 0 ? new string('*', typeRef.PointerDepth) : "";
+
+        return $"{typeRef.Namespace}.{typeRef.TypeName}{genericArgs}{array}{pointer}";
+    }
+
+    /// <summary>
+    /// Computes FNV-1a 32-bit hash for a string.
+    /// Deterministic hash algorithm for stable view name disambiguation.
+    /// </summary>
+    private static uint ComputeFnv1aHash(string input)
+    {
+        const uint FnvPrime = 0x01000193;
+        const uint FnvOffsetBasis = 0x811c9dc5;
+
+        uint hash = FnvOffsetBasis;
+        foreach (var c in input)
+        {
+            hash ^= c;
+            hash *= FnvPrime;
+        }
+        return hash;
     }
 }

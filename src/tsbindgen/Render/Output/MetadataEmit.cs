@@ -24,7 +24,22 @@ public static class MetadataEmit
                 // Assembly containing this type
                 assembly = t.Binding.Assembly,
                 kind = t.Kind.ToString(),
-                isStatic = t.IsStatic
+                isStatic = t.IsStatic,
+                // Explicit interface views (methods that don't fit in class surface)
+                explicitViews = t.ExplicitViews != null && t.ExplicitViews.Count > 0
+                    ? t.ExplicitViews.Select(v => new
+                    {
+                        viewName = v.ViewName + (v.Disambiguator ?? ""), // Apply disambiguator
+                        interface_ = $"{v.Interface.Namespace}.{v.Interface.TypeName}",
+                        reason = "StructuralConformance", // Why this view exists
+                        methods = v.ViewOnlyMethods.Select(m => new
+                        {
+                            tsName = ctx.GetMethodIdentifier(m),
+                            clrName = m.ClrName,
+                            normalizedSignature = SignatureNormalization.GetNormalizedSignature(m, ctx)
+                        }).ToList()
+                    }).ToList()
+                    : null
             })
         };
 
