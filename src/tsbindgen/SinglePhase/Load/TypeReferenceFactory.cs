@@ -7,11 +7,13 @@ namespace tsbindgen.SinglePhase.Load;
 /// <summary>
 /// Converts System.Type to our TypeReference model.
 /// Handles all type constructs: named, generic, array, pointer, byref, nested.
+/// Uses memoization with cycle detection to prevent stack overflow on recursive constraints.
 /// </summary>
 public sealed class TypeReferenceFactory
 {
     private readonly BuildContext _ctx;
     private readonly Dictionary<Type, TypeReference> _cache = new();
+    private readonly HashSet<Type> _inProgress = new();
 
     public TypeReferenceFactory(BuildContext ctx)
     {
@@ -20,6 +22,7 @@ public sealed class TypeReferenceFactory
 
     /// <summary>
     /// Convert a System.Type to TypeReference.
+    /// Memoized with cycle detection to prevent infinite recursion.
     /// </summary>
     public TypeReference Create(Type type)
     {
@@ -27,9 +30,27 @@ public sealed class TypeReferenceFactory
         if (_cache.TryGetValue(type, out var cached))
             return cached;
 
-        var result = CreateInternal(type);
-        _cache[type] = result;
-        return result;
+        // Detect cycle - return placeholder to break recursion
+        if (_inProgress.Contains(type))
+        {
+            return new PlaceholderTypeReference
+            {
+                DebugName = _ctx.Intern(type.FullName ?? type.Name)
+            };
+        }
+
+        // Mark as in-progress
+        _inProgress.Add(type);
+        try
+        {
+            var result = CreateInternal(type);
+            _cache[type] = result;
+            return result;
+        }
+        finally
+        {
+            _inProgress.Remove(type);
+        }
     }
 
     private TypeReference CreateInternal(Type type)
@@ -127,23 +148,22 @@ public sealed class TypeReferenceFactory
             IsMethodParameter = type.DeclaringMethod != null
         };
 
-        var constraints = new List<TypeReference>();
-        foreach (var constraint in type.GetGenericParameterConstraints())
-        {
-            constraints.Add(Create(constraint));
-        }
+        // NOTE: Constraints are NOT resolved here to avoid infinite recursion
+        // on recursive constraints like IComparable<T> where T : IComparable<T>.
+        // ConstraintCloser will resolve constraints during Shape phase.
 
         return new GenericParameterReference
         {
             Id = id,
             Name = _ctx.Intern(type.Name),
             Position = type.GenericParameterPosition,
-            Constraints = constraints
+            Constraints = new List<TypeReference>() // Empty - filled by ConstraintCloser
         };
     }
 
     /// <summary>
     /// Create a GenericParameterSymbol from a Type.
+    /// Stores variance and special constraints; ConstraintCloser resolves type constraints later.
     /// </summary>
     public GenericParameterSymbol CreateGenericParameterSymbol(Type type)
     {
@@ -160,11 +180,9 @@ public sealed class TypeReferenceFactory
             IsMethodParameter = type.DeclaringMethod != null
         };
 
-        var constraints = new List<TypeReference>();
-        foreach (var constraint in type.GetGenericParameterConstraints())
-        {
-            constraints.Add(Create(constraint));
-        }
+        // NOTE: Constraint types are NOT resolved here to avoid infinite recursion.
+        // ConstraintCloser will resolve them during Shape phase.
+        // We only store the raw System.Type[] for later resolution.
 
         var variance = Variance.None;
         var attrs = type.GenericParameterAttributes;
@@ -186,7 +204,7 @@ public sealed class TypeReferenceFactory
             Id = id,
             Name = _ctx.Intern(type.Name),
             Position = type.GenericParameterPosition,
-            Constraints = constraints,
+            Constraints = new List<TypeReference>(), // Empty - ConstraintCloser fills this
             Variance = variance,
             SpecialConstraints = specialConstraints
         };

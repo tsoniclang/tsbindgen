@@ -43,7 +43,13 @@ public enum TypeReferenceKind
     /// <summary>
     /// Nested type (Outer.Inner).
     /// </summary>
-    Nested
+    Nested,
+
+    /// <summary>
+    /// Placeholder type (internal - used to break recursion cycles).
+    /// Should never appear in final output; emits 'any' with diagnostic.
+    /// </summary>
+    Placeholder
 }
 
 /// <summary>
@@ -188,4 +194,19 @@ public sealed record NestedTypeReference : TypeReference
     /// Full reference including all nesting levels.
     /// </summary>
     public required NamedTypeReference FullReference { get; init; }
+}
+
+/// <summary>
+/// Placeholder type reference used to break recursion cycles during type graph construction.
+/// Internal only - should never appear in final emitted output.
+/// If it does appear, printers emit 'any' and a diagnostic warning.
+/// </summary>
+public sealed record PlaceholderTypeReference : TypeReference
+{
+    public override TypeReferenceKind Kind => TypeReferenceKind.Placeholder;
+
+    /// <summary>
+    /// Debug name for the type that would have caused infinite recursion.
+    /// </summary>
+    public required string DebugName { get; init; }
 }
