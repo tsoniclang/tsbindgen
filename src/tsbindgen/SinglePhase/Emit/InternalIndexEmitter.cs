@@ -1,6 +1,7 @@
 using System.Text;
 using tsbindgen.SinglePhase.Emit.Printers;
 using tsbindgen.SinglePhase.Model;
+using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Plan;
 
 namespace tsbindgen.SinglePhase.Emit;
@@ -64,14 +65,38 @@ public static class InternalIndexEmitter
         // Emit types in order
         foreach (var typeOrder in nsOrder.OrderedTypes)
         {
-            var typeDecl = ClassPrinter.Print(typeOrder.Type, ctx);
+            // Check if type has explicit views
+            var views = Shape.ViewPlanner.GetPlannedViews(typeOrder.Type.ClrFullName);
+            var hasViews = views.Count > 0 && (typeOrder.Type.Kind == Model.Symbols.TypeKind.Class || typeOrder.Type.Kind == Model.Symbols.TypeKind.Struct);
 
-            // Indent each line
-            var indentedLines = typeDecl.Split('\n')
-                .Select(line => string.IsNullOrWhiteSpace(line) ? line : "    " + line);
+            if (hasViews)
+            {
+                // Emit class with $instance suffix (non-exported)
+                var instanceClass = ClassPrinter.PrintInstance(typeOrder.Type, ctx);
+                var indentedInstance = Indent(instanceClass, "    ");
+                sb.AppendLine(indentedInstance);
+                sb.AppendLine();
 
-            sb.AppendLine(string.Join("\n", indentedLines));
-            sb.AppendLine();
+                // Emit companion views interface (non-exported)
+                var viewsInterface = EmitCompanionViewsInterface(typeOrder.Type, views, ctx);
+                var indentedViews = Indent(viewsInterface, "    ");
+                sb.AppendLine(indentedViews);
+                sb.AppendLine();
+
+                // Emit intersection type alias (exported)
+                var typeAlias = EmitIntersectionTypeAlias(typeOrder.Type, ctx);
+                var indentedAlias = Indent(typeAlias, "    ");
+                sb.AppendLine(indentedAlias);
+                sb.AppendLine();
+            }
+            else
+            {
+                // Normal emission (no views)
+                var typeDecl = ClassPrinter.Print(typeOrder.Type, ctx);
+                var indented = Indent(typeDecl, "    ");
+                sb.AppendLine(indented);
+                sb.AppendLine();
+            }
         }
 
         sb.AppendLine("}");
@@ -96,5 +121,107 @@ public static class InternalIndexEmitter
         sb.AppendLine("export type nint = number & { __brand: \"nint\" };");
         sb.AppendLine("export type nuint = number & { __brand: \"nuint\" };");
         sb.AppendLine();
+    }
+
+    private static string EmitCompanionViewsInterface(TypeSymbol type, List<Shape.ViewPlanner.ExplicitView> views, BuildContext ctx)
+    {
+        var sb = new StringBuilder();
+
+        // Get final type name
+        var nsScope = new Core.Renaming.NamespaceScope
+        {
+            Namespace = type.Namespace,
+            IsInternal = true,
+            ScopeKey = $"ns:{type.Namespace}:internal"
+        };
+        var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
+
+        // Companion interface: __TypeName$views<...>
+        sb.Append($"interface __{finalName}$views");
+
+        // Generic parameters
+        if (type.GenericParameters.Count > 0)
+        {
+            sb.Append('<');
+            sb.Append(string.Join(", ", type.GenericParameters.Select(gp => gp.Name)));
+            sb.Append('>');
+        }
+
+        sb.AppendLine(" {");
+
+        // Emit view properties
+        foreach (var view in views)
+        {
+            sb.Append("    readonly ");
+            sb.Append(view.ViewPropertyName);
+            sb.Append(": ");
+            sb.Append(Printers.TypeRefPrinter.Print(view.InterfaceReference, ctx));
+            sb.AppendLine(";");
+        }
+
+        sb.Append("}");
+
+        return sb.ToString();
+    }
+
+    private static string EmitIntersectionTypeAlias(TypeSymbol type, BuildContext ctx)
+    {
+        var sb = new StringBuilder();
+
+        // Get final type name
+        var nsScope = new Core.Renaming.NamespaceScope
+        {
+            Namespace = type.Namespace,
+            IsInternal = true,
+            ScopeKey = $"ns:{type.Namespace}:internal"
+        };
+        var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
+
+        // Type alias: export type TypeName<...> = TypeName$instance<...> & __TypeName$views<...>
+        sb.Append("export type ");
+        sb.Append(finalName);
+
+        // Generic parameters
+        if (type.GenericParameters.Count > 0)
+        {
+            sb.Append('<');
+            var genericParams = string.Join(", ", type.GenericParameters.Select(gp => gp.Name));
+            sb.Append(genericParams);
+            sb.Append('>');
+        }
+
+        sb.Append(" = ");
+        sb.Append(finalName);
+        sb.Append("$instance");
+
+        // Generic arguments
+        if (type.GenericParameters.Count > 0)
+        {
+            sb.Append('<');
+            sb.Append(string.Join(", ", type.GenericParameters.Select(gp => gp.Name)));
+            sb.Append('>');
+        }
+
+        sb.Append(" & __");
+        sb.Append(finalName);
+        sb.Append("$views");
+
+        // Generic arguments
+        if (type.GenericParameters.Count > 0)
+        {
+            sb.Append('<');
+            sb.Append(string.Join(", ", type.GenericParameters.Select(gp => gp.Name)));
+            sb.Append('>');
+        }
+
+        sb.Append(";");
+
+        return sb.ToString();
+    }
+
+    private static string Indent(string text, string indentation)
+    {
+        var lines = text.Split('\n').Select(line => string.IsNullOrWhiteSpace(line) ? line : indentation + line);
+        return string.Join("\n", lines);
     }
 }

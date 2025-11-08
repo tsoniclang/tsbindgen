@@ -28,7 +28,21 @@ public static class ClassPrinter
         };
     }
 
-    private static string PrintClass(TypeSymbol type, BuildContext ctx)
+    /// <summary>
+    /// Print class/struct with $instance suffix (for companion views pattern).
+    /// Used when type has explicit interface views that will be in separate companion interface.
+    /// </summary>
+    public static string PrintInstance(TypeSymbol type, BuildContext ctx)
+    {
+        return type.Kind switch
+        {
+            TypeKind.Class => PrintClass(type, ctx, instanceSuffix: true),
+            TypeKind.Struct => PrintStruct(type, ctx, instanceSuffix: true),
+            _ => Print(type, ctx) // Fallback
+        };
+    }
+
+    private static string PrintClass(TypeSymbol type, BuildContext ctx, bool instanceSuffix = false)
     {
         var sb = new StringBuilder();
 
@@ -40,6 +54,10 @@ public static class ClassPrinter
             ScopeKey = $"ns:{type.Namespace}:internal"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
+
+        // Add $instance suffix if requested (for companion views pattern)
+        if (instanceSuffix)
+            finalName += "$instance";
 
         // Class modifiers and declaration
         if (type.IsAbstract)
@@ -85,7 +103,7 @@ public static class ClassPrinter
         return sb.ToString();
     }
 
-    private static string PrintStruct(TypeSymbol type, BuildContext ctx)
+    private static string PrintStruct(TypeSymbol type, BuildContext ctx, bool instanceSuffix = false)
     {
         // Structs emit as classes in TypeScript (with metadata noting value semantics)
         var sb = new StringBuilder();
@@ -97,6 +115,10 @@ public static class ClassPrinter
             ScopeKey = $"ns:{type.Namespace}:internal"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
+
+        // Add $instance suffix if requested (for companion views pattern)
+        if (instanceSuffix)
+            finalName += "$instance";
 
         sb.Append("class ");
         sb.Append(finalName);
