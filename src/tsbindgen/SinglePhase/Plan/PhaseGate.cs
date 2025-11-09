@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using tsbindgen.Core.Diagnostics;
+using tsbindgen.Core.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -16,7 +17,7 @@ namespace tsbindgen.SinglePhase.Plan;
 /// </summary>
 public static class PhaseGate
 {
-    public static void Validate(BuildContext ctx, SymbolGraph graph, ImportPlan imports)
+    public static void Validate(BuildContext ctx, SymbolGraph graph, ImportPlan imports, InterfaceConstraintFindings constraintFindings)
     {
         ctx.Log("PhaseGate", "Validating symbol graph before emission...");
 
@@ -53,8 +54,17 @@ public static class PhaseGate
         // PhaseGate Hardening - M3: View integrity validation (3 hard rules)
         ValidateViewsIntegrity(ctx, graph, validationContext);
 
-        // PhaseGate Hardening - M4: Constraint mismatch classification
-        ValidateConstraintMismatches(ctx, graph, validationContext);
+        // PhaseGate Hardening - M4: Constraint findings from InterfaceConstraintAuditor
+        EmitConstraintDiagnostics(ctx, constraintFindings, validationContext);
+
+        // PhaseGate Hardening - M5: View member name scoping (PG_NAME_003, PG_NAME_004)
+        ValidateViewMemberNameScoping(ctx, graph, validationContext);
+
+        // PhaseGate Hardening - M5: EmitScope invariants (PG_INT_002, PG_INT_003)
+        ValidateEmitScopeInvariants(ctx, graph, validationContext);
+
+        // PhaseGate Hardening - M5: Class surface uniqueness (PG_NAME_005)
+        ValidateClassSurfaceUniqueness(ctx, graph, validationContext);
 
         // Report results
         ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings, {validationContext.InfoCount} info");
@@ -741,6 +751,7 @@ public static class PhaseGate
             Core.Diagnostics.DiagnosticCodes.PG_VIEW_002 => "Duplicate view for same interface",
             Core.Diagnostics.DiagnosticCodes.PG_VIEW_003 => "Invalid/unsanitized view property name",
             Core.Diagnostics.DiagnosticCodes.PG_CT_001 => "Non-benign constraint loss",
+            Core.Diagnostics.DiagnosticCodes.PG_CT_002 => "Constructor constraint loss (override)",
             Core.Diagnostics.DiagnosticCodes.PG_IFC_001 => "Interface method not assignable (erased)",
             _ => "Unknown diagnostic"
         };
@@ -1325,7 +1336,9 @@ public static class PhaseGate
                 foreach (var tp in type.GenericParameters)
                 {
                     totalIdentifiersChecked++;
-                    CheckIdentifier(ctx, validationCtx, "type parameter", $"{type.ClrFullName}.{tp.Name}", type.StableId.ToString(), tp.Name, ref unsanitizedCount);
+                    // Type parameters are emitted as-is (like regular identifiers), so sanitize them
+                    var sanitizedTpName = Core.TypeScriptReservedWords.SanitizeParameterName(tp.Name);
+                    CheckIdentifier(ctx, validationCtx, "type parameter", $"{type.ClrFullName}.{tp.Name}", type.StableId.ToString(), sanitizedTpName, ref unsanitizedCount);
                 }
 
                 // Create type scope for member name lookups
@@ -1353,7 +1366,9 @@ public static class PhaseGate
                     foreach (var param in method.Parameters)
                     {
                         totalIdentifiersChecked++;
-                        CheckIdentifier(ctx, validationCtx, "parameter", $"{type.ClrFullName}::{method.ClrName}", $"{method.StableId}#param{paramIndex}", param.Name, ref unsanitizedCount);
+                        // Parameters are sanitized using SanitizeParameterName (reserved words get "_" suffix)
+                        var sanitizedParamName = Core.TypeScriptReservedWords.SanitizeParameterName(param.Name);
+                        CheckIdentifier(ctx, validationCtx, "parameter", $"{type.ClrFullName}::{method.ClrName}", $"{method.StableId}#param{paramIndex}", sanitizedParamName, ref unsanitizedCount);
                         paramIndex++;
                     }
 
@@ -1361,7 +1376,8 @@ public static class PhaseGate
                     foreach (var tp in method.GenericParameters)
                     {
                         totalIdentifiersChecked++;
-                        CheckIdentifier(ctx, validationCtx, "method type parameter", $"{type.ClrFullName}::{method.ClrName}.{tp.Name}", method.StableId.ToString(), tp.Name, ref unsanitizedCount);
+                        var sanitizedTpName = Core.TypeScriptReservedWords.SanitizeParameterName(tp.Name);
+                        CheckIdentifier(ctx, validationCtx, "method type parameter", $"{type.ClrFullName}::{method.ClrName}.{tp.Name}", method.StableId.ToString(), sanitizedTpName, ref unsanitizedCount);
                     }
                 }
 
@@ -1381,7 +1397,8 @@ public static class PhaseGate
                     foreach (var param in property.IndexParameters)
                     {
                         totalIdentifiersChecked++;
-                        CheckIdentifier(ctx, validationCtx, "indexer parameter", $"{type.ClrFullName}::{property.ClrName}", $"{property.StableId}#param{indexerParamIndex}", param.Name, ref unsanitizedCount);
+                        var sanitizedParamName = Core.TypeScriptReservedWords.SanitizeParameterName(param.Name);
+                        CheckIdentifier(ctx, validationCtx, "indexer parameter", $"{type.ClrFullName}::{property.ClrName}", $"{property.StableId}#param{indexerParamIndex}", sanitizedParamName, ref unsanitizedCount);
                         indexerParamIndex++;
                     }
                 }
@@ -1417,7 +1434,48 @@ public static class PhaseGate
                     totalIdentifiersChecked++;
                     CheckIdentifier(ctx, validationCtx, "view property", $"{type.ClrFullName}.{view.ViewPropertyName}", type.StableId.ToString(), view.ViewPropertyName, ref unsanitizedCount);
 
-                    // Note: ViewMembers reference existing members already checked above, no need to re-check
+                    // Check each view member's emitted name (to catch mismatches or synthetic entries)
+                    foreach (var viewMember in view.ViewMembers)
+                    {
+                        string emittedMemberName;
+                        string memberOwner;
+
+                        switch (viewMember.Kind)
+                        {
+                            case Shape.ViewPlanner.ViewMemberKind.Method:
+                                var method = type.Members.Methods.FirstOrDefault(m => m.StableId.Equals(viewMember.StableId));
+                                if (method != null)
+                                {
+                                    emittedMemberName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+                                    memberOwner = $"{type.ClrFullName}::{method.ClrName} (in view {view.ViewPropertyName})";
+                                    totalIdentifiersChecked++;
+                                    CheckIdentifier(ctx, validationCtx, "view method", memberOwner, method.StableId.ToString(), emittedMemberName, ref unsanitizedCount);
+                                }
+                                break;
+
+                            case Shape.ViewPlanner.ViewMemberKind.Property:
+                                var property = type.Members.Properties.FirstOrDefault(p => p.StableId.Equals(viewMember.StableId));
+                                if (property != null)
+                                {
+                                    emittedMemberName = ctx.Renamer.GetFinalMemberName(property.StableId, typeScope, property.IsStatic);
+                                    memberOwner = $"{type.ClrFullName}::{property.ClrName} (in view {view.ViewPropertyName})";
+                                    totalIdentifiersChecked++;
+                                    CheckIdentifier(ctx, validationCtx, "view property member", memberOwner, property.StableId.ToString(), emittedMemberName, ref unsanitizedCount);
+                                }
+                                break;
+
+                            case Shape.ViewPlanner.ViewMemberKind.Event:
+                                var evt = type.Members.Events.FirstOrDefault(e => e.StableId.Equals(viewMember.StableId));
+                                if (evt != null)
+                                {
+                                    emittedMemberName = ctx.Renamer.GetFinalMemberName(evt.StableId, typeScope, evt.IsStatic);
+                                    memberOwner = $"{type.ClrFullName}::{evt.ClrName} (in view {view.ViewPropertyName})";
+                                    totalIdentifiersChecked++;
+                                    CheckIdentifier(ctx, validationCtx, "view event", memberOwner, evt.StableId.ToString(), emittedMemberName, ref unsanitizedCount);
+                                }
+                                break;
+                        }
+                    }
                 }
             }
         }
@@ -1793,41 +1851,53 @@ public static class PhaseGate
     /// Benign widenings (class/struct/notnull → TS object/unknown) emit WARNING.
     /// Non-benign losses (new(), other constraints) emit ERROR.
     /// </summary>
-    private static void ValidateConstraintMismatches(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    /// <summary>
+    /// M4: Emit constructor constraint diagnostics from InterfaceConstraintAuditor findings.
+    /// This replaces per-member checking to avoid duplicate diagnostics for view members.
+    /// </summary>
+    private static void EmitConstraintDiagnostics(BuildContext ctx, InterfaceConstraintFindings findings, ValidationContext validationCtx)
     {
-        ctx.Log("[PG]", "M4: Validating constraint mismatches (classify benign vs non-benign)...");
+        ctx.Log("[PG]", "M4: Emitting constraint diagnostics from interface findings...");
 
-        int benignWidenings = 0;
-        int nonBenignLosses = 0;
+        int errorCount = 0;
+        int warningCount = 0;
 
-        foreach (var ns in graph.Namespaces)
+        // Check policy flag for constructor constraint loss
+        var allowConstructorLoss = ctx.Policy.Constraints.AllowConstructorConstraintLoss;
+
+        foreach (var finding in findings.Findings)
         {
-            foreach (var type in ns.Types)
+            if (finding.LossKind == ConstraintLossKind.ConstructorConstraintLoss)
             {
-                // Type-level generic parameters
-                foreach (var gp in type.GenericParameters)
+                if (!allowConstructorLoss)
                 {
-                    ClassifyConstraintDifferences(ctx, validationCtx, gp, type.ClrFullName,
-                        ref benignWidenings, ref nonBenignLosses, graph);
+                    // Strict mode: ERROR
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_CT_001,
+                        "ERROR",
+                        $"PG_CT_001: Non-benign constraint loss on {finding.GenericParameterName} in {finding.TypeFullName}\n" +
+                        $"  Type:      {finding.TypeFullName}\n" +
+                        $"  Interface: {finding.InterfaceFullName}\n" +
+                        $"  Reason:    TypeScript cannot represent parameterless constructor constraints; callers relying on `new {finding.GenericParameterName}()` would be unsound.");
+                    errorCount++;
                 }
-
-                // Method-level generic parameters
-                foreach (var method in type.Members.Methods)
+                else
                 {
-                    if (method.Visibility != Visibility.Public)
-                        continue;
-
-                    foreach (var gp in method.GenericParameters)
-                    {
-                        ClassifyConstraintDifferences(ctx, validationCtx, gp,
-                            $"{type.ClrFullName}.{method.ClrName}()",
-                            ref benignWidenings, ref nonBenignLosses, graph);
-                    }
+                    // Override mode: WARNING
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_CT_002,
+                        "WARNING",
+                        $"[OVERRIDE] PG_CT_002: Constructor constraint loss on {finding.GenericParameterName} in {finding.TypeFullName}\n" +
+                        $"  Type:      {finding.TypeFullName}\n" +
+                        $"  Interface: {finding.InterfaceFullName}\n" +
+                        $"  Reason:    TypeScript cannot represent parameterless constructor constraints; callers relying on `new {finding.GenericParameterName}()` would be unsound.\n" +
+                        $"  Note:      Allowed via Policy.Constraints.AllowConstructorConstraintLoss = true");
+                    warningCount++;
                 }
             }
         }
 
-        ctx.Log("[PG]", $"M4: Found {benignWidenings} benign constraint widenings (WARNING), {nonBenignLosses} non-benign losses (ERROR)");
+        ctx.Log("[PG]", $"M4: Emitted {errorCount} constraint errors, {warningCount} constraint warnings from {findings.Findings.Length} findings");
     }
 
     private static void ClassifyConstraintDifferences(
@@ -1865,20 +1935,59 @@ public static class PhaseGate
             // Non-benign: new() (DefaultConstructor)
             if (nonBenignLoss != GenericParameterConstraints.None)
             {
+                // Build full CLR constraint description
+                var clrConstraints = FormatConstraintSet(gp.SpecialConstraints, gp.Constraints);
+                var tsConstraints = FormatTsConstraintSet(gp.SpecialConstraints & ~GenericParameterConstraints.DefaultConstructor, gp.Constraints);
+
+                // Check if constructor constraint loss is allowed via policy flag
+                var allowConstructorLoss = ctx.Policy.Constraints.AllowConstructorConstraintLoss;
+
+                if (!allowConstructorLoss)
+                {
+                    // Strict mode: ERROR
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_CT_001,
+                        "ERROR",
+                        $"PG_CT_001: Non-benign constraint loss on {gp.Name} in {ownerName}\n" +
+                        $"  CLR:    where {gp.Name} : {clrConstraints}\n" +
+                        $"  TS:     {tsConstraints}\n" +
+                        $"  Reason: TypeScript cannot represent parameterless constructor constraints; callers relying on `new {gp.Name}()` would be unsound.");
+                    nonBenignCount++;
+                }
+                else
+                {
+                    // Override mode: WARNING with [OVERRIDE] marker
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_CT_002,
+                        "WARNING",
+                        $"[OVERRIDE] PG_CT_002: Constructor constraint loss on {gp.Name} in {ownerName}\n" +
+                        $"  CLR:    where {gp.Name} : {clrConstraints}\n" +
+                        $"  TS:     {tsConstraints}\n" +
+                        $"  Reason: TypeScript cannot represent parameterless constructor constraints; callers relying on `new {gp.Name}()` would be unsound.\n" +
+                        $"  Note:   Allowed via Policy.Constraints.AllowConstructorConstraintLoss = true");
+                    benignCount++; // Count as benign (downgraded)
+                }
+            }
+        }
+
+        // Check all type constraints (interface/class/enum constraints)
+        foreach (var constraint in gp.Constraints)
+        {
+            // Check if constraint is unrepresentable (pointer, byref, etc.)
+            if (!IsConstraintRepresentable(constraint))
+            {
                 validationCtx.RecordDiagnostic(
                     Core.Diagnostics.DiagnosticCodes.PG_CT_001,
                     "ERROR",
                     $"Non-benign constraint loss on {gp.Name}\n" +
                     $"  owner:    {ownerName}\n" +
-                    $"  clr:      {nonBenignLoss}\n" +
-                    $"  ts:       (no equivalent - constraint dropped)");
+                    $"  clr:      {GetTypeReferenceName(constraint)} (unrepresentable in TS)\n" +
+                    $"  ts:       (constraint dropped - cannot represent pointer/byref types)");
                 nonBenignCount++;
+                continue; // Skip further checks for this constraint
             }
-        }
 
-        // Check type constraints for enum types (benign widening to number)
-        foreach (var constraint in gp.Constraints)
-        {
+            // Check if it's an enum constraint (benign widening to number)
             if (IsEnumConstraint(constraint, graph))
             {
                 validationCtx.RecordDiagnostic(
@@ -1889,7 +1998,11 @@ public static class PhaseGate
                     $"  clr:      {GetTypeReferenceName(constraint)} (enum)\n" +
                     $"  ts:       number (enum widened to number)");
                 benignCount++;
+                continue;
             }
+
+            // All other type constraints (interface, base class) are emitted as-is
+            // No classification needed - they're representable and preserved in TS
         }
     }
 
@@ -1901,6 +2014,390 @@ public static class PhaseGate
             .FirstOrDefault(t => t.ClrFullName == typeName);
 
         return type?.Kind == TypeKind.Enum;
+    }
+
+    /// <summary>
+    /// Format the full CLR constraint set in readable form.
+    /// Example: "struct, System.Enum, new()"
+    /// </summary>
+    private static string FormatConstraintSet(GenericParameterConstraints specialConstraints, IReadOnlyList<TypeReference> typeConstraints)
+    {
+        var parts = new List<string>();
+
+        // Special constraints
+        if (specialConstraints.HasFlag(GenericParameterConstraints.ReferenceType))
+            parts.Add("class");
+        if (specialConstraints.HasFlag(GenericParameterConstraints.ValueType))
+            parts.Add("struct");
+        if (specialConstraints.HasFlag(GenericParameterConstraints.NotNullable))
+            parts.Add("notnull");
+
+        // Type constraints
+        foreach (var constraint in typeConstraints)
+        {
+            parts.Add(GetTypeReferenceName(constraint));
+        }
+
+        // Constructor constraint (always last)
+        if (specialConstraints.HasFlag(GenericParameterConstraints.DefaultConstructor))
+            parts.Add("new()");
+
+        return parts.Count > 0 ? string.Join(", ", parts) : "none";
+    }
+
+    /// <summary>
+    /// Format the TypeScript-level constraint set (after lossy mapping).
+    /// Shows what TypeScript can actually represent.
+    /// </summary>
+    private static string FormatTsConstraintSet(GenericParameterConstraints specialConstraints, IReadOnlyList<TypeReference> typeConstraints)
+    {
+        var parts = new List<string>();
+
+        // Special constraints are lost in TS (just informational)
+        if (specialConstraints.HasFlag(GenericParameterConstraints.ValueType))
+            parts.Add("value-type-like");
+        else if (specialConstraints.HasFlag(GenericParameterConstraints.ReferenceType))
+            parts.Add("reference-type-like");
+
+        // Type constraints that survive
+        foreach (var constraint in typeConstraints)
+        {
+            // Enums become number, others pass through
+            parts.Add(GetTypeReferenceName(constraint));
+        }
+
+        return parts.Count > 0 ? string.Join(" & ", parts) : "(no constraint)";
+    }
+
+    /// <summary>
+    /// M5: Validate view member name scoping.
+    /// PG_NAME_003: View member collision within view scope (same emitted name in one view).
+    /// PG_NAME_004: View member name equals class surface name.
+    /// </summary>
+    private static void ValidateViewMemberNameScoping(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M5: Validating view member name scoping...");
+
+        int viewMemberCollisions = 0;
+        int classSurfaceCollisions = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                if (type.ExplicitViews.Length == 0)
+                    continue;
+
+                // Get class surface scope for collision detection
+                var classSurfaceScope = new TypeScope
+                {
+                    ScopeKey = $"type:{type.ClrFullName}",
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = false
+                };
+
+                // Collect class surface member names for PG_NAME_004 checks
+                var classSurfaceNames = new HashSet<string>();
+                foreach (var method in type.Members.Methods.Where(m => m.EmitScope == EmitScope.ClassSurface))
+                {
+                    var name = ctx.Renamer.GetFinalMemberName(method.StableId, classSurfaceScope, method.IsStatic);
+                    classSurfaceNames.Add(name);
+                }
+                foreach (var prop in type.Members.Properties.Where(p => p.EmitScope == EmitScope.ClassSurface))
+                {
+                    var name = ctx.Renamer.GetFinalMemberName(prop.StableId, classSurfaceScope, prop.IsStatic);
+                    classSurfaceNames.Add(name);
+                }
+                foreach (var field in type.Members.Fields.Where(f => f.EmitScope == EmitScope.ClassSurface))
+                {
+                    var name = ctx.Renamer.GetFinalMemberName(field.StableId, classSurfaceScope, field.IsStatic);
+                    classSurfaceNames.Add(name);
+                }
+                foreach (var evt in type.Members.Events.Where(e => e.EmitScope == EmitScope.ClassSurface))
+                {
+                    var name = ctx.Renamer.GetFinalMemberName(evt.StableId, classSurfaceScope, evt.IsStatic);
+                    classSurfaceNames.Add(name);
+                }
+
+                // Check each view
+                foreach (var view in type.ExplicitViews)
+                {
+                    // Resolve interface StableId (same as NameReservation)
+                    var interfaceStableId = GetInterfaceStableId(graph, view.InterfaceReference);
+                    if (interfaceStableId == null)
+                    {
+                        continue; // Skip if interface not found
+                    }
+
+                    var interfaceTypeName = GetTypeReferenceName(view.InterfaceReference);
+                    var viewScope = new TypeScope
+                    {
+                        ScopeKey = $"view:{type.StableId}:{interfaceStableId}",
+                        TypeFullName = type.ClrFullName,
+                        IsStatic = false
+                    };
+
+                    // PG_NAME_003: Check for collisions within this view
+                    var viewMemberNames = new Dictionary<string, string>(); // emittedName -> first member description
+
+                    foreach (var viewMember in view.ViewMembers)
+                    {
+                        string emittedName;
+                        bool isStatic = FindMemberIsStatic(type, viewMember);
+
+                        // Get emitted name based on member kind
+                        switch (viewMember.Kind)
+                        {
+                            case Shape.ViewPlanner.ViewMemberKind.Method:
+                                var method = type.Members.Methods.FirstOrDefault(m => m.StableId.Equals(viewMember.StableId));
+                                if (method == null) continue;
+                                emittedName = ctx.Renamer.GetFinalMemberName(method.StableId, viewScope, isStatic);
+                                break;
+                            case Shape.ViewPlanner.ViewMemberKind.Property:
+                                var prop = type.Members.Properties.FirstOrDefault(p => p.StableId.Equals(viewMember.StableId));
+                                if (prop == null) continue;
+                                emittedName = ctx.Renamer.GetFinalMemberName(prop.StableId, viewScope, isStatic);
+                                break;
+                            case Shape.ViewPlanner.ViewMemberKind.Event:
+                                var evt = type.Members.Events.FirstOrDefault(e => e.StableId.Equals(viewMember.StableId));
+                                if (evt == null) continue;
+                                emittedName = ctx.Renamer.GetFinalMemberName(evt.StableId, viewScope, isStatic);
+                                break;
+                            default:
+                                continue;
+                        }
+
+                        // PG_NAME_003: Check for collision within view
+                        if (viewMemberNames.TryGetValue(emittedName, out var firstMember))
+                        {
+                            viewMemberCollisions++;
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.PG_NAME_003,
+                                "ERROR",
+                                $"View member collision within view scope\n" +
+                                $"  type:         {type.ClrFullName}\n" +
+                                $"  view:         {view.ViewPropertyName}\n" +
+                                $"  interface:    {interfaceTypeName}\n" +
+                                $"  emitted name: {emittedName}\n" +
+                                $"  first member: {firstMember}\n" +
+                                $"  collision:    {viewMember.ClrName}");
+                        }
+                        else
+                        {
+                            viewMemberNames[emittedName] = viewMember.ClrName;
+                        }
+
+                        // PG_NAME_004: Check if view member name equals class surface name
+                        // Only flag for ViewOnly members - members on both class surface and view naturally have the same name
+                        bool isViewOnly = false;
+                        switch (viewMember.Kind)
+                        {
+                            case Shape.ViewPlanner.ViewMemberKind.Method:
+                                var methodForCheck = type.Members.Methods.FirstOrDefault(m => m.StableId.Equals(viewMember.StableId));
+                                isViewOnly = methodForCheck?.EmitScope == EmitScope.ViewOnly;
+                                break;
+                            case Shape.ViewPlanner.ViewMemberKind.Property:
+                                var propForCheck = type.Members.Properties.FirstOrDefault(p => p.StableId.Equals(viewMember.StableId));
+                                isViewOnly = propForCheck?.EmitScope == EmitScope.ViewOnly;
+                                break;
+                            case Shape.ViewPlanner.ViewMemberKind.Event:
+                                var evtForCheck = type.Members.Events.FirstOrDefault(e => e.StableId.Equals(viewMember.StableId));
+                                isViewOnly = evtForCheck?.EmitScope == EmitScope.ViewOnly;
+                                break;
+                        }
+
+                        if (isViewOnly && classSurfaceNames.Contains(emittedName))
+                        {
+                            ctx.Log("PhaseGate",
+                                $"PG_NAME_004: ViewOnly member {type.ClrFullName}::{viewMember.ClrName} " +
+                                $"emitted as '{emittedName}' shadows class surface in view {view.ViewPropertyName}");
+
+                            classSurfaceCollisions++;
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.PG_NAME_004,
+                                "ERROR",
+                                $"View member name equals class surface name\n" +
+                                $"  type:         {type.ClrFullName}\n" +
+                                $"  view:         {view.ViewPropertyName}\n" +
+                                $"  interface:    {interfaceTypeName}\n" +
+                                $"  emitted name: {emittedName}\n" +
+                                $"  view member:  {viewMember.ClrName}\n" +
+                                $"  reason:       View member names must not shadow class surface members");
+                        }
+                    }
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M5: View member name scoping - {viewMemberCollisions} view collisions, {classSurfaceCollisions} class surface collisions");
+    }
+
+    /// <summary>
+    /// Helper to find if a ViewMember corresponds to a static member.
+    /// </summary>
+    private static bool FindMemberIsStatic(TypeSymbol type, Shape.ViewPlanner.ViewMember viewMember)
+    {
+        return viewMember.Kind switch
+        {
+            Shape.ViewPlanner.ViewMemberKind.Method =>
+                type.Members.Methods.FirstOrDefault(m => m.StableId.Equals(viewMember.StableId))?.IsStatic ?? false,
+            Shape.ViewPlanner.ViewMemberKind.Property =>
+                type.Members.Properties.FirstOrDefault(p => p.StableId.Equals(viewMember.StableId))?.IsStatic ?? false,
+            Shape.ViewPlanner.ViewMemberKind.Event =>
+                type.Members.Events.FirstOrDefault(e => e.StableId.Equals(viewMember.StableId))?.IsStatic ?? false,
+            _ => false
+        };
+    }
+
+    /// <summary>
+    /// M5: Validate EmitScope invariants.
+    /// PG_INT_002: No member should appear in both ClassSurface and ViewOnly.
+    /// PG_INT_003: ClassSurface members must not have SourceInterface set.
+    /// </summary>
+    private static void ValidateEmitScopeInvariants(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M5: Validating EmitScope invariants...");
+
+        int dualScopeErrors = 0;
+        int sourceInterfaceErrors = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                // PG_INT_002: Check for members appearing in both ClassSurface and ViewOnly
+                var scopeMap = new Dictionary<Core.Renaming.MemberStableId, (bool ClassSurface, bool ViewOnly)>();
+
+                void MarkMember(Core.Renaming.MemberStableId id, EmitScope scope)
+                {
+                    if (!scopeMap.TryGetValue(id, out var existing))
+                        existing = (false, false);
+
+                    scopeMap[id] = (
+                        existing.ClassSurface || scope == EmitScope.ClassSurface,
+                        existing.ViewOnly || scope == EmitScope.ViewOnly
+                    );
+                }
+
+                foreach (var m in type.Members.Methods)
+                    MarkMember(m.StableId, m.EmitScope);
+                foreach (var p in type.Members.Properties)
+                    MarkMember(p.StableId, p.EmitScope);
+                foreach (var e in type.Members.Events)
+                    MarkMember(e.StableId, e.EmitScope);
+
+                foreach (var kv in scopeMap)
+                {
+                    if (kv.Value.ClassSurface && kv.Value.ViewOnly)
+                    {
+                        dualScopeErrors++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_INT_002,
+                            "ERROR",
+                            $"Member appears in both ClassSurface and ViewOnly\n" +
+                            $"  type:   {type.ClrFullName}\n" +
+                            $"  member: {FormatMemberStableId(kv.Key)}\n" +
+                            $"  reason: Same StableId cannot have multiple EmitScopes");
+                    }
+                }
+
+                // PG_INT_003: Check for ClassSurface members with SourceInterface
+                foreach (var m in type.Members.Methods.Where(x => x.EmitScope == EmitScope.ClassSurface && x.SourceInterface != null))
+                {
+                    sourceInterfaceErrors++;
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_INT_003,
+                        "ERROR",
+                        $"Class-surface member has SourceInterface set\n" +
+                        $"  type:   {type.ClrFullName}\n" +
+                        $"  method: {m.ClrName}\n" +
+                        $"  interface: {m.SourceInterface}\n" +
+                        $"  reason: SourceInterface is only valid for ViewOnly members");
+                }
+
+                foreach (var p in type.Members.Properties.Where(x => x.EmitScope == EmitScope.ClassSurface && x.SourceInterface != null))
+                {
+                    sourceInterfaceErrors++;
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_INT_003,
+                        "ERROR",
+                        $"Class-surface property has SourceInterface set\n" +
+                        $"  type:     {type.ClrFullName}\n" +
+                        $"  property: {p.ClrName}\n" +
+                        $"  interface: {p.SourceInterface}\n" +
+                        $"  reason: SourceInterface is only valid for ViewOnly members");
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M5: EmitScope invariants - {dualScopeErrors} dual-scope errors, {sourceInterfaceErrors} SourceInterface errors");
+    }
+
+    /// <summary>
+    /// Format a MemberStableId for diagnostics.
+    /// </summary>
+    internal static string FormatMemberStableId(Core.Renaming.MemberStableId id)
+    {
+        // Avoid duplicating member name if already in CanonicalSignature
+        var sig = id.CanonicalSignature.StartsWith(id.MemberName + "(", System.StringComparison.Ordinal)
+            ? id.CanonicalSignature
+            : $"{id.MemberName}{id.CanonicalSignature}";
+        return $"{id.AssemblyName}:{id.DeclaringClrFullName}::{sig}";
+    }
+
+    /// <summary>
+    /// M5: Validate that class surface has no duplicate emitted names after deduplication.
+    /// PG_NAME_005: Catches any duplicates that slipped through ClassSurfaceDeduplicator.
+    /// </summary>
+    private static void ValidateClassSurfaceUniqueness(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M5: Validating class surface uniqueness...");
+
+        int duplicates = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                // Only check classes and structs
+                if (type.Kind != TypeKind.Class && type.Kind != TypeKind.Struct)
+                    continue;
+
+                // Group class-surface properties by emitted name (camelCase)
+                var propertyGroups = type.Members.Properties
+                    .Where(p => p.EmitScope == EmitScope.ClassSurface)
+                    .GroupBy(p => ApplyCamelCase(p.ClrName))
+                    .Where(g => g.Count() > 1)
+                    .ToList();
+
+                foreach (var group in propertyGroups)
+                {
+                    duplicates++;
+                    var members = string.Join(", ", group.Select(p => p.ClrName));
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_NAME_005,
+                        "ERROR",
+                        $"Duplicate property name on class surface\n" +
+                        $"  type:          {type.ClrFullName}\n" +
+                        $"  emitted name:  {group.Key}\n" +
+                        $"  members:       {members}\n" +
+                        $"  reason:        ClassSurfaceDeduplicator should have resolved this");
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M5: Class surface uniqueness - {duplicates} duplicate property names");
+    }
+
+    /// <summary>
+    /// Apply camelCase transformation to a name (simplified).
+    /// </summary>
+    private static string ApplyCamelCase(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return name;
+
+        return char.ToLowerInvariant(name[0]) + name.Substring(1);
     }
 }
 

@@ -199,43 +199,6 @@ public static class ExplicitImplSynthesizer
 
     private static MethodSymbol SynthesizeMethod(BuildContext ctx, TypeSymbol type, TypeReference iface, MethodSymbol method)
     {
-        // Synthesize with explicit view suffix if policy says so
-        var strategy = ctx.Policy.Classes.SynthesizeExplicitImpl;
-
-        string requestedName = method.ClrName;
-
-        if (strategy == Core.Policy.ExplicitImplStrategy.SynthesizeWithSuffix)
-        {
-            var ifaceName = GetSimpleInterfaceName(iface);
-            requestedName = $"{method.ClrName}_{ifaceName}";
-        }
-
-        // Reserve the name through renamer
-        var typeScope = new TypeScope
-        {
-            TypeFullName = type.ClrFullName,
-            IsStatic = false,
-            ScopeKey = $"{type.ClrFullName}#instance"
-        };
-
-        var stableId = new MemberStableId
-        {
-            AssemblyName = type.StableId.AssemblyName,
-            DeclaringClrFullName = type.ClrFullName,
-            MemberName = requestedName,
-            CanonicalSignature = ctx.CanonicalizeMethod(
-                requestedName,
-                method.Parameters.Select(p => GetTypeFullName(p.Type)).ToList(),
-                GetTypeFullName(method.ReturnType))
-        };
-
-        ctx.Renamer.ReserveMemberName(
-            stableId,
-            requestedName,
-            typeScope,
-            "InterfaceSynthesis",
-            isStatic: false);
-
         // Resolve to the declaring interface (not just the contributing interface)
         var memberCanonicalSig = ctx.CanonicalizeMethod(
             method.ClrName,
@@ -248,62 +211,38 @@ public static class ExplicitImplSynthesizer
             isMethod: true,
             ctx);
 
+        // M5 FIX: Use interface member's StableId, mark as ViewOnly
+        // EII members aren't accessible via the class in C#, only through the interface
+        var stableId = method.StableId;
+
+        ctx.Log("explicit-impl",
+            $"eii: {type.StableId} {declaringInterface?.ToString() ?? iface.ToString()} " +
+            $"{Plan.PhaseGate.FormatMemberStableId(stableId)} -> ViewOnly");
+
         // Create synthesized method symbol
         return new MethodSymbol
         {
             StableId = stableId,
-            ClrName = requestedName,
+            ClrName = method.ClrName,
             ReturnType = method.ReturnType,
             Parameters = method.Parameters,
             GenericParameters = method.GenericParameters,
             IsStatic = false,
-            IsAbstract = type.IsAbstract,
+            IsAbstract = false,
             IsVirtual = true,
             IsOverride = false,
             IsSealed = false,
             IsNew = false,
             Visibility = Visibility.Public,
-            Provenance = MemberProvenance.Synthesized,
-            EmitScope = EmitScope.ClassSurface,
+            Provenance = MemberProvenance.ExplicitView,
+            EmitScope = EmitScope.ViewOnly,
             SourceInterface = declaringInterface ?? iface
         };
     }
 
     private static PropertySymbol SynthesizeProperty(BuildContext ctx, TypeSymbol type, TypeReference iface, PropertySymbol property)
     {
-        var strategy = ctx.Policy.Classes.SynthesizeExplicitImpl;
-
-        string requestedName = property.ClrName;
-
-        if (strategy == Core.Policy.ExplicitImplStrategy.SynthesizeWithSuffix)
-        {
-            var ifaceName = GetSimpleInterfaceName(iface);
-            requestedName = $"{property.ClrName}_{ifaceName}";
-        }
-
         var indexParams = property.IndexParameters.Select(p => GetTypeFullName(p.Type)).ToList();
-
-        var stableId = new MemberStableId
-        {
-            AssemblyName = type.StableId.AssemblyName,
-            DeclaringClrFullName = type.ClrFullName,
-            MemberName = requestedName,
-            CanonicalSignature = ctx.CanonicalizeProperty(requestedName, indexParams, GetTypeFullName(property.PropertyType))
-        };
-
-        var typeScope = new TypeScope
-        {
-            TypeFullName = type.ClrFullName,
-            IsStatic = false,
-            ScopeKey = $"{type.ClrFullName}#instance"
-        };
-
-        ctx.Renamer.ReserveMemberName(
-            stableId,
-            requestedName,
-            typeScope,
-            "InterfaceSynthesis",
-            isStatic: false);
 
         // Resolve to the declaring interface (not just the contributing interface)
         var memberCanonicalSig = ctx.CanonicalizeProperty(
@@ -317,10 +256,17 @@ public static class ExplicitImplSynthesizer
             isMethod: false,
             ctx);
 
+        // M5 FIX: Use interface property's StableId, mark as ViewOnly
+        var stableId = property.StableId;
+
+        ctx.Log("explicit-impl",
+            $"eii: {type.StableId} {declaringInterface?.ToString() ?? iface.ToString()} " +
+            $"{Plan.PhaseGate.FormatMemberStableId(stableId)} -> ViewOnly");
+
         return new PropertySymbol
         {
             StableId = stableId,
-            ClrName = requestedName,
+            ClrName = property.ClrName,
             PropertyType = property.PropertyType,
             IndexParameters = property.IndexParameters,
             HasGetter = property.HasGetter,
@@ -329,8 +275,8 @@ public static class ExplicitImplSynthesizer
             IsVirtual = true,
             IsOverride = false,
             Visibility = Visibility.Public,
-            Provenance = MemberProvenance.Synthesized,
-            EmitScope = EmitScope.ClassSurface,
+            Provenance = MemberProvenance.ExplicitView,
+            EmitScope = EmitScope.ViewOnly,
             SourceInterface = declaringInterface ?? iface
         };
     }

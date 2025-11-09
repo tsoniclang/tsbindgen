@@ -61,6 +61,12 @@ public sealed class NameReservationTable
     public IEnumerable<string> GetReservedNames() => _finalNameToId.Keys;
 
     /// <summary>
+    /// Get all reserved names as a HashSet for efficient collision detection.
+    /// </summary>
+    public HashSet<string> GetAllReservedNames() =>
+        new HashSet<string>(_finalNameToId.Keys, StringComparer.Ordinal);
+
+    /// <summary>
     /// Get the count of reserved names.
     /// </summary>
     public int Count => _finalNameToId.Count;

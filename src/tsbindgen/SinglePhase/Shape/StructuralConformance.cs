@@ -113,9 +113,21 @@ public static class StructuralConformance
             // Check each interface method
             foreach (var (ifaceMethod, declaringIface) in interfaceSurface.Methods)
             {
-                // Check if already on class surface
-                if (classSurface.HasMethod(ifaceMethod))
-                    continue;
+                // M5 FIX: Check TypeScript-level assignability against class surface
+                // Only synthesize if the class doesn't already satisfy the interface in TS
+                bool satisfied = classSurface.IsTsAssignableMethod(ifaceMethod);
+
+                if (satisfied)
+                {
+                    ctx.Log("struct-conformance", $"satisfied: {type.StableId} iface={GetTypeFullName(declaringIface)} method={ifaceMethod.ClrName}");
+                    continue; // DO NOT synthesize, DO NOT touch EmitScope on class member
+                }
+
+                // DEBUG: Log why not satisfied for Decimal IConvertible methods
+                if (type.ClrFullName == "System.Decimal" && GetTypeFullName(declaringIface) == "System.IConvertible" && ifaceMethod.ClrName.StartsWith("To"))
+                {
+                    ctx.Log("struct-conformance-debug", $"NOT satisfied: {type.StableId} iface={GetTypeFullName(declaringIface)} method={ifaceMethod.ClrName} - will synthesize ViewOnly");
+                }
 
                 // Check if already synthesized for a different interface
                 var methodSig = ctx.CanonicalizeMethod(
@@ -144,9 +156,14 @@ public static class StructuralConformance
                 if (ifaceProperty.IsIndexer)
                     continue;
 
-                // Check if already on class surface
-                if (classSurface.HasProperty(ifaceProperty))
-                    continue;
+                // M5 FIX: Check TypeScript-level assignability against class surface
+                bool satisfied = classSurface.IsTsAssignableProperty(ifaceProperty);
+
+                if (satisfied)
+                {
+                    ctx.Log("struct-conformance", $"satisfied: {type.StableId} iface={GetTypeFullName(declaringIface)} prop={ifaceProperty.ClrName}");
+                    continue; // DO NOT synthesize, DO NOT touch EmitScope on class member
+                }
 
                 // Check if already synthesized for a different interface
                 var indexParams = ifaceProperty.IndexParameters.Select(p => GetTypeFullName(p.Type)).ToList();
@@ -199,6 +216,15 @@ public static class StructuralConformance
         var properties = type.Members.Properties
             .Where(p => p.EmitScope != EmitScope.ViewOnly && IsRepresentable(p))
             .ToList();
+
+        // DEBUG: Log class surface for Decimal
+        if (type.ClrFullName == "System.Decimal")
+        {
+            var toMethods = methods.Where(m => m.ClrName.StartsWith("To")).Select(m => $"{m.ClrName}({(m.IsStatic ? "static" : "instance")})").ToList();
+            var excluded = type.Members.Methods.Where(m => m.EmitScope == EmitScope.ViewOnly && m.ClrName.StartsWith("To")).Select(m => m.ClrName).ToList();
+            ctx.Log("struct-conformance-debug", $"Decimal class surface has {methods.Count} methods, To* methods: [{string.Join(", ", toMethods)}]");
+            ctx.Log("struct-conformance-debug", $"Decimal excluded ViewOnly To* methods: [{string.Join(", ", excluded)}]");
+        }
 
         return new ClassSurface(methods, properties, ctx);
     }
@@ -283,17 +309,9 @@ public static class StructuralConformance
         MethodSymbol ifaceMethod,
         TypeReference declaringInterface)
     {
-        // Create StableId for this synthesized member
-        var stableId = new MemberStableId
-        {
-            AssemblyName = type.StableId.AssemblyName,
-            DeclaringClrFullName = type.ClrFullName,
-            MemberName = ifaceMethod.ClrName,
-            CanonicalSignature = ctx.CanonicalizeMethod(
-                ifaceMethod.ClrName,
-                ifaceMethod.Parameters.Select(p => GetTypeFullName(p.Type)).ToList(),
-                GetTypeFullName(ifaceMethod.ReturnType))
-        };
+        // M5 FIX: Use interface member's StableId, NOT class StableId
+        // This ensures class members (ClassSurface) and view clones (ViewOnly) never share IDs
+        var stableId = ifaceMethod.StableId;
 
         return new MethodSymbol
         {
@@ -320,18 +338,8 @@ public static class StructuralConformance
         PropertySymbol ifaceProperty,
         TypeReference declaringInterface)
     {
-        var indexParams = ifaceProperty.IndexParameters.Select(p => GetTypeFullName(p.Type)).ToList();
-
-        var stableId = new MemberStableId
-        {
-            AssemblyName = type.StableId.AssemblyName,
-            DeclaringClrFullName = type.ClrFullName,
-            MemberName = ifaceProperty.ClrName,
-            CanonicalSignature = ctx.CanonicalizeProperty(
-                ifaceProperty.ClrName,
-                indexParams,
-                GetTypeFullName(ifaceProperty.PropertyType))
-        };
+        // M5 FIX: Use interface property's StableId, NOT class StableId
+        var stableId = ifaceProperty.StableId;
 
         return new PropertySymbol
         {
@@ -393,6 +401,85 @@ public static class StructuralConformance
         List<PropertySymbol> Properties,
         BuildContext Ctx)
     {
+        /// <summary>
+        /// Check if any class method is TypeScript-assignable to the interface method.
+        /// Uses TS-level structural typing, not CLR signature matching.
+        /// </summary>
+        public bool IsTsAssignableMethod(MethodSymbol ifaceMethod)
+        {
+            // Find candidates by name (case-insensitive, since TS will lowercase both)
+            var candidates = Methods.Where(m =>
+                string.Equals(m.ClrName, ifaceMethod.ClrName, System.StringComparison.OrdinalIgnoreCase));
+
+            // DEBUG: Log for Decimal To* methods
+            bool isDecimalTo = candidates.Any() && ifaceMethod.ClrName.StartsWith("To");
+            if (isDecimalTo)
+            {
+                Ctx.Log("struct-conformance-debug", $"Checking {ifaceMethod.ClrName}: found {candidates.Count()} candidates");
+            }
+
+            foreach (var classMethod in candidates)
+            {
+                // Erase to TypeScript signatures (without TsEmitName since names aren't reserved yet)
+                var classSig = EraseMethodForAssignability(classMethod);
+                var ifaceSig = EraseMethodForAssignability(ifaceMethod);
+
+                if (isDecimalTo)
+                {
+                    Ctx.Log("struct-conformance-debug",
+                        $"  Comparing: class={classMethod.IsStatic}:{classSig.Parameters.Count}params vs iface={ifaceMethod.IsStatic}:{ifaceSig.Parameters.Count}params");
+                }
+
+                if (Plan.TsAssignability.IsMethodAssignable(classSig, ifaceSig))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Check if any class property is TypeScript-assignable to the interface property.
+        /// </summary>
+        public bool IsTsAssignableProperty(PropertySymbol ifaceProperty)
+        {
+            var candidates = Properties.Where(p =>
+                string.Equals(p.ClrName, ifaceProperty.ClrName, System.StringComparison.OrdinalIgnoreCase));
+
+            foreach (var classProperty in candidates)
+            {
+                var classSig = ErasePropertyForAssignability(classProperty);
+                var ifaceSig = ErasePropertyForAssignability(ifaceProperty);
+
+                if (Plan.TsAssignability.IsPropertyAssignable(classSig, ifaceSig))
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Erase method to TS signature without using TsEmitName (not set yet).
+        /// </summary>
+        private static Plan.TsMethodSignature EraseMethodForAssignability(MethodSymbol method)
+        {
+            return new Plan.TsMethodSignature(
+                Name: method.ClrName.ToLowerInvariant(), // Apply camelCase rule directly
+                Arity: method.Arity,
+                Parameters: method.Parameters.Select(p => Plan.TsErase.EraseType(p.Type)).ToList(),
+                ReturnType: Plan.TsErase.EraseType(method.ReturnType));
+        }
+
+        /// <summary>
+        /// Erase property to TS signature without using TsEmitName.
+        /// </summary>
+        private static Plan.TsPropertySignature ErasePropertyForAssignability(PropertySymbol property)
+        {
+            return new Plan.TsPropertySignature(
+                Name: property.ClrName.ToLowerInvariant(),
+                PropertyType: Plan.TsErase.EraseType(property.PropertyType),
+                IsReadonly: !property.HasSetter);
+        }
+
         public bool HasMethod(MethodSymbol method)
         {
             var sig = Ctx.CanonicalizeMethod(

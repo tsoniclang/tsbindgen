@@ -39,7 +39,7 @@ public static class TsErase
     /// Erase type to TypeScript-level representation.
     /// Maps CLR types to their TypeScript equivalents.
     /// </summary>
-    private static TsTypeShape EraseType(TypeReference typeRef)
+    public static TsTypeShape EraseType(TypeReference typeRef)
     {
         return typeRef switch
         {

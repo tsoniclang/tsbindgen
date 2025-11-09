@@ -147,12 +147,14 @@ public static class SinglePhaseBuilder
         // 2. Structural conformance analysis (synthesizes ViewOnly members) - PURE - returns new graph
         //    Must run before flattening so FindDeclaringInterface can walk hierarchy
         graph = StructuralConformance.Analyze(ctx, graph);
+        LogEmitScopeState(ctx, graph, "After StructuralConformance");
 
         // 3. Interface inlining (flatten interfaces - AFTER indices and conformance) - PURE - returns new graph
         graph = InterfaceInliner.Inline(ctx, graph);
 
         // 4. Explicit interface implementation synthesis - PURE - returns new graph
         graph = ExplicitImplSynthesizer.Synthesize(ctx, graph);
+        LogEmitScopeState(ctx, graph, "AfterExplicitImplSynthesizer");
 
         // 5. Diamond inheritance resolution
         graph = DiamondResolver.Resolve(ctx, graph);
@@ -168,9 +170,15 @@ public static class SinglePhaseBuilder
 
         // 9. Hidden member (C# 'new') planning
         HiddenMemberPlanner.Plan(ctx, graph);
+        LogEmitScopeState(ctx, graph, "After HiddenMemberPlanner");
 
         // 10. Final indexers pass (PURE - ensures no indexer properties leak)
         graph = FinalIndexersPass.Run(ctx, graph);
+        LogEmitScopeState(ctx, graph, "AfterFinalIndexersPass");
+
+        // 10.5. Class surface deduplication (M5 - pick winner for duplicate names, demote rest)
+        graph = Shape.ClassSurfaceDeduplicator.Deduplicate(ctx, graph);
+        LogEmitScopeState(ctx, graph, "AfterClassSurfaceDeduplicator");
 
         // 11. Constraint closure
         graph = ConstraintCloser.Close(ctx, graph);
@@ -180,6 +188,10 @@ public static class SinglePhaseBuilder
 
         // 13. View planning (explicit interface views) - PURE - returns new graph
         graph = ViewPlanner.Plan(ctx, graph);
+        LogEmitScopeState(ctx, graph, "After ViewPlanner");
+
+        // 14. Final member deduplication - removes any duplicates introduced by Shape passes
+        graph = Shape.MemberDeduplicator.Deduplicate(ctx, graph);
 
         return graph;
     }
@@ -203,8 +215,13 @@ public static class SinglePhaseBuilder
         ctx.Log("Build", "\n--- Phase 4.5: Overload Unification ---");
         graph = OverloadUnifier.UnifyOverloads(ctx, graph);
 
+        // Audit constructor constraints per (Type, Interface) pair
+        ctx.Log("Build", "\n--- Phase 4.6: Interface Constraint Audit ---");
+        var constraintFindings = InterfaceConstraintAuditor.Audit(ctx, graph);
+        ctx.Log("Build", $"Found {constraintFindings.Findings.Length} interface constraint findings");
+
         // Validate before proceeding
-        PhaseGate.Validate(ctx, graph, imports);
+        PhaseGate.Validate(ctx, graph, imports, constraintFindings);
 
         return new EmissionPlan
         {
@@ -236,6 +253,59 @@ public static class SinglePhaseBuilder
 
         // Emit index.js stubs for each namespace
         ModuleStubEmitter.Emit(ctx, plan, outputDirectory);
+    }
+
+    /// <summary>
+    /// M5 instrumentation: Log EmitScope state for a few known offenders after each shape pass.
+    /// Helps diagnose where members get incorrectly tagged as ViewOnly.
+    /// </summary>
+    private static void LogEmitScopeState(BuildContext ctx, SymbolGraph graph, string passName)
+    {
+        // Canaries covering every failure shape
+        var canaries = new[]
+        {
+            ("System.Decimal", "ToByte"),
+            ("System.Decimal", "ToSByte"),
+            ("System.Decimal", "ToInt16"),
+            ("System.Array", "Clear"),
+            ("System.Array", "IndexOf"),
+            ("System.CharEnumerator", "Current"),  // property - both char and object versions
+            ("System.Enum", "TryFormat"),
+            ("System.TypeInfo", "GetMethods"),
+            ("System.TypeInfo", "GetFields")
+        };
+
+        foreach (var (typeName, memberName) in canaries)
+        {
+            var type = graph.Namespaces
+                .SelectMany(ns => ns.Types)
+                .FirstOrDefault(t => t.ClrFullName == typeName);
+
+            if (type == null)
+                continue;
+
+            // Check methods
+            foreach (var method in type.Members.Methods.Where(m => m.ClrName == memberName))
+            {
+                var ifaceStableId = method.SourceInterface != null
+                    ? $"{method.SourceInterface}"
+                    : "null";
+                ctx.Log("trace:shape",
+                    $"[trace:shape] {passName} {type.StableId}::{Plan.PhaseGate.FormatMemberStableId(method.StableId)} " +
+                    $"EmitScope={method.EmitScope} SourceInterface={ifaceStableId}");
+            }
+
+            // Check properties
+            foreach (var prop in type.Members.Properties.Where(p => p.ClrName == memberName))
+            {
+                var ifaceStableId = prop.SourceInterface != null
+                    ? $"{prop.SourceInterface}"
+                    : "null";
+                ctx.Log("trace:shape",
+                    $"[trace:shape] {passName} {type.StableId}::{Plan.PhaseGate.FormatMemberStableId(prop.StableId)} " +
+                    $"EmitScope={prop.EmitScope} SourceInterface={ifaceStableId}");
+            }
+        }
     }
 }
 

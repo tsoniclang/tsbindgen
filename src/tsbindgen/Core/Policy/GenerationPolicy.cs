@@ -113,6 +113,13 @@ public sealed record ConstraintPolicy
     /// How to merge multiple constraints on a generic parameter.
     /// </summary>
     public required ConstraintMergeStrategy MergeStrategy { get; init; }
+
+    /// <summary>
+    /// If true, allow constructor constraint (new()) loss and downgrade to WARNING (PG_CT_002).
+    /// If false (default), constructor constraint loss is ERROR (PG_CT_001).
+    /// Enables explicit opt-in for unsound TypeScript bindings where new() cannot be represented.
+    /// </summary>
+    public bool AllowConstructorConstraintLoss { get; init; } = false;
 }
 
 public enum ConstraintMergeStrategy

@@ -45,11 +45,42 @@ public static class ViewPlanner
             var plannedViews = PlanViewsForType(ctx, updatedGraph, type);
             if (plannedViews.Count > 0)
             {
+                // DEBUG: Log what's in plannedViews before attaching
+                var canaryTypes = new[] { "System.Decimal", "System.Array", "System.CharEnumerator", "System.Enum", "System.TypeInfo" };
+                if (canaryTypes.Contains(type.ClrFullName))
+                {
+                    ctx.Log("ViewPlanner", $"[DEBUG] Before WithUpdatedType: {type.StableId} has {plannedViews.Count} views");
+                    foreach (var view in plannedViews)
+                    {
+                        ctx.Log("ViewPlanner", $"  view={view.ViewPropertyName} ViewMembers.Length={view.ViewMembers.Length}");
+                    }
+                }
+
                 // Attach views to type immutably
                 // Use StableId string for lookup to handle types with same CLR name from different assemblies
                 updatedGraph = updatedGraph.WithUpdatedType(type.StableId.ToString(), t =>
                     t.WithExplicitViews(plannedViews.ToImmutableArray()));
                 totalViews += plannedViews.Count;
+
+                // DEBUG: Verify views were attached
+                if (canaryTypes.Contains(type.ClrFullName))
+                {
+                    var verifyType = updatedGraph.Namespaces
+                        .SelectMany(ns => ns.Types)
+                        .FirstOrDefault(t => t.StableId.ToString() == type.StableId.ToString());
+                    if (verifyType != null)
+                    {
+                        ctx.Log("ViewPlanner", $"[DEBUG] After WithUpdatedType: {verifyType.StableId} has {verifyType.ExplicitViews.Length} views");
+                        foreach (var view in verifyType.ExplicitViews)
+                        {
+                            ctx.Log("ViewPlanner", $"  view={view.ViewPropertyName} ViewMembers.Length={view.ViewMembers.Length}");
+                        }
+                    }
+                    else
+                    {
+                        ctx.Log("ViewPlanner", $"[DEBUG] ERROR: Could not find type {type.StableId} in updatedGraph!");
+                    }
+                }
             }
         }
 
@@ -62,125 +93,109 @@ public static class ViewPlanner
         // Skip interfaces and static types - they ARE the view, no explicit views needed
         if (type.Kind == TypeKind.Interface || type.IsStatic)
         {
-            ctx.Log("ViewPlanner", $"Skipping {type.ClrFullName} (interface or static type)");
             return new List<ExplicitView>();
         }
 
-        // Debug ZLibStreamHandle
-        if (type.ClrFullName.Contains("ZLibStreamHandle"))
-        {
-            ctx.Log("ViewPlanner", $"Planning views for {type.ClrFullName}");
-        }
-
-        // Build candidate interface set from:
-        // 1. All interfaces declared on the type (type.Interfaces)
-        // 2. PLUS all SourceInterfaces from ViewOnly members
-        var candidateInterfaceNames = new HashSet<string>();
-
-        // Add from type.Interfaces
-        foreach (var ifaceRef in type.Interfaces)
-        {
-            candidateInterfaceNames.Add(GetTypeFullName(ifaceRef));
-        }
-
-        // Collect all ViewOnly members that have SourceInterface
-        var viewOnlyWithInterface = new List<(TypeReference ifaceRef, object member, ViewMemberKind kind, string clrName)>();
+        // M5 FIX: Collect ALL ViewOnly members with SourceInterface (no graph filtering)
+        // Every ViewOnly member MUST be represented in an ExplicitView
+        var viewOnlyMembers = new List<(TypeReference ifaceRef, object member, ViewMemberKind kind, MemberStableId stableId, string clrName)>();
 
         foreach (var method in type.Members.Methods.Where(m => m.EmitScope == EmitScope.ViewOnly && m.SourceInterface != null))
         {
-            candidateInterfaceNames.Add(GetTypeFullName(method.SourceInterface!));
-            viewOnlyWithInterface.Add((method.SourceInterface!, method, ViewMemberKind.Method, method.ClrName));
+            viewOnlyMembers.Add((method.SourceInterface!, method, ViewMemberKind.Method, (MemberStableId)method.StableId, method.ClrName));
         }
 
         foreach (var property in type.Members.Properties.Where(p => p.EmitScope == EmitScope.ViewOnly && p.SourceInterface != null))
         {
-            candidateInterfaceNames.Add(GetTypeFullName(property.SourceInterface!));
-            viewOnlyWithInterface.Add((property.SourceInterface!, property, ViewMemberKind.Property, property.ClrName));
+            viewOnlyMembers.Add((property.SourceInterface!, property, ViewMemberKind.Property, (MemberStableId)property.StableId, property.ClrName));
         }
 
         foreach (var evt in type.Members.Events.Where(e => e.EmitScope == EmitScope.ViewOnly && e.SourceInterface != null))
         {
-            candidateInterfaceNames.Add(GetTypeFullName(evt.SourceInterface!));
-            viewOnlyWithInterface.Add((evt.SourceInterface!, evt, ViewMemberKind.Event, evt.ClrName));
+            viewOnlyMembers.Add((evt.SourceInterface!, evt, ViewMemberKind.Event, (MemberStableId)evt.StableId, evt.ClrName));
         }
 
-        if (viewOnlyWithInterface.Count == 0)
+        if (viewOnlyMembers.Count == 0)
         {
-            ctx.Log("ViewPlanner", $"{type.ClrFullName} has no ViewOnly members with SourceInterface");
             return new List<ExplicitView>();
         }
 
-        ctx.Log("ViewPlanner", $"{type.ClrFullName} has {viewOnlyWithInterface.Count} ViewOnly members with SourceInterface");
-        ctx.Log("ViewPlanner", $"Candidate interfaces: {string.Join(", ", candidateInterfaceNames)}");
-
-        // Filter candidates to only those that exist in the graph
-        // We don't create views for external interfaces (like System.IDisposable from another assembly)
-        var candidatesInGraph = candidateInterfaceNames
-            .Where(name => GlobalInterfaceIndex.ContainsInterface(name))
-            .ToHashSet();
-
-        ctx.Log("ViewPlanner", $"Interfaces in graph: {string.Join(", ", candidatesInGraph)}");
-        ctx.Log("ViewPlanner", $"Excluded external interfaces: {string.Join(", ", candidateInterfaceNames.Except(candidatesInGraph))}");
-
-        // Group ViewOnly members by SourceInterface, but only for interfaces in the graph
-        var groupsByInterface = viewOnlyWithInterface
-            .Where(x => candidatesInGraph.Contains(GetTypeFullName(x.ifaceRef)))
-            .GroupBy(x => GetTypeFullName(x.ifaceRef))
+        // Group by Interface StableId (assembly-qualified identifier)
+        var groupsByInterfaceStableId = viewOnlyMembers
+            .GroupBy(x => GetInterfaceStableId(x.ifaceRef))
+            .OrderBy(g => g.Key)  // Deterministic ordering
             .ToList();
 
-        ctx.Log("ViewPlanner", $"Grouped into {groupsByInterface.Count} interface groups:");
-        foreach (var group in groupsByInterface)
-        {
-            ctx.Log("ViewPlanner", $"  - {group.Key}: {group.Count()} members");
-        }
-
-        // Sanity check: verify each member's SourceInterface matches the group key
-        foreach (var group in groupsByInterface)
-        {
-            var groupKey = group.Key;
-            foreach (var member in group)
-            {
-                if (member.ifaceRef != null)
-                {
-                    var memberIfaceName = GetTypeFullName(member.ifaceRef);
-                    if (memberIfaceName != groupKey)
-                    {
-                        ctx.Log("ViewPlanner", $"WARNING - Member {member.clrName} grouped under {groupKey} but has SourceInterface {memberIfaceName}");
-                    }
-                }
-            }
-        }
+        // Start with existing views (if any) as dictionary by interface StableId
+        var viewsByInterfaceStableId = type.ExplicitViews
+            .ToDictionary(v => GetInterfaceStableId(v.InterfaceReference), v => v);
 
         var plannedViews = new List<ExplicitView>();
 
-        foreach (var group in groupsByInterface)
+        foreach (var group in groupsByInterfaceStableId)
         {
-            var ifaceFullName = group.Key;
+            var ifaceStableId = group.Key;
             var ifaceRef = group.First().ifaceRef;
 
-            // Create view name: As_IList for IList, As_IEnumerable_1 for IEnumerable<T>
-            var viewName = CreateViewName(ifaceRef);
+            // Collect new ViewMembers from this group (sorted by StableId for determinism)
+            var newViewMembers = group
+                .Select(x => new ViewMember(
+                    Kind: x.kind,
+                    StableId: x.stableId,
+                    ClrName: x.clrName))
+                .OrderBy(vm => vm.StableId.ToString())
+                .ToList();
 
-            // TODO: Ask Renamer for unique name in type scope (not implemented yet)
-            // For now, use the created name directly
+            ExplicitView view;
 
-            // Collect all members for this interface
-            var viewMembers = group.Select(x => new ViewMember(
-                Kind: x.kind,
-                StableId: GetStableIdFromMember(x.member, x.kind),
-                ClrName: x.clrName)).ToImmutableArray();
+            if (viewsByInterfaceStableId.TryGetValue(ifaceStableId, out var existingView))
+            {
+                // MERGE: Union existing ViewMembers with new ones by MemberStableId
+                var existingMemberIds = existingView.ViewMembers.Select(vm => vm.StableId).ToHashSet();
+                var mergedMembers = existingView.ViewMembers
+                    .Concat(newViewMembers.Where(vm => !existingMemberIds.Contains(vm.StableId)))
+                    .OrderBy(vm => vm.StableId.ToString())
+                    .ToImmutableArray();
 
-            var view = new ExplicitView(
-                InterfaceReference: ifaceRef,
-                ViewPropertyName: viewName,
-                ViewMembers: viewMembers);
+                view = existingView with { ViewMembers = mergedMembers };
+
+                ctx.Log("trace:viewplanner",
+                    $"Merged view for {type.StableId} -> {ifaceStableId}: " +
+                    $"existing={existingView.ViewMembers.Length} new={newViewMembers.Count} merged={mergedMembers.Length}");
+            }
+            else
+            {
+                // CREATE: New view
+                var viewName = CreateViewName(ifaceRef);
+
+                view = new ExplicitView(
+                    InterfaceReference: ifaceRef,
+                    ViewPropertyName: viewName,
+                    ViewMembers: newViewMembers.ToImmutableArray());
+
+                ctx.Log("trace:viewplanner",
+                    $"Created view '{viewName}' for {type.StableId} -> {ifaceStableId} ({newViewMembers.Count} members)");
+            }
 
             plannedViews.Add(view);
-
-            ctx.Log("ViewPlanner", $"Created view '{viewName}' for {type.ClrFullName} -> {ifaceFullName} ({viewMembers.Length} members)");
         }
 
+        ctx.Log("trace:viewplanner", $"{type.StableId}: planned {plannedViews.Count} views (total ViewOnly members: {viewOnlyMembers.Count})");
+
         return plannedViews;
+    }
+
+    /// <summary>
+    /// Get the StableId for an interface reference (assembly-qualified identifier).
+    /// </summary>
+    private static string GetInterfaceStableId(TypeReference ifaceRef)
+    {
+        return ifaceRef switch
+        {
+            NamedTypeReference named => $"{named.AssemblyName}:{named.FullName}",
+            NestedTypeReference nested => $"{nested.DeclaringType}+{nested.NestedName}",
+            _ => GetTypeFullName(ifaceRef)  // Fallback
+        };
     }
 
     private static string CreateViewName(TypeReference ifaceRef)

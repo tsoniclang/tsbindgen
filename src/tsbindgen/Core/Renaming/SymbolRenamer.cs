@@ -43,6 +43,15 @@ public sealed class SymbolRenamer
     }
 
     /// <summary>
+    /// Apply the style transform to a name without reserving it.
+    /// Used for collision detection when checking if a name is already taken.
+    /// </summary>
+    public string ApplyStyleTransform(string name)
+    {
+        return _styleTransform?.Invoke(name) ?? name;
+    }
+
+    /// <summary>
     /// Reserve a type name in a namespace scope.
     /// </summary>
     public void ReserveTypeName(
@@ -156,6 +165,85 @@ public sealed class SymbolRenamer
     /// </summary>
     public IReadOnlyCollection<RenameDecision> GetAllDecisions() => _decisions.Values;
 
+    /// <summary>
+    /// Check if a name is already reserved in a specific scope.
+    /// Used for collision detection when reserving view members.
+    /// </summary>
+    public bool IsNameTaken(RenameScope scope, string name, bool isStatic)
+    {
+        // For member scopes, adjust for static/instance sub-scope
+        var effectiveScope = scope is TypeScope ts
+            ? ts with { IsStatic = isStatic, ScopeKey = $"{ts.ScopeKey}#{(isStatic ? "static" : "instance")}" }
+            : scope;
+
+        if (!_tablesByScope.TryGetValue(effectiveScope.ScopeKey, out var table))
+            return false; // Scope doesn't exist yet - name not taken
+
+        return table.IsReserved(name);
+    }
+
+    /// <summary>
+    /// List all reserved names in a scope.
+    /// Returns the actual final names from the reservation table (after suffix resolution).
+    /// </summary>
+    public HashSet<string> ListReservedNames(RenameScope scope, bool isStatic)
+    {
+        // For member scopes, adjust for static/instance sub-scope
+        var effectiveScope = scope is TypeScope ts
+            ? ts with { IsStatic = isStatic, ScopeKey = $"{ts.ScopeKey}#{(isStatic ? "static" : "instance")}" }
+            : scope;
+
+        if (!_tablesByScope.TryGetValue(effectiveScope.ScopeKey, out var table))
+            return new HashSet<string>(StringComparer.Ordinal); // Empty set if scope doesn't exist
+
+        return table.GetAllReservedNames();
+    }
+
+    /// <summary>
+    /// Peek at what final name would be assigned in a scope without committing.
+    /// Used for collision detection before reservation.
+    /// Applies style transform and sanitization, then finds next available suffix if needed.
+    /// </summary>
+    public string PeekFinalMemberName(RenameScope scope, string requestedBase, bool isStatic)
+    {
+        if (_styleTransform == null)
+        {
+            throw new InvalidOperationException(
+                "PeekFinalMemberName called before style transform was set. " +
+                "Ensure AdoptStyleTransform is called during context initialization.");
+        }
+
+        // Create effective scope for static/instance
+        var effectiveScope = scope is TypeScope ts
+            ? ts with { IsStatic = isStatic, ScopeKey = $"{ts.ScopeKey}#{(isStatic ? "static" : "instance")}" }
+            : scope;
+
+        // Apply transforms like in ResolveNameWithConflicts
+        var styled = _styleTransform.Invoke(requestedBase);
+        var sanitized = TypeScriptReservedWords.Sanitize(styled).Sanitized;
+
+        if (!_tablesByScope.TryGetValue(effectiveScope.ScopeKey, out var table))
+        {
+            // Scope doesn't exist yet - would be first reservation
+            return sanitized;
+        }
+
+        // If base name is available, return it
+        if (!table.IsReserved(sanitized))
+            return sanitized;
+
+        // Otherwise, find next available suffix (without mutating)
+        int suffix = 2;
+        while (table.IsReserved($"{sanitized}{suffix}"))
+        {
+            suffix++;
+            if (suffix > 1000) // Safety limit
+                throw new InvalidOperationException($"Could not find available suffix for {sanitized} after 1000 attempts");
+        }
+
+        return $"{sanitized}{suffix}";
+    }
+
     private NameReservationTable GetOrCreateTable(RenameScope scope)
     {
         var key = scope.ScopeKey;
@@ -187,11 +275,14 @@ public sealed class SymbolRenamer
         // 2. Apply style transform if set
         var styled = _styleTransform?.Invoke(requested) ?? requested;
 
-        // 3. Try to reserve the styled name
-        if (table.TryReserve(styled, stableId))
-            return styled;
+        // 3. Sanitize TypeScript reserved words (add trailing underscore if needed)
+        var sanitized = TypeScriptReservedWords.Sanitize(styled).Sanitized;
 
-        // 4. Conflict detected - check if this is an explicit interface implementation
+        // 4. Try to reserve the sanitized name
+        if (table.TryReserve(sanitized, stableId))
+            return sanitized;
+
+        // 5. Conflict detected - check if this is an explicit interface implementation
         if (stableId is MemberStableId memberStableId && memberStableId.MemberName.Contains('.'))
         {
             // Explicit interface implementation: extract interface short name
@@ -204,7 +295,7 @@ public sealed class SymbolRenamer
                 var interfaceShortName = beforeLastDot.Split('.').Last();
 
                 // Try: <base>_<ifaceShortName>
-                var interfaceSuffixed = $"{styled}_{interfaceShortName}";
+                var interfaceSuffixed = $"{sanitized}_{interfaceShortName}";
                 if (table.TryReserve(interfaceSuffixed, stableId))
                     return interfaceSuffixed;
 
@@ -223,8 +314,8 @@ public sealed class SymbolRenamer
             }
         }
 
-        // 5. Not an explicit interface impl - apply standard numeric suffix strategy
-        var defaultBaseName = styled;
+        // 6. Not an explicit interface impl - apply standard numeric suffix strategy
+        var defaultBaseName = sanitized;
         var defaultSuffix = table.AllocateNextSuffix(defaultBaseName);
         var defaultCandidate = $"{defaultBaseName}{defaultSuffix}";
 

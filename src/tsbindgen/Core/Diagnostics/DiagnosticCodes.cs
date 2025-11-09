@@ -55,6 +55,11 @@ public static class DiagnosticCodes
     // PhaseGate hardening - Identifier validation
     public const string PG_ID_001 = "PG_ID_001"; // Reserved identifier not sanitized
 
+    // PhaseGate hardening - Name collisions
+    public const string PG_NAME_003 = "PG_NAME_003"; // View member collision within view scope
+    public const string PG_NAME_004 = "PG_NAME_004"; // View member name equals class surface name
+    public const string PG_NAME_005 = "PG_NAME_005"; // Duplicate property name on class surface (post-deduplication)
+
     // PhaseGate hardening - Overload collisions
     public const string PG_OV_001 = "PG_OV_001"; // Duplicate erased signature in surface
 
@@ -64,8 +69,13 @@ public static class DiagnosticCodes
     public const string PG_VIEW_003 = "PG_VIEW_003"; // Invalid/unsanitized view property name
 
     // PhaseGate hardening - Constraint mismatches
-    public const string PG_CT_001 = "PG_CT_001"; // Non-benign constraint loss
+    public const string PG_CT_001 = "PG_CT_001"; // Non-benign constraint loss (ERROR)
+    public const string PG_CT_002 = "PG_CT_002"; // Constructor constraint loss (WARNING with override flag)
 
     // PhaseGate hardening - Interface conformance
     public const string PG_IFC_001 = "PG_IFC_001"; // Interface method not assignable (erased)
+
+    // PhaseGate hardening - EmitScope integrity
+    public const string PG_INT_002 = "PG_INT_002"; // Member appears in both ClassSurface and ViewOnly
+    public const string PG_INT_003 = "PG_INT_003"; // ClassSurface member has SourceInterface set
 }
