@@ -95,4 +95,13 @@ public sealed record PropertySymbol
     /// Source interface (for interface-sourced properties).
     /// </summary>
     public TypeReference? SourceInterface { get; init; }
+
+    /// <summary>
+    /// Create a new PropertySymbol with updated SourceInterface.
+    /// Wither method for immutability.
+    /// </summary>
+    public PropertySymbol WithSourceInterface(TypeReference? sourceInterface)
+    {
+        return this with { SourceInterface = sourceInterface };
+    }
 }

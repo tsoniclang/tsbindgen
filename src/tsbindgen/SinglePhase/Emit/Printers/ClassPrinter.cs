@@ -150,7 +150,7 @@ public static class ClassPrinter
 
     private static string PrintStaticClass(TypeSymbol type, BuildContext ctx)
     {
-        // Static classes emit as namespaces in TypeScript
+        // Static classes emit as abstract classes with static members in TypeScript
         var sb = new StringBuilder();
 
         var nsScope = new Core.Renaming.NamespaceScope
@@ -161,7 +161,7 @@ public static class ClassPrinter
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
-        sb.Append("namespace ");
+        sb.Append("abstract class ");
         sb.Append(finalName);
         sb.AppendLine(" {");
 

@@ -179,10 +179,15 @@ function validateMetadataFiles() {
 
     for (const ns of namespaces) {
         const nsPath = path.join(namespacesDir, ns);
+
+        // Skip non-directories (files like index.d.ts, bindings.json)
         if (!fs.statSync(nsPath).isDirectory()) continue;
 
-        const indexPath = path.join(nsPath, 'index.d.ts');
-        const metadataPath = path.join(nsPath, 'metadata.json');
+        // Skip the 'internal' utility directory (empty namespace, not a real namespace)
+        if (ns === 'internal') continue;
+
+        const indexPath = path.join(nsPath, 'internal', 'index.d.ts');
+        const metadataPath = path.join(nsPath, 'internal', 'metadata.json');
 
         if (!fs.existsSync(indexPath)) {
             error(`  Missing index.d.ts in ${ns}`);
@@ -216,11 +221,11 @@ async function main() {
         // Step 1: Clean and prepare
         cleanValidationDir();
 
-        // Step 2: Generate all types using new pipeline
-        generateTypes();
-
-        // Step 3: Create tsconfig
+        // Step 2: Create tsconfig (before generation so it exists even if generation fails)
         createTsConfig();
+
+        // Step 3: Generate all types using new pipeline
+        generateTypes();
 
         // Step 4: Validate metadata files
         validateMetadataFiles();

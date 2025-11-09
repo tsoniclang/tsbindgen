@@ -40,11 +40,24 @@ public sealed class BuildContext
     public Action<string>? Logger { get; init; }
 
     /// <summary>
+    /// Enable verbose logging (all categories).
+    /// </summary>
+    public bool VerboseLogging { get; init; }
+
+    /// <summary>
+    /// Specific log categories to enable (if VerboseLogging is false).
+    /// Null means no category-based filtering.
+    /// </summary>
+    public HashSet<string>? LogCategories { get; init; }
+
+    /// <summary>
     /// Create a new BuildContext with default services.
     /// </summary>
     public static BuildContext Create(
         GenerationPolicy? policy = null,
-        Action<string>? logger = null)
+        Action<string>? logger = null,
+        bool verboseLogging = false,
+        HashSet<string>? logCategories = null)
     {
         policy ??= PolicyDefaults.Create();
 
@@ -68,16 +81,26 @@ public sealed class BuildContext
             Renamer = renamer,
             Interner = interner,
             Diagnostics = diagnostics,
-            Logger = logger
+            Logger = logger,
+            VerboseLogging = verboseLogging,
+            LogCategories = logCategories
         };
     }
 
     /// <summary>
-    /// Log a message (if logger is configured).
+    /// Log a message with category (if logger is configured and category is enabled).
     /// </summary>
-    public void Log(string message)
+    /// <param name="category">Log category (e.g., "ViewPlanner", "PhaseGate")</param>
+    /// <param name="message">Log message</param>
+    public void Log(string category, string message)
     {
-        Logger?.Invoke(message);
+        // Only log if:
+        // 1. VerboseLogging is enabled (log everything), OR
+        // 2. LogCategories contains this category
+        if (Logger != null && (VerboseLogging || (LogCategories?.Contains(category) ?? false)))
+        {
+            Logger($"[{category}] {message}");
+        }
     }
 
     /// <summary>

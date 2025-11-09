@@ -16,13 +16,13 @@ public static class DiamondResolver
 {
     public static void Resolve(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("DiamondResolver: Resolving diamond inheritance...");
+        ctx.Log("DiamondResolver", "Resolving diamond inheritance...");
 
         var strategy = ctx.Policy.Interfaces.DiamondResolution;
 
         if (strategy == Core.Policy.DiamondResolutionStrategy.Error)
         {
-            ctx.Log("DiamondResolver: Strategy is Error - analyzing for conflicts");
+            ctx.Log("DiamondResolver", "Strategy is Error - analyzing for conflicts");
             AnalyzeForDiamonds(ctx, graph);
             return;
         }
@@ -39,7 +39,7 @@ public static class DiamondResolver
             totalResolved += resolved;
         }
 
-        ctx.Log($"DiamondResolver: Resolved {totalResolved} diamond conflicts");
+        ctx.Log("DiamondResolver", $"Resolved {totalResolved} diamond conflicts");
     }
 
     private static int ResolveForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type, Core.Policy.DiamondResolutionStrategy strategy)
@@ -74,7 +74,7 @@ public static class DiamondResolver
                 continue;
 
             // Diamond conflict detected
-            ctx.Log($"DiamondResolver: Diamond conflict in {type.ClrFullName}.{group.Key} - {signatureGroups.Count} signatures");
+            ctx.Log("DiamondResolver", $"Diamond conflict in {type.ClrFullName}.{group.Key} - {signatureGroups.Count} signatures");
 
             if (strategy == Core.Policy.DiamondResolutionStrategy.OverloadAll)
             {

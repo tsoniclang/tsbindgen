@@ -19,7 +19,7 @@ public static class MetadataEmitter
 {
     public static void Emit(BuildContext ctx, EmissionPlan plan, string outputDirectory)
     {
-        ctx.Log("MetadataEmitter: Generating metadata.json files...");
+        ctx.Log("MetadataEmitter", "Generating metadata.json files...");
 
         var emittedCount = 0;
 
@@ -27,16 +27,17 @@ public static class MetadataEmitter
         foreach (var nsOrder in plan.EmissionOrder.Namespaces)
         {
             var ns = nsOrder.Namespace;
-            ctx.Log($"  Emitting metadata for: {ns.Name}");
+            ctx.Log("MetadataEmitter", $"  Emitting metadata for: {ns.Name}");
 
             // Generate metadata
             var metadata = GenerateMetadata(ctx, nsOrder);
 
-            // Write to file: output/Namespace.Name/metadata.json
+            // Write to file: output/Namespace.Name/internal/metadata.json
             var namespacePath = Path.Combine(outputDirectory, ns.Name);
-            Directory.CreateDirectory(namespacePath);
+            var internalPath = Path.Combine(namespacePath, "internal");
+            Directory.CreateDirectory(internalPath);
 
-            var outputFile = Path.Combine(namespacePath, "metadata.json");
+            var outputFile = Path.Combine(internalPath, "metadata.json");
             var jsonOptions = new JsonSerializerOptions
             {
                 WriteIndented = true,
@@ -45,11 +46,11 @@ public static class MetadataEmitter
             var json = JsonSerializer.Serialize(metadata, jsonOptions);
             File.WriteAllText(outputFile, json);
 
-            ctx.Log($"    → {outputFile}");
+            ctx.Log("MetadataEmitter", $"    → {outputFile}");
             emittedCount++;
         }
 
-        ctx.Log($"MetadataEmitter: Generated {emittedCount} metadata files");
+        ctx.Log("MetadataEmitter", $"Generated {emittedCount} metadata files");
     }
 
     private static NamespaceMetadata GenerateMetadata(BuildContext ctx, NamespaceEmitOrder nsOrder)

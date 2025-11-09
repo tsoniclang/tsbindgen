@@ -1,3 +1,4 @@
+using System.Collections.Immutable;
 using System.Text;
 using tsbindgen.SinglePhase.Emit.Printers;
 using tsbindgen.SinglePhase.Model;
@@ -15,7 +16,7 @@ public static class InternalIndexEmitter
 {
     public static void Emit(BuildContext ctx, EmissionPlan plan, string outputDirectory)
     {
-        ctx.Log("InternalIndexEmitter: Generating TypeScript declarations...");
+        ctx.Log("InternalIndexEmitter", "Generating TypeScript declarations...");
 
         var emittedCount = 0;
 
@@ -23,7 +24,7 @@ public static class InternalIndexEmitter
         foreach (var nsOrder in plan.EmissionOrder.Namespaces)
         {
             var ns = nsOrder.Namespace;
-            ctx.Log($"  Emitting namespace: {ns.Name}");
+            ctx.Log("InternalIndexEmitter", $"  Emitting namespace: {ns.Name}");
 
             // Generate .d.ts content
             var content = GenerateNamespaceDeclaration(ctx, nsOrder);
@@ -36,11 +37,11 @@ public static class InternalIndexEmitter
             var outputFile = Path.Combine(internalPath, "index.d.ts");
             File.WriteAllText(outputFile, content);
 
-            ctx.Log($"    → {outputFile}");
+            ctx.Log("InternalIndexEmitter", $"    → {outputFile}");
             emittedCount++;
         }
 
-        ctx.Log($"InternalIndexEmitter: Generated {emittedCount} declaration files");
+        ctx.Log("InternalIndexEmitter", $"Generated {emittedCount} declaration files");
     }
 
     private static string GenerateNamespaceDeclaration(BuildContext ctx, NamespaceEmitOrder nsOrder)
@@ -65,9 +66,9 @@ public static class InternalIndexEmitter
         // Emit types in order
         foreach (var typeOrder in nsOrder.OrderedTypes)
         {
-            // Check if type has explicit views
-            var views = Shape.ViewPlanner.GetPlannedViews(typeOrder.Type.ClrFullName);
-            var hasViews = views.Count > 0 && (typeOrder.Type.Kind == Model.Symbols.TypeKind.Class || typeOrder.Type.Kind == Model.Symbols.TypeKind.Struct);
+            // Check if type has explicit views (attached by ViewPlanner)
+            var views = typeOrder.Type.ExplicitViews;
+            var hasViews = views.Length > 0 && (typeOrder.Type.Kind == Model.Symbols.TypeKind.Class || typeOrder.Type.Kind == Model.Symbols.TypeKind.Struct);
 
             if (hasViews)
             {
@@ -123,7 +124,7 @@ public static class InternalIndexEmitter
         sb.AppendLine();
     }
 
-    private static string EmitCompanionViewsInterface(TypeSymbol type, List<Shape.ViewPlanner.ExplicitView> views, BuildContext ctx)
+    private static string EmitCompanionViewsInterface(TypeSymbol type, ImmutableArray<Shape.ViewPlanner.ExplicitView> views, BuildContext ctx)
     {
         var sb = new StringBuilder();
 

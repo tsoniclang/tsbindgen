@@ -191,19 +191,51 @@ public sealed class SymbolRenamer
         if (table.TryReserve(styled, stableId))
             return styled;
 
-        // 4. Conflict detected - apply numeric suffix strategy
-        var baseName = styled;
-        var suffix = table.AllocateNextSuffix(baseName);
-        var candidate = $"{baseName}{suffix}";
-
-        // Keep trying until we find an available name
-        while (!table.TryReserve(candidate, stableId))
+        // 4. Conflict detected - check if this is an explicit interface implementation
+        if (stableId is MemberStableId memberStableId && memberStableId.MemberName.Contains('.'))
         {
-            suffix = table.AllocateNextSuffix(baseName);
-            candidate = $"{baseName}{suffix}";
+            // Explicit interface implementation: extract interface short name
+            // Example: "System.Collections.ICollection.SyncRoot" -> "ICollection"
+            var qualifiedName = memberStableId.MemberName;
+            var lastDot = qualifiedName.LastIndexOf('.');
+            if (lastDot > 0)
+            {
+                var beforeLastDot = qualifiedName[..lastDot];
+                var interfaceShortName = beforeLastDot.Split('.').Last();
+
+                // Try: <base>_<ifaceShortName>
+                var interfaceSuffixed = $"{styled}_{interfaceShortName}";
+                if (table.TryReserve(interfaceSuffixed, stableId))
+                    return interfaceSuffixed;
+
+                // Still conflicts - fall through to numeric suffix on the interface-suffixed name
+                var baseName = interfaceSuffixed;
+                var suffix = table.AllocateNextSuffix(baseName);
+                var candidate = $"{baseName}{suffix}";
+
+                while (!table.TryReserve(candidate, stableId))
+                {
+                    suffix = table.AllocateNextSuffix(baseName);
+                    candidate = $"{baseName}{suffix}";
+                }
+
+                return candidate;
+            }
         }
 
-        return candidate;
+        // 5. Not an explicit interface impl - apply standard numeric suffix strategy
+        var defaultBaseName = styled;
+        var defaultSuffix = table.AllocateNextSuffix(defaultBaseName);
+        var defaultCandidate = $"{defaultBaseName}{defaultSuffix}";
+
+        // Keep trying until we find an available name
+        while (!table.TryReserve(defaultCandidate, stableId))
+        {
+            defaultSuffix = table.AllocateNextSuffix(defaultBaseName);
+            defaultCandidate = $"{defaultBaseName}{defaultSuffix}";
+        }
+
+        return defaultCandidate;
     }
 
     private void RecordDecision(RenameDecision decision)

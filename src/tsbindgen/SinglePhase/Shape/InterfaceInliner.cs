@@ -17,21 +17,21 @@ public static class InterfaceInliner
 {
     public static void Inline(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("InterfaceInliner: Inlining interface hierarchies...");
+        ctx.Log("InterfaceInliner", "Inlining interface hierarchies...");
 
         var interfacesToInline = graph.Namespaces
             .SelectMany(ns => ns.Types)
             .Where(t => t.Kind == TypeKind.Interface)
             .ToList();
 
-        ctx.Log($"InterfaceInliner: Found {interfacesToInline.Count} interfaces to inline");
+        ctx.Log("InterfaceInliner", $"Found {interfacesToInline.Count} interfaces to inline");
 
         foreach (var iface in interfacesToInline)
         {
             InlineInterface(ctx, iface, graph);
         }
 
-        ctx.Log("InterfaceInliner: Complete");
+        ctx.Log("InterfaceInliner", "Complete");
     }
 
     private static void InlineInterface(BuildContext ctx, TypeSymbol iface, SymbolGraph graph)
@@ -61,7 +61,7 @@ public static class InterfaceInliner
             if (baseIface == null)
             {
                 // External interface - we can't inline it, but log it
-                ctx.Log($"InterfaceInliner: Skipping external interface {fullName}");
+                ctx.Log("InterfaceInliner", $"Skipping external interface {fullName}");
                 continue;
             }
 
@@ -100,7 +100,7 @@ public static class InterfaceInliner
         var interfacesProperty = typeof(TypeSymbol).GetProperty(nameof(TypeSymbol.Interfaces));
         interfacesProperty!.SetValue(iface, ImmutableArray<TypeReference>.Empty);
 
-        ctx.Log($"InterfaceInliner: Inlined {iface.ClrFullName} - {uniqueMethods.Count} methods, {uniqueProperties.Count} properties");
+        ctx.Log("InterfaceInliner", $"Inlined {iface.ClrFullName} - {uniqueMethods.Count} methods, {uniqueProperties.Count} properties");
     }
 
     private static string GetTypeFullName(TypeReference typeRef)

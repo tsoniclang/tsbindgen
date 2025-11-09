@@ -1,5 +1,6 @@
 using System.Collections.Immutable;
 using System.Reflection;
+using tsbindgen.Core;
 using tsbindgen.Core.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
@@ -40,7 +41,7 @@ public sealed class ReflectionReader
         foreach (var assembly in assemblies.OrderBy(a => a.GetName().FullName))
         {
             sourceAssemblies.Add(assembly.Location);
-            _ctx.Log($"Reading types from {assembly.GetName().Name}...");
+            _ctx.Log("ReflectionReader", $"Reading types from {assembly.GetName().Name}...");
 
             foreach (var type in assembly.GetTypes())
             {
@@ -52,7 +53,7 @@ public sealed class ReflectionReader
                 // Common patterns: <Name>e__FixedBuffer, <>c__DisplayClass, <>d__Iterator, <>f__AnonymousType
                 if (IsCompilerGenerated(type.Name))
                 {
-                    _ctx.Log($"Skipping compiler-generated type: {type.FullName}");
+                    _ctx.Log("ReflectionReader", $"Skipping compiler-generated type: {type.FullName}");
                     continue;
                 }
 
@@ -211,11 +212,25 @@ public sealed class ReflectionReader
 
     private MethodSymbol ReadMethod(MethodInfo method, Type declaringType)
     {
+        // Detect explicit interface implementation by checking for dot in name
+        // Example: "System.Collections.ICollection.SyncRoot" vs "SyncRoot"
+        var clrName = method.Name;
+        var memberName = method.Name;
+
+        // For explicit interface implementations, use qualified name for identity
+        // This ensures different interface implementations get distinct StableIds
+        if (clrName.Contains('.'))
+        {
+            // Keep qualified name for both ClrName and MemberName
+            // Example: "System.Collections.ICollection.SyncRoot"
+            memberName = clrName;
+        }
+
         var stableId = new MemberStableId
         {
             AssemblyName = _ctx.Intern(declaringType.Assembly.GetName().Name ?? "Unknown"),
             DeclaringClrFullName = _ctx.Intern(declaringType.FullName ?? declaringType.Name),
-            MemberName = _ctx.Intern(method.Name),
+            MemberName = _ctx.Intern(memberName),
             CanonicalSignature = CreateMethodSignature(method),
             MetadataToken = method.MetadataToken
         };
@@ -228,7 +243,7 @@ public sealed class ReflectionReader
         return new MethodSymbol
         {
             StableId = stableId,
-            ClrName = _ctx.Intern(method.Name),
+            ClrName = _ctx.Intern(clrName),
             ReturnType = _typeFactory.Create(method.ReturnType),
             Parameters = parameters,
             GenericParameters = genericParams,
@@ -244,11 +259,25 @@ public sealed class ReflectionReader
 
     private PropertySymbol ReadProperty(PropertyInfo property, Type declaringType)
     {
+        // Detect explicit interface implementation by checking for dot in name
+        // Example: "System.Collections.ICollection.SyncRoot" vs "SyncRoot"
+        var clrName = property.Name;
+        var memberName = property.Name;
+
+        // For explicit interface implementations, use qualified name for identity
+        // This ensures different interface implementations get distinct StableIds
+        if (clrName.Contains('.'))
+        {
+            // Keep qualified name for both ClrName and MemberName
+            // Example: "System.Collections.ICollection.SyncRoot"
+            memberName = clrName;
+        }
+
         var stableId = new MemberStableId
         {
             AssemblyName = _ctx.Intern(declaringType.Assembly.GetName().Name ?? "Unknown"),
             DeclaringClrFullName = _ctx.Intern(declaringType.FullName ?? declaringType.Name),
-            MemberName = _ctx.Intern(property.Name),
+            MemberName = _ctx.Intern(memberName),
             CanonicalSignature = CreatePropertySignature(property),
             MetadataToken = property.MetadataToken
         };
@@ -260,7 +289,7 @@ public sealed class ReflectionReader
         return new PropertySymbol
         {
             StableId = stableId,
-            ClrName = _ctx.Intern(property.Name),
+            ClrName = _ctx.Intern(clrName),
             PropertyType = _typeFactory.Create(property.PropertyType),
             IndexParameters = indexParams,
             HasGetter = getter != null,
@@ -301,11 +330,25 @@ public sealed class ReflectionReader
 
     private EventSymbol ReadEvent(EventInfo evt, Type declaringType)
     {
+        // Detect explicit interface implementation by checking for dot in name
+        // Example: "System.ComponentModel.INotifyPropertyChanged.PropertyChanged" vs "PropertyChanged"
+        var clrName = evt.Name!;
+        var memberName = evt.Name!;
+
+        // For explicit interface implementations, use qualified name for identity
+        // This ensures different interface implementations get distinct StableIds
+        if (clrName.Contains('.'))
+        {
+            // Keep qualified name for both ClrName and MemberName
+            // Example: "System.ComponentModel.INotifyPropertyChanged.PropertyChanged"
+            memberName = clrName;
+        }
+
         var stableId = new MemberStableId
         {
             AssemblyName = _ctx.Intern(declaringType.Assembly.GetName().Name ?? "Unknown"),
             DeclaringClrFullName = _ctx.Intern(declaringType.FullName ?? declaringType.Name),
-            MemberName = _ctx.Intern(evt.Name!),
+            MemberName = _ctx.Intern(memberName),
             CanonicalSignature = evt.EventHandlerType?.FullName ?? "Unknown",
             MetadataToken = evt.MetadataToken
         };
@@ -315,7 +358,7 @@ public sealed class ReflectionReader
         return new EventSymbol
         {
             StableId = stableId,
-            ClrName = _ctx.Intern(evt.Name!),
+            ClrName = _ctx.Intern(clrName),
             EventHandlerType = _typeFactory.Create(evt.EventHandlerType!),
             IsStatic = addMethod?.IsStatic ?? false,
             IsVirtual = addMethod?.IsVirtual ?? false,
@@ -347,9 +390,13 @@ public sealed class ReflectionReader
 
     private ParameterSymbol ReadParameter(ParameterInfo param)
     {
+        // Sanitize parameter name for TypeScript reserved words
+        var paramName = param.Name ?? $"arg{param.Position}";
+        var sanitizedName = TypeScriptReservedWords.SanitizeParameterName(paramName);
+
         return new ParameterSymbol
         {
-            Name = _ctx.Intern(param.Name ?? $"arg{param.Position}"),
+            Name = _ctx.Intern(sanitizedName),
             Type = _typeFactory.Create(param.ParameterType),
             IsRef = param.ParameterType.IsByRef && !param.IsOut,
             IsOut = param.IsOut,

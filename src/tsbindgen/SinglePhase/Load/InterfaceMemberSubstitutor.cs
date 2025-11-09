@@ -19,7 +19,7 @@ public static class InterfaceMemberSubstitution
     /// </summary>
     public static void SubstituteClosedInterfaces(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("InterfaceMemberSubstitution: Building closed interface member maps...");
+        ctx.Log("InterfaceMemberSubstitution", "Building closed interface member maps...");
 
         int totalSubstitutions = 0;
 
@@ -27,8 +27,13 @@ public static class InterfaceMemberSubstitution
         var interfaceIndex = BuildInterfaceIndex(graph);
 
         // Build substitution maps for each type that implements closed generic interfaces
+        int nsCount = 0;
         foreach (var ns in graph.Namespaces)
         {
+            nsCount++;
+            if (nsCount % 10 == 0)
+                ctx.Log("InterfaceMemberSubstitution", $"Processing namespace {nsCount}/{graph.Namespaces.Length}: {ns.Name}");
+
             foreach (var type in ns.Types)
             {
                 var substitutions = ProcessType(ctx, type, interfaceIndex);
@@ -36,7 +41,7 @@ public static class InterfaceMemberSubstitution
             }
         }
 
-        ctx.Log($"InterfaceMemberSubstitution: Created {totalSubstitutions} interface member mappings");
+        ctx.Log("InterfaceMemberSubstitution", $"Created {totalSubstitutions} interface member mappings");
     }
 
     private static Dictionary<string, TypeSymbol> BuildInterfaceIndex(SymbolGraph graph)
@@ -79,7 +84,6 @@ public static class InterfaceMemberSubstitution
 
                     if (substitutionMap.Count > 0)
                     {
-                        ctx.Log($"  {type.ClrFullName} implements {namedRef.FullName} - {substitutionMap.Count} type parameter substitutions");
                         substitutionCount++;
 
                         // The substitution map is now available for later Shape phase components

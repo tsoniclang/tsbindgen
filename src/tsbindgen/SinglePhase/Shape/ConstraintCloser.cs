@@ -16,7 +16,7 @@ public static class ConstraintCloser
 {
     public static void Close(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("ConstraintCloser: Closing generic constraints...");
+        ctx.Log("ConstraintCloser", "Closing generic constraints...");
 
         // Step 1: Resolve raw constraint types into TypeReferences
         ResolveAllConstraints(ctx, graph);
@@ -53,7 +53,7 @@ public static class ConstraintCloser
             }
         }
 
-        ctx.Log($"ConstraintCloser: Closed {totalClosed} generic parameter constraints");
+        ctx.Log("ConstraintCloser", $"Closed {totalClosed} generic parameter constraints");
     }
 
     /// <summary>
@@ -62,7 +62,7 @@ public static class ConstraintCloser
     /// </summary>
     private static void ResolveAllConstraints(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("ConstraintCloser: Resolving constraint types...");
+        ctx.Log("ConstraintCloser", "Resolving constraint types...");
 
         // Create TypeReferenceFactory for constraint resolution
         var typeFactory = new Load.TypeReferenceFactory(ctx);
@@ -118,7 +118,7 @@ public static class ConstraintCloser
             }
         }
 
-        ctx.Log($"ConstraintCloser: Resolved {totalResolved} constraint types");
+        ctx.Log("ConstraintCloser", $"Resolved {totalResolved} constraint types");
     }
 
     private static void CloseConstraints(BuildContext ctx, GenericParameterSymbol gp)
@@ -142,7 +142,7 @@ public static class ConstraintCloser
             case Core.Policy.ConstraintMergeStrategy.Intersection:
                 // TypeScript uses intersection automatically with "T extends A & B & C"
                 // No additional work needed - the printer will handle this
-                ctx.Log($"ConstraintCloser: {gp.Name} has {gp.Constraints.Length} constraints (intersection)");
+                ctx.Log("ConstraintCloser", $"{gp.Name} has {gp.Constraints.Length} constraints (intersection)");
                 break;
 
             case Core.Policy.ConstraintMergeStrategy.Union:
@@ -154,7 +154,7 @@ public static class ConstraintCloser
 
             case Core.Policy.ConstraintMergeStrategy.PreferLeft:
                 // Keep only the first constraint
-                ctx.Log($"ConstraintCloser: {gp.Name} using first constraint only (PreferLeft)");
+                ctx.Log("ConstraintCloser", $"{gp.Name} using first constraint only (PreferLeft)");
                 // Would need to mutate the GenericParameterSymbol to keep only first constraint
                 // Since constraints are IReadOnlyList, we'd need reflection here
                 // For now, document the strategy

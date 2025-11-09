@@ -16,7 +16,7 @@ public static class BaseOverloadAdder
 {
     public static void AddOverloads(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("BaseOverloadAdder: Adding base class overloads...");
+        ctx.Log("BaseOverloadAdder", "Adding base class overloads...");
 
         var classes = graph.Namespaces
             .SelectMany(ns => ns.Types)
@@ -31,7 +31,7 @@ public static class BaseOverloadAdder
             totalAdded += added;
         }
 
-        ctx.Log($"BaseOverloadAdder: Added {totalAdded} base overloads");
+        ctx.Log("BaseOverloadAdder", $"Added {totalAdded} base overloads");
     }
 
     private static int AddOverloadsForClass(BuildContext ctx, SymbolGraph graph, TypeSymbol derivedClass)
@@ -93,7 +93,7 @@ public static class BaseOverloadAdder
         if (addedMethods.Count == 0)
             return 0;
 
-        ctx.Log($"BaseOverloadAdder: Adding {addedMethods.Count} base overloads to {derivedClass.ClrFullName}");
+        ctx.Log("BaseOverloadAdder", $"Adding {addedMethods.Count} base overloads to {derivedClass.ClrFullName}");
 
         // Add to derived class
         var updatedMembers = new TypeMembers

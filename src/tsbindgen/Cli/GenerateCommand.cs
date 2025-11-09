@@ -73,6 +73,13 @@ public static class GenerateCommand
             getDefaultValue: () => false,
             description: "Show detailed generation progress");
 
+        var logsOption = new Option<string[]>(
+            aliases: new[] { "--logs" },
+            description: "Enable logging for specific categories (e.g., --logs ViewPlanner PhaseGate)")
+        {
+            AllowMultipleArgumentsPerToken = true
+        };
+
         var debugSnapshotOption = new Option<bool>(
             name: "--debug-snapshot",
             getDefaultValue: () => false,
@@ -99,6 +106,7 @@ public static class GenerateCommand
         command.AddOption(propertyNamesOption);
         command.AddOption(enumMemberNamesOption);
         command.AddOption(verboseOption);
+        command.AddOption(logsOption);
         command.AddOption(debugSnapshotOption);
         command.AddOption(debugTypeListOption);
         command.AddOption(useNewPipelineOption);
@@ -116,6 +124,7 @@ public static class GenerateCommand
             var propertyNames = context.ParseResult.GetValueForOption(propertyNamesOption);
             var enumMemberNames = context.ParseResult.GetValueForOption(enumMemberNamesOption);
             var verbose = context.ParseResult.GetValueForOption(verboseOption);
+            var logs = context.ParseResult.GetValueForOption(logsOption) ?? Array.Empty<string>();
             var debugSnapshot = context.ParseResult.GetValueForOption(debugSnapshotOption);
             var debugTypeList = context.ParseResult.GetValueForOption(debugTypeListOption);
             var useNewPipeline = context.ParseResult.GetValueForOption(useNewPipelineOption);
@@ -132,6 +141,7 @@ public static class GenerateCommand
                 propertyNames,
                 enumMemberNames,
                 verbose,
+                logs,
                 debugSnapshot,
                 debugTypeList,
                 useNewPipeline);
@@ -152,6 +162,7 @@ public static class GenerateCommand
         string? propertyNames,
         string? enumMemberNames,
         bool verbose,
+        string[] logs,
         bool debugSnapshot,
         bool debugTypeList,
         bool useNewPipeline)
@@ -192,7 +203,8 @@ public static class GenerateCommand
                     methodNames,
                     propertyNames,
                     enumMemberNames,
-                    verbose);
+                    verbose,
+                    logs);
                 return;
             }
 
@@ -435,7 +447,8 @@ public static class GenerateCommand
         string? methodNames,
         string? propertyNames,
         string? enumMemberNames,
-        bool verbose)
+        bool verbose,
+        string[] logs)
     {
         Console.WriteLine("=== Using Single-Phase Architecture Pipeline (Experimental) ===");
         Console.WriteLine();
@@ -465,15 +478,20 @@ public static class GenerateCommand
             };
         }
 
-        // Create logger that respects verbose flag
-        Action<string>? logger = verbose ? Console.WriteLine : null;
+        // Create logger - only if verbose or specific log categories requested
+        Action<string>? logger = (verbose || logs.Length > 0) ? Console.WriteLine : null;
+
+        // Parse log categories
+        HashSet<string>? logCategories = logs.Length > 0 ? new HashSet<string>(logs) : null;
 
         // Run single-phase pipeline
         var result = SinglePhase.SinglePhaseBuilder.Build(
             allAssemblies,
             outDir,
             policy,
-            logger);
+            logger,
+            verbose,
+            logCategories);
 
         // Report results
         Console.WriteLine();

@@ -22,11 +22,19 @@ public sealed class NameReservationTable
 
     /// <summary>
     /// Reserve a name for a StableId. Returns true if successful, false if already taken.
+    /// If the same StableId tries to reserve the same name again, returns true (idempotent).
     /// </summary>
     public bool TryReserve(string finalName, StableId id)
     {
         if (IsReserved(finalName))
-            return false;
+        {
+            // Allow re-reservation if it's the same StableId (idempotent)
+            var currentOwner = _finalNameToId[finalName];
+            if (currentOwner.Equals(id))
+                return true;
+
+            return false; // Different owner - conflict
+        }
 
         _finalNameToId[finalName] = id;
         return true;

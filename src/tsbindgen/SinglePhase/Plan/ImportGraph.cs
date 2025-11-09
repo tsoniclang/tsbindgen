@@ -15,7 +15,7 @@ public static class ImportGraph
 {
     public static ImportGraphData Build(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("ImportGraph: Building cross-namespace dependency graph...");
+        ctx.Log("ImportGraph", "Building cross-namespace dependency graph...");
 
         var graphData = new ImportGraphData
         {
@@ -33,8 +33,8 @@ public static class ImportGraph
             AnalyzeNamespaceDependencies(ctx, graph, ns, graphData);
         }
 
-        ctx.Log($"ImportGraph: Found {graphData.NamespaceDependencies.Count} namespaces with dependencies");
-        ctx.Log($"ImportGraph: Total cross-namespace references: {graphData.CrossNamespaceReferences.Count}");
+        ctx.Log("ImportGraph", $"Found {graphData.NamespaceDependencies.Count} namespaces with dependencies");
+        ctx.Log("ImportGraph", $"Total cross-namespace references: {graphData.CrossNamespaceReferences.Count}");
 
         return graphData;
     }
@@ -54,7 +54,7 @@ public static class ImportGraph
             graphData.NamespaceTypeIndex[ns.Name] = typeNames;
         }
 
-        ctx.Log($"ImportGraph: Indexed {graphData.NamespaceTypeIndex.Count} namespaces");
+        ctx.Log("ImportGraph", $"Indexed {graphData.NamespaceTypeIndex.Count} namespaces");
     }
 
     private static void AnalyzeNamespaceDependencies(
@@ -125,7 +125,7 @@ public static class ImportGraph
         if (dependencies.Count > 0)
         {
             graphData.NamespaceDependencies[ns.Name] = dependencies;
-            ctx.Log($"ImportGraph: {ns.Name} depends on {dependencies.Count} other namespaces");
+            ctx.Log("ImportGraph", $"{ns.Name} depends on {dependencies.Count} other namespaces");
         }
     }
 

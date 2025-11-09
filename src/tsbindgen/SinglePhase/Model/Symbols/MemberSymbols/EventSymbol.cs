@@ -68,4 +68,13 @@ public sealed record EventSymbol
     /// Source interface (for interface-sourced events).
     /// </summary>
     public TypeReference? SourceInterface { get; init; }
+
+    /// <summary>
+    /// Create a new EventSymbol with updated SourceInterface.
+    /// Wither method for immutability.
+    /// </summary>
+    public EventSymbol WithSourceInterface(TypeReference? sourceInterface)
+    {
+        return this with { SourceInterface = sourceInterface };
+    }
 }

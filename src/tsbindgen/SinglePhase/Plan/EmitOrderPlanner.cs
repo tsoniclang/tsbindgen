@@ -21,7 +21,7 @@ public sealed class EmitOrderPlanner
 
     public EmitOrder PlanOrder(SymbolGraph graph)
     {
-        _ctx.Log("EmitOrderPlanner: Planning deterministic emission order...");
+        _ctx.Log("EmitOrderPlanner", "Planning deterministic emission order...");
 
         var orderedNamespaces = new List<NamespaceEmitOrder>();
 
@@ -35,7 +35,7 @@ public sealed class EmitOrderPlanner
             });
         }
 
-        _ctx.Log($"EmitOrderPlanner: Ordered {orderedNamespaces.Count} namespaces");
+        _ctx.Log("EmitOrderPlanner", $"Ordered {orderedNamespaces.Count} namespaces");
 
         return new EmitOrder
         {

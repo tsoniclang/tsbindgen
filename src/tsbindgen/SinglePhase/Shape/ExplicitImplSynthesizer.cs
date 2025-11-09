@@ -18,14 +18,14 @@ public static class ExplicitImplSynthesizer
 {
     public static void Synthesize(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("ExplicitImplSynthesizer: Synthesizing missing interface members...");
+        ctx.Log("ExplicitImplSynthesizer", "Synthesizing missing interface members...");
 
         var classesAndStructs = graph.Namespaces
             .SelectMany(ns => ns.Types)
             .Where(t => t.Kind == TypeKind.Class || t.Kind == TypeKind.Struct)
             .ToList();
 
-        ctx.Log($"ExplicitImplSynthesizer: Processing {classesAndStructs.Count} classes/structs");
+        ctx.Log("ExplicitImplSynthesizer", $"Processing {classesAndStructs.Count} classes/structs");
 
         int totalSynthesized = 0;
 
@@ -35,21 +35,28 @@ public static class ExplicitImplSynthesizer
             totalSynthesized += synthesizedCount;
         }
 
-        ctx.Log($"ExplicitImplSynthesizer: Synthesized {totalSynthesized} interface members");
+        ctx.Log("ExplicitImplSynthesizer", $"Synthesized {totalSynthesized} interface members");
     }
 
     private static int SynthesizeForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type)
     {
+        ctx.Log("ExplicitImplSynthesizer", $"Processing type {type.ClrFullName} with {type.Interfaces.Length} interfaces");
+
         // Collect all interface members required
         var requiredMembers = CollectInterfaceMembers(ctx, graph, type);
+
+        ctx.Log("ExplicitImplSynthesizer", $"Found {requiredMembers.Methods.Count} required methods, {requiredMembers.Properties.Count} required properties");
 
         // Find which ones are missing
         var missing = FindMissingMembers(ctx, type, requiredMembers);
 
         if (missing.Count == 0)
+        {
+            ctx.Log("ExplicitImplSynthesizer", $"Type {type.ClrFullName} has all required members - nothing to synthesize");
             return 0;
+        }
 
-        ctx.Log($"ExplicitImplSynthesizer: Type {type.ClrFullName} missing {missing.Count} interface members");
+        ctx.Log("ExplicitImplSynthesizer", $"Type {type.ClrFullName} missing {missing.Count} interface members");
 
         // Synthesize the missing members
         var synthesizedMethods = new List<MethodSymbol>();
@@ -84,6 +91,20 @@ public static class ExplicitImplSynthesizer
         return synthesizedMethods.Count + synthesizedProperties.Count;
     }
 
+    /// <summary>
+    /// Determines if we will plan a view for the given interface.
+    /// Only synthesize ViewOnly members for interfaces we will actually emit views for.
+    /// </summary>
+    private static bool WillPlanViewFor(BuildContext ctx, SymbolGraph graph, TypeSymbol type, TypeReference ifaceRef)
+    {
+        var iface = FindInterface(graph, ifaceRef);
+        if (iface == null)
+            return false; // Not in graph => no view => no synthesis
+
+        // Interface is in the graph and we will emit a view for it
+        return true;
+    }
+
     private static InterfaceMembers CollectInterfaceMembers(BuildContext ctx, SymbolGraph graph, TypeSymbol type)
     {
         var methods = new List<(TypeReference Iface, MethodSymbol Method)>();
@@ -91,6 +112,10 @@ public static class ExplicitImplSynthesizer
 
         foreach (var ifaceRef in type.Interfaces)
         {
+            // Gate synthesis: only process interfaces we will emit views for
+            if (!WillPlanViewFor(ctx, graph, type, ifaceRef))
+                continue; // No synthesis
+
             var iface = FindInterface(graph, ifaceRef);
             if (iface == null)
                 continue; // External interface
@@ -103,6 +128,10 @@ public static class ExplicitImplSynthesizer
 
             foreach (var property in iface.Members.Properties)
             {
+                // Skip indexer properties - they should not be synthesized as interface members
+                if (property.IndexParameters.Length > 0)
+                    continue;
+
                 properties.Add((ifaceRef, property));
             }
         }
@@ -206,6 +235,18 @@ public static class ExplicitImplSynthesizer
             "InterfaceSynthesis",
             isStatic: false);
 
+        // Resolve to the declaring interface (not just the contributing interface)
+        var memberCanonicalSig = ctx.CanonicalizeMethod(
+            method.ClrName,
+            method.Parameters.Select(p => GetTypeFullName(p.Type)).ToList(),
+            GetTypeFullName(method.ReturnType));
+
+        var declaringInterface = InterfaceResolver.FindDeclaringInterface(
+            iface,
+            memberCanonicalSig,
+            isMethod: true,
+            ctx);
+
         // Create synthesized method symbol
         return new MethodSymbol
         {
@@ -223,7 +264,7 @@ public static class ExplicitImplSynthesizer
             Visibility = Visibility.Public,
             Provenance = MemberProvenance.Synthesized,
             EmitScope = EmitScope.ClassSurface,
-            SourceInterface = iface
+            SourceInterface = declaringInterface ?? iface
         };
     }
 
@@ -263,6 +304,18 @@ public static class ExplicitImplSynthesizer
             "InterfaceSynthesis",
             isStatic: false);
 
+        // Resolve to the declaring interface (not just the contributing interface)
+        var memberCanonicalSig = ctx.CanonicalizeProperty(
+            property.ClrName,
+            indexParams,
+            GetTypeFullName(property.PropertyType));
+
+        var declaringInterface = InterfaceResolver.FindDeclaringInterface(
+            iface,
+            memberCanonicalSig,
+            isMethod: false,
+            ctx);
+
         return new PropertySymbol
         {
             StableId = stableId,
@@ -277,7 +330,7 @@ public static class ExplicitImplSynthesizer
             Visibility = Visibility.Public,
             Provenance = MemberProvenance.Synthesized,
             EmitScope = EmitScope.ClassSurface,
-            SourceInterface = iface
+            SourceInterface = declaringInterface ?? iface
         };
     }
 

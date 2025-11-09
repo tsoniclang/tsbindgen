@@ -21,7 +21,7 @@ public sealed class AssemblyLoader
     /// </summary>
     public MetadataLoadContext CreateLoadContext(IReadOnlyList<string> assemblyPaths)
     {
-        _ctx.Log("Creating MetadataLoadContext...");
+        _ctx.Log("AssemblyLoader", "Creating MetadataLoadContext...");
 
         // Get reference assemblies directory from the assemblies being loaded
         var referenceAssembliesPath = GetReferenceAssembliesPath(assemblyPaths);
@@ -35,7 +35,7 @@ public sealed class AssemblyLoader
         // Create load context with System.Private.CoreLib as core assembly
         var loadContext = new MetadataLoadContext(resolver);
 
-        _ctx.Log($"MetadataLoadContext created with {resolver.GetType().Name}");
+        _ctx.Log("AssemblyLoader", $"MetadataLoadContext created with {resolver.GetType().Name}");
 
         return loadContext;
     }
@@ -63,21 +63,21 @@ public sealed class AssemblyLoader
                 // Skip mscorlib - it's automatically loaded by MetadataLoadContext as core assembly
                 if (assemblyName.Name == "mscorlib")
                 {
-                    _ctx.Log($"Skipping mscorlib (core assembly, automatically loaded)");
+                    _ctx.Log("AssemblyLoader", $"Skipping mscorlib (core assembly, automatically loaded)");
                     continue;
                 }
 
                 // Skip if already loaded
                 if (loadedIdentities.Contains(identity))
                 {
-                    _ctx.Log($"Skipping duplicate: {assemblyName.Name} (already loaded)");
+                    _ctx.Log("AssemblyLoader", $"Skipping duplicate: {assemblyName.Name} (already loaded)");
                     continue;
                 }
 
                 var assembly = loadContext.LoadFromAssemblyPath(path);
                 assemblies.Add(assembly);
                 loadedIdentities.Add(identity);
-                _ctx.Log($"Loaded: {assembly.GetName().Name}");
+                _ctx.Log("AssemblyLoader", $"Loaded: {assembly.GetName().Name}");
             }
             catch (Exception ex)
             {
@@ -103,7 +103,7 @@ public sealed class AssemblyLoader
             var firstAssemblyDir = Path.GetDirectoryName(assemblyPaths[0]);
             if (firstAssemblyDir != null && Directory.Exists(firstAssemblyDir))
             {
-                _ctx.Log($"Using assembly directory as reference path: {firstAssemblyDir}");
+                _ctx.Log("AssemblyLoader", $"Using assembly directory as reference path: {firstAssemblyDir}");
                 return firstAssemblyDir;
             }
         }
@@ -112,7 +112,7 @@ public sealed class AssemblyLoader
         var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location);
         if (runtimeDir != null && Directory.Exists(runtimeDir))
         {
-            _ctx.Log($"Fallback to runtime directory: {runtimeDir}");
+            _ctx.Log("AssemblyLoader", $"Fallback to runtime directory: {runtimeDir}");
             return runtimeDir;
         }
 

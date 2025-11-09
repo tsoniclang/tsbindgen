@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using tsbindgen.Core.Diagnostics;
@@ -16,13 +17,15 @@ public static class PhaseGate
 {
     public static void Validate(BuildContext ctx, SymbolGraph graph, ImportPlan imports)
     {
-        ctx.Log("PhaseGate: Validating symbol graph before emission...");
+        ctx.Log("PhaseGate", "Validating symbol graph before emission...");
 
         var validationContext = new ValidationContext
         {
             ErrorCount = 0,
             WarningCount = 0,
-            Diagnostics = new List<string>()
+            Diagnostics = new List<string>(),
+            SanitizedNameCount = 0,
+            InterfaceConformanceIssuesByType = new Dictionary<string, List<string>>()
         };
 
         // Run all validation checks
@@ -41,33 +44,105 @@ public static class PhaseGate
         ValidateAliases(ctx, graph, imports, validationContext);
 
         // Report results
-        ctx.Log($"PhaseGate: Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings");
+        ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings");
+        ctx.Log("PhaseGate", $"Sanitized {validationContext.SanitizedNameCount} reserved word identifiers");
 
         if (validationContext.ErrorCount > 0)
         {
-            // Build sample diagnostics message for error output
-            var sample = validationContext.Diagnostics.Take(20).ToList();
+            // Build sample diagnostics message for error output - show ERRORS first
+            var errors = validationContext.Diagnostics.Where(d => d.StartsWith("ERROR:")).ToList();
+            var warnings = validationContext.Diagnostics.Where(d => d.StartsWith("WARNING:")).ToList();
+
+            var sample = errors.Take(20).ToList();
             var sampleText = string.Join("\n", sample.Select(d => $"  {d}"));
 
-            if (validationContext.Diagnostics.Count > 20)
+            if (errors.Count > 20)
             {
-                sampleText += $"\n  ... and {validationContext.Diagnostics.Count - 20} more diagnostics";
+                sampleText += $"\n  ... and {errors.Count - 20} more errors";
+            }
+
+            if (warnings.Count > 0)
+            {
+                sampleText += $"\n\n  ({warnings.Count} warnings suppressed from this display)";
             }
 
             ctx.Diagnostics.Error(Core.Diagnostics.DiagnosticCodes.ValidationFailed,
-                $"PhaseGate validation failed with {validationContext.ErrorCount} errors\n\nSample diagnostics (first 20):\n{sampleText}");
+                $"PhaseGate validation failed with {validationContext.ErrorCount} errors\n\nSample errors (first 20):\n{sampleText}");
         }
 
         // Record all diagnostics for later analysis
         foreach (var diagnostic in validationContext.Diagnostics)
         {
-            ctx.Log($"PhaseGate: {diagnostic}");
+            ctx.Log("PhaseGate", diagnostic);
+        }
+
+        // Step 3: Write detailed diagnostics file with full conformance issues
+        WriteDiagnosticsFile(ctx, validationContext);
+    }
+
+    private static void WriteDiagnosticsFile(BuildContext ctx, ValidationContext validationCtx)
+    {
+        var diagnosticsPath = System.IO.Path.Combine(".tests", "phasegate-diagnostics.txt");
+
+        try
+        {
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(diagnosticsPath)!);
+
+            using var writer = new System.IO.StreamWriter(diagnosticsPath);
+
+            writer.WriteLine("=".PadRight(80, '='));
+            writer.WriteLine("PhaseGate Detailed Diagnostics");
+            writer.WriteLine($"Generated: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+            writer.WriteLine("=".PadRight(80, '='));
+            writer.WriteLine();
+
+            writer.WriteLine($"Summary:");
+            writer.WriteLine($"  Errors: {validationCtx.ErrorCount}");
+            writer.WriteLine($"  Warnings: {validationCtx.WarningCount}");
+            writer.WriteLine($"  Sanitized identifiers: {validationCtx.SanitizedNameCount}");
+            writer.WriteLine();
+
+            // Write interface conformance details
+            if (validationCtx.InterfaceConformanceIssuesByType.Count > 0)
+            {
+                writer.WriteLine("-".PadRight(80, '-'));
+                writer.WriteLine($"Interface Conformance Issues ({validationCtx.InterfaceConformanceIssuesByType.Count} types)");
+                writer.WriteLine("-".PadRight(80, '-'));
+                writer.WriteLine();
+
+                foreach (var (typeName, issues) in validationCtx.InterfaceConformanceIssuesByType.OrderBy(kv => kv.Key))
+                {
+                    writer.WriteLine($"{typeName}:");
+                    foreach (var issue in issues)
+                    {
+                        writer.WriteLine(issue);
+                    }
+                    writer.WriteLine();
+                }
+            }
+
+            // Write all diagnostics
+            writer.WriteLine("-".PadRight(80, '-'));
+            writer.WriteLine("All Diagnostics");
+            writer.WriteLine("-".PadRight(80, '-'));
+            writer.WriteLine();
+
+            foreach (var diagnostic in validationCtx.Diagnostics)
+            {
+                writer.WriteLine(diagnostic);
+            }
+
+            ctx.Log("PhaseGate", $"Detailed diagnostics written to {diagnosticsPath}");
+        }
+        catch (Exception ex)
+        {
+            ctx.Log("PhaseGate", $"WARNING - Failed to write diagnostics file: {ex.Message}");
         }
     }
 
     private static void ValidateTypeNames(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating type names...");
+        ctx.Log("PhaseGate", "Validating type names...");
 
         var namesSeen = new HashSet<string>();
 
@@ -92,20 +167,35 @@ public static class PhaseGate
                 namesSeen.Add(fullEmitName);
 
                 // Check for TypeScript reserved words
+                // Step 1: Only warn if name wasn't sanitized (ClrName == TsEmitName means reserved word leaked through)
                 if (IsTypeScriptReservedWord(type.TsEmitName))
                 {
-                    validationCtx.WarningCount++;
-                    validationCtx.Diagnostics.Add($"WARNING: Type '{type.TsEmitName}' uses TypeScript reserved word");
+                    if (type.ClrName != type.TsEmitName)
+                    {
+                        // Name was sanitized - don't warn, just count
+                        validationCtx.SanitizedNameCount++;
+                    }
+                    else
+                    {
+                        // Name wasn't sanitized - this is a problem
+                        validationCtx.WarningCount++;
+                        validationCtx.Diagnostics.Add($"WARNING: Type '{type.TsEmitName}' uses TypeScript reserved word but was not sanitized");
+                    }
+                }
+                else if (type.ClrName != type.TsEmitName && IsTypeScriptReservedWord(type.ClrName))
+                {
+                    // Name was successfully sanitized
+                    validationCtx.SanitizedNameCount++;
                 }
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {namesSeen.Count} type names");
+        ctx.Log("PhaseGate", $"Validated {namesSeen.Count} type names");
     }
 
     private static void ValidateMemberNames(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating member names...");
+        ctx.Log("PhaseGate", "Validating member names...");
 
         int totalMembers = 0;
 
@@ -164,12 +254,12 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {totalMembers} members");
+        ctx.Log("PhaseGate", $"Validated {totalMembers} members");
     }
 
     private static void ValidateGenericParameters(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating generic parameters...");
+        ctx.Log("PhaseGate", "Validating generic parameters...");
 
         int totalGenericParams = 0;
 
@@ -201,14 +291,18 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {totalGenericParams} generic parameters");
+        ctx.Log("PhaseGate", $"Validated {totalGenericParams} generic parameters");
     }
 
     private static void ValidateInterfaceConformance(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating interface conformance...");
+        ctx.Log("PhaseGate", "Validating interface conformance...");
 
         int typesChecked = 0;
+        int typesWithIssues = 0;
+        int suppressedDueToViews = 0;
+        int typesWithExplicitViews = 0;
+        int totalExplicitViews = 0;
 
         foreach (var ns in graph.Namespaces)
         {
@@ -217,9 +311,34 @@ public static class PhaseGate
                 if (type.Kind != TypeKind.Class && type.Kind != TypeKind.Struct)
                     continue;
 
+                // Step 1: Build set of interfaces that have planned explicit views
+                // These interfaces are satisfied via As_IInterface properties, not class surface
+                var plannedInterfaces = type.ExplicitViews
+                    .Select(v => GetTypeFullName(v.InterfaceReference))
+                    .ToHashSet();
+
+                if (plannedInterfaces.Count > 0)
+                {
+                    typesWithExplicitViews++;
+                    totalExplicitViews += plannedInterfaces.Count;
+                }
+
+                // Step 3: Aggregate conformance issues per type instead of per method
+                var conformanceIssues = new List<string>();
+
                 // Check that all claimed interfaces have corresponding members
                 foreach (var ifaceRef in type.Interfaces)
                 {
+                    var ifaceFullName = GetTypeFullName(ifaceRef);
+
+                    // Step 1: Skip validation for interfaces that have explicit views
+                    // These are satisfied via As_IInterface properties, not class surface
+                    if (plannedInterfaces.Contains(ifaceFullName))
+                    {
+                        suppressedDueToViews++;
+                        continue;
+                    }
+
                     var iface = FindInterface(graph, ifaceRef);
                     if (iface == null)
                         continue; // External interface
@@ -232,28 +351,50 @@ public static class PhaseGate
                     foreach (var requiredMethod in iface.Members.Methods)
                     {
                         var methodSig = $"{requiredMethod.ClrName}({requiredMethod.Parameters.Length})";
-                        var exists = representableMethods.Any(m =>
+
+                        // Find matching method on class surface
+                        var matchingMethod = representableMethods.FirstOrDefault(m =>
                             m.ClrName == requiredMethod.ClrName &&
                             m.Parameters.Length == requiredMethod.Parameters.Length);
 
-                        if (!exists)
+                        if (matchingMethod == null)
                         {
-                            validationCtx.WarningCount++;
-                            validationCtx.Diagnostics.Add($"WARNING: {type.ClrFullName} claims to implement {GetInterfaceName(ifaceRef)} but missing method {methodSig}");
+                            conformanceIssues.Add($"  Missing method {methodSig} from {GetInterfaceName(ifaceRef)}");
+                        }
+                        else
+                        {
+                            // Step 2: Method exists, but check if signatures are TS-assignable
+                            // Only warn if the mismatch would break TS assignability
+                            if (IsRepresentableConformanceBreak(matchingMethod, requiredMethod))
+                            {
+                                conformanceIssues.Add($"  Method {methodSig} from {GetInterfaceName(ifaceRef)} has incompatible TS signature");
+                            }
+                            // else: Signatures differ in CLR but are compatible in TS (e.g., covariance) - no warning
                         }
                     }
+                }
+
+                if (conformanceIssues.Count > 0)
+                {
+                    typesWithIssues++;
+                    validationCtx.InterfaceConformanceIssuesByType[type.ClrFullName] = conformanceIssues;
+
+                    // Emit one-line summary to console
+                    validationCtx.WarningCount++;
+                    validationCtx.Diagnostics.Add($"WARNING: {type.ClrFullName} has {conformanceIssues.Count} interface conformance issues (see diagnostics file)");
                 }
 
                 typesChecked++;
             }
         }
 
-        ctx.Log($"PhaseGate: Validated interface conformance for {typesChecked} types");
+        ctx.Log("PhaseGate", $"Validated interface conformance for {typesChecked} types ({typesWithIssues} with issues)");
+        ctx.Log("PhaseGate", $"{typesWithExplicitViews} types have {totalExplicitViews} explicit views, {suppressedDueToViews} interfaces satisfied via views");
     }
 
     private static void ValidateInheritance(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating inheritance...");
+        ctx.Log("PhaseGate", "Validating inheritance...");
 
         int inheritanceChecked = 0;
 
@@ -279,12 +420,12 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {inheritanceChecked} inheritance relationships");
+        ctx.Log("PhaseGate", $"Validated {inheritanceChecked} inheritance relationships");
     }
 
     private static void ValidateEmitScopes(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating emit scopes...");
+        ctx.Log("PhaseGate", "Validating emit scopes...");
 
         int totalMembers = 0;
         int viewOnlyMembers = 0;
@@ -309,12 +450,12 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: {totalMembers} members, {viewOnlyMembers} ViewOnly");
+        ctx.Log("PhaseGate", $"{totalMembers} members, {viewOnlyMembers} ViewOnly");
     }
 
     private static void ValidateImports(BuildContext ctx, SymbolGraph graph, ImportPlan imports, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating import plan...");
+        ctx.Log("PhaseGate", "Validating import plan...");
 
         int totalImports = imports.NamespaceImports.Values.Sum(list => list.Count);
         int totalExports = imports.NamespaceExports.Values.Sum(list => list.Count);
@@ -330,12 +471,12 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: {totalImports} import statements, {totalExports} export statements");
+        ctx.Log("PhaseGate", $"{totalImports} import statements, {totalExports} export statements");
     }
 
     private static void ValidatePolicyCompliance(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating policy compliance...");
+        ctx.Log("PhaseGate", "Validating policy compliance...");
 
         var policy = ctx.Policy;
 
@@ -344,7 +485,7 @@ public static class PhaseGate
 
         // This is extensible - add more policy checks as needed
 
-        ctx.Log("PhaseGate: Policy compliance validated");
+        ctx.Log("PhaseGate", "Policy compliance validated");
     }
 
     private static TypeSymbol? FindInterface(SymbolGraph graph, Model.Types.TypeReference typeRef)
@@ -416,6 +557,34 @@ public static class PhaseGate
         };
 
         return reservedWords.Contains(name.ToLowerInvariant());
+    }
+
+    /// <summary>
+    /// Step 2: Check if a conformance mismatch would break TypeScript assignability.
+    /// Returns true if the class method signature is NOT assignable to the interface method in TS.
+    /// </summary>
+    private static bool IsRepresentableConformanceBreak(MethodSymbol classMethod, MethodSymbol ifaceMethod)
+    {
+        // Erase both methods to TypeScript signatures
+        var classSig = TsErase.EraseMember(classMethod);
+        var ifaceSig = TsErase.EraseMember(ifaceMethod);
+
+        // Check if class method is assignable to interface method
+        // If assignable, this is NOT a representable break (benign difference)
+        // If not assignable, this IS a representable break (real TS error)
+        return !TsAssignability.IsMethodAssignable(classSig, ifaceSig);
+    }
+
+    /// <summary>
+    /// Check if an interface exists in the symbol graph.
+    /// Returns true if the interface is being generated (in graph), false if external.
+    /// </summary>
+    private static bool IsInterfaceInGraph(SymbolGraph graph, Model.Types.TypeReference ifaceRef)
+    {
+        var ifaceFullName = GetTypeFullName(ifaceRef);
+        return graph.Namespaces
+            .SelectMany(ns => ns.Types)
+            .Any(t => t.ClrFullName == ifaceFullName && t.Kind == TypeKind.Interface);
     }
 
     private static List<string> DetectCircularDependencies(ImportPlan imports)
@@ -495,7 +664,7 @@ public static class PhaseGate
     /// </summary>
     private static void ValidateViews(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating explicit interface views...");
+        ctx.Log("PhaseGate", "Validating explicit interface views...");
 
         int totalViewOnlyMembers = 0;
         int orphanedViewOnlyMembers = 0;
@@ -505,13 +674,19 @@ public static class PhaseGate
         {
             foreach (var type in ns.Types)
             {
-                // Collect all ViewOnly members
+                // Collect ViewOnly members that are FROM interfaces (need explicit views)
+                // Only check members with SourceInterface set (ViewPlanner needs this to group into views)
+                // Exclude ViewOnly members from external interfaces (not in our graph)
                 var viewOnlyMethods = type.Members.Methods
                     .Where(m => m.EmitScope == EmitScope.ViewOnly)
+                    .Where(m => m.SourceInterface != null)
+                    .Where(m => IsInterfaceInGraph(graph, m.SourceInterface))
                     .ToList();
 
                 var viewOnlyProperties = type.Members.Properties
                     .Where(p => p.EmitScope == EmitScope.ViewOnly)
+                    .Where(p => p.SourceInterface != null)
+                    .Where(p => IsInterfaceInGraph(graph, p.SourceInterface))
                     .ToList();
 
                 // Guard: indexer properties must NOT be ViewOnly (they should be converted or kept as properties)
@@ -530,12 +705,20 @@ public static class PhaseGate
                 if (viewOnlyMethods.Count == 0 && viewOnlyProperties.Count == 0)
                     continue;
 
-                // Get planned views for this type
-                var plannedViews = Shape.ViewPlanner.GetPlannedViews(type.ClrFullName);
+                // Get planned views from type (attached by ViewPlanner)
+                var plannedViews = type.ExplicitViews;
 
-                if (plannedViews.Count == 0)
+                if (plannedViews.Length == 0)
                 {
-                    // ViewOnly members but no views planned - this is an error
+                    // Interfaces and static classes can have ViewOnly members without explicit views
+                    // - Interfaces: ViewOnly members are the interface definition itself
+                    // - Static classes: ViewOnly members are extension methods that appear on interfaces
+                    if (type.Kind == TypeKind.Interface || type.IsStatic)
+                    {
+                        continue; // This is expected and allowed
+                    }
+
+                    // For regular classes/structs, ViewOnly members without views is an error
                     validationCtx.ErrorCount++;
                     validationCtx.Diagnostics.Add(
                         $"ERROR: Type {type.ClrFullName} has {viewOnlyMethods.Count + viewOnlyProperties.Count} ViewOnly members but no explicit views planned");
@@ -543,40 +726,68 @@ public static class PhaseGate
                     continue;
                 }
 
-                totalViews += plannedViews.Count;
+                totalViews += plannedViews.Length;
 
-                // Check that each ViewOnly member appears in at least one view
+                // Check that each ViewOnly member appears in a view AND SourceInterface matches view Interface
                 foreach (var method in viewOnlyMethods)
                 {
-                    var appearsInView = plannedViews.Any(v =>
+                    var matchingView = plannedViews.FirstOrDefault(v =>
                         v.ViewMembers.Any(vm =>
                             vm.Kind == Shape.ViewPlanner.ViewMemberKind.Method &&
-                            vm.Symbol is MethodSymbol ms &&
-                            ms.StableId.Equals(method.StableId)));
+                            vm.StableId.Equals(method.StableId)));
 
-                    if (!appearsInView)
+                    if (matchingView == null)
                     {
                         validationCtx.ErrorCount++;
                         validationCtx.Diagnostics.Add(
                             $"ERROR: ViewOnly method {method.ClrName} in {type.ClrFullName} does not appear in any explicit view");
                         orphanedViewOnlyMembers++;
+                        continue;
+                    }
+
+                    // Verify SourceInterface matches view Interface
+                    if (method.SourceInterface != null)
+                    {
+                        var viewIfaceName = GetTypeFullName(matchingView.InterfaceReference);
+                        var sourceIfaceName = GetTypeFullName(method.SourceInterface);
+                        if (viewIfaceName != sourceIfaceName)
+                        {
+                            validationCtx.ErrorCount++;
+                            validationCtx.Diagnostics.Add(
+                                $"ERROR: ViewOnly method {method.ClrName} in {type.ClrFullName} has SourceInterface {sourceIfaceName} but appears in view for {viewIfaceName}");
+                            orphanedViewOnlyMembers++;
+                        }
                     }
                 }
 
                 foreach (var property in viewOnlyProperties)
                 {
-                    var appearsInView = plannedViews.Any(v =>
+                    var matchingView = plannedViews.FirstOrDefault(v =>
                         v.ViewMembers.Any(vm =>
                             vm.Kind == Shape.ViewPlanner.ViewMemberKind.Property &&
-                            vm.Symbol is PropertySymbol ps &&
-                            ps.StableId.Equals(property.StableId)));
+                            vm.StableId.Equals(property.StableId)));
 
-                    if (!appearsInView)
+                    if (matchingView == null)
                     {
                         validationCtx.ErrorCount++;
                         validationCtx.Diagnostics.Add(
                             $"ERROR: ViewOnly property {property.ClrName} in {type.ClrFullName} does not appear in any explicit view");
                         orphanedViewOnlyMembers++;
+                        continue;
+                    }
+
+                    // Verify SourceInterface matches view Interface
+                    if (property.SourceInterface != null)
+                    {
+                        var viewIfaceName = GetTypeFullName(matchingView.InterfaceReference);
+                        var sourceIfaceName = GetTypeFullName(property.SourceInterface);
+                        if (viewIfaceName != sourceIfaceName)
+                        {
+                            validationCtx.ErrorCount++;
+                            validationCtx.Diagnostics.Add(
+                                $"ERROR: ViewOnly property {property.ClrName} in {type.ClrFullName} has SourceInterface {sourceIfaceName} but appears in view for {viewIfaceName}");
+                            orphanedViewOnlyMembers++;
+                        }
                     }
                 }
 
@@ -597,11 +808,11 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {totalViewOnlyMembers} ViewOnly members across {totalViews} views");
+        ctx.Log("PhaseGate", $"Validated {totalViewOnlyMembers} ViewOnly members across {totalViews} views");
 
         if (orphanedViewOnlyMembers > 0)
         {
-            ctx.Log($"PhaseGate: Found {orphanedViewOnlyMembers} orphaned ViewOnly members");
+            ctx.Log("PhaseGate", $"Found {orphanedViewOnlyMembers} orphaned ViewOnly members");
         }
     }
 
@@ -612,7 +823,7 @@ public static class PhaseGate
     /// </summary>
     private static void ValidateFinalNames(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating final names from Renamer...");
+        ctx.Log("PhaseGate", "Validating final names from Renamer...");
 
         int totalTypes = 0;
         int totalMembers = 0;
@@ -672,8 +883,8 @@ public static class PhaseGate
                     ScopeKey = type.ClrFullName
                 };
 
-                // Validate method names
-                foreach (var method in type.Members.Methods)
+                // Validate method names (ClassSurface only - ViewOnly members may have duplicate names in different views)
+                foreach (var method in type.Members.Methods.Where(m => m.EmitScope == EmitScope.ClassSurface))
                 {
                     totalMembers++;
 
@@ -699,12 +910,12 @@ public static class PhaseGate
                         // This is a warning, not an error (overloads are allowed)
                         validationCtx.WarningCount++;
                         validationCtx.Diagnostics.Add(
-                            $"WARNING: Duplicate {scopeName} method signature '{signature}' in {type.ClrFullName}");
+                            $"WARNING: Duplicate {scopeName} method signature '{signature}' in {type.ClrFullName} (on class surface)");
                     }
                 }
 
-                // Validate property names
-                foreach (var property in type.Members.Properties)
+                // Validate property names (ClassSurface only - ViewOnly members may have duplicate names in different views)
+                foreach (var property in type.Members.Properties.Where(p => p.EmitScope == EmitScope.ClassSurface))
                 {
                     totalMembers++;
 
@@ -726,13 +937,13 @@ public static class PhaseGate
                     {
                         validationCtx.ErrorCount++;
                         validationCtx.Diagnostics.Add(
-                            $"ERROR: Duplicate {scopeName} property name '{finalName}' in {type.ClrFullName}");
+                            $"ERROR: Duplicate {scopeName} property name '{finalName}' in {type.ClrFullName} (on class surface)");
                         duplicateMembers++;
                     }
                 }
 
-                // Validate field names
-                foreach (var field in type.Members.Fields)
+                // Validate field names (ClassSurface only - ViewOnly members may have duplicate names in different views)
+                foreach (var field in type.Members.Fields.Where(f => f.EmitScope == EmitScope.ClassSurface))
                 {
                     totalMembers++;
 
@@ -754,18 +965,18 @@ public static class PhaseGate
                     {
                         validationCtx.ErrorCount++;
                         validationCtx.Diagnostics.Add(
-                            $"ERROR: Duplicate {scopeName} field name '{finalName}' in {type.ClrFullName}");
+                            $"ERROR: Duplicate {scopeName} field name '{finalName}' in {type.ClrFullName} (on class surface)");
                         duplicateMembers++;
                     }
                 }
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {totalTypes} type names and {totalMembers} member names from Renamer");
+        ctx.Log("PhaseGate", $"Validated {totalTypes} type names and {totalMembers} member names from Renamer");
 
         if (duplicateTypes > 0 || duplicateMembers > 0)
         {
-            ctx.Log($"PhaseGate: Found {duplicateTypes} duplicate types, {duplicateMembers} duplicate members");
+            ctx.Log("PhaseGate", $"Found {duplicateTypes} duplicate types, {duplicateMembers} duplicate members");
         }
     }
 
@@ -775,7 +986,7 @@ public static class PhaseGate
     /// </summary>
     private static void ValidateAliases(BuildContext ctx, SymbolGraph graph, ImportPlan imports, ValidationContext validationCtx)
     {
-        ctx.Log("PhaseGate: Validating import aliases...");
+        ctx.Log("PhaseGate", "Validating import aliases...");
 
         int totalAliases = 0;
         int aliasCollisions = 0;
@@ -842,11 +1053,11 @@ public static class PhaseGate
             }
         }
 
-        ctx.Log($"PhaseGate: Validated {totalAliases} import aliases");
+        ctx.Log("PhaseGate", $"Validated {totalAliases} import aliases");
 
         if (aliasCollisions > 0)
         {
-            ctx.Log($"PhaseGate: Found {aliasCollisions} alias collisions");
+            ctx.Log("PhaseGate", $"Found {aliasCollisions} alias collisions");
         }
     }
 }
@@ -859,4 +1070,10 @@ internal sealed class ValidationContext
     public int ErrorCount { get; set; }
     public int WarningCount { get; set; }
     public List<string> Diagnostics { get; set; } = new();
+
+    // Step 1: Track sanitized names (reserved words that were properly escaped)
+    public int SanitizedNameCount { get; set; }
+
+    // Step 3: Aggregate interface conformance issues by type (for one-line summaries)
+    public Dictionary<string, List<string>> InterfaceConformanceIssuesByType { get; set; } = new();
 }

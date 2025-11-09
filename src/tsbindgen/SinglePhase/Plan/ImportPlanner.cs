@@ -14,7 +14,7 @@ public static class ImportPlanner
 {
     public static ImportPlan PlanImports(BuildContext ctx, SymbolGraph graph, ImportGraphData importGraph)
     {
-        ctx.Log("ImportPlanner: Planning import statements...");
+        ctx.Log("ImportPlanner", "Planning import statements...");
 
         var plan = new ImportPlan
         {
@@ -30,7 +30,7 @@ public static class ImportPlanner
             PlanNamespaceExports(ctx, ns, plan);
         }
 
-        ctx.Log($"ImportPlanner: Planned imports for {plan.NamespaceImports.Count} namespaces");
+        ctx.Log("ImportPlanner", $"Planned imports for {plan.NamespaceImports.Count} namespaces");
 
         return plan;
     }
@@ -91,7 +91,7 @@ public static class ImportPlanner
 
             imports.Add(importStatement);
 
-            ctx.Log($"ImportPlanner: {ns.Name} imports {typeImports.Count} types from {targetNamespace}");
+            ctx.Log("ImportPlanner", $"{ns.Name} imports {typeImports.Count} types from {targetNamespace}");
         }
 
         if (imports.Count > 0)
@@ -131,7 +131,7 @@ public static class ImportPlanner
         if (exports.Count > 0)
         {
             plan.NamespaceExports[ns.Name] = exports;
-            ctx.Log($"ImportPlanner: {ns.Name} exports {exports.Count} types");
+            ctx.Log("ImportPlanner", $"{ns.Name} exports {exports.Count} types");
         }
     }
 

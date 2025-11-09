@@ -14,7 +14,7 @@ public static class FacadeEmitter
 {
     public static void Emit(BuildContext ctx, EmissionPlan plan, string outputDirectory)
     {
-        ctx.Log("FacadeEmitter: Generating facade index.d.ts files...");
+        ctx.Log("FacadeEmitter", "Generating facade index.d.ts files...");
 
         var emittedCount = 0;
 
@@ -22,7 +22,7 @@ public static class FacadeEmitter
         foreach (var nsOrder in plan.EmissionOrder.Namespaces)
         {
             var ns = nsOrder.Namespace;
-            ctx.Log($"  Emitting facade for: {ns.Name}");
+            ctx.Log("FacadeEmitter", $"  Emitting facade for: {ns.Name}");
 
             // Generate facade content
             var content = GenerateFacade(ctx, plan, ns);
@@ -34,11 +34,11 @@ public static class FacadeEmitter
             var outputFile = Path.Combine(namespacePath, "index.d.ts");
             File.WriteAllText(outputFile, content);
 
-            ctx.Log($"    → {outputFile}");
+            ctx.Log("FacadeEmitter", $"    → {outputFile}");
             emittedCount++;
         }
 
-        ctx.Log($"FacadeEmitter: Generated {emittedCount} facade files");
+        ctx.Log("FacadeEmitter", $"Generated {emittedCount} facade files");
     }
 
     private static string GenerateFacade(BuildContext ctx, EmissionPlan plan, Model.Symbols.NamespaceSymbol ns)
@@ -71,9 +71,13 @@ public static class FacadeEmitter
         }
 
         // Re-export internal namespace
-        sb.AppendLine("// Re-export namespace");
-        sb.AppendLine($"export import {ns.Name} = Internal.{ns.Name};");
-        sb.AppendLine();
+        // Note: Skip for dotted namespaces as TypeScript doesn't support dots in export import identifiers
+        if (!ns.Name.Contains('.'))
+        {
+            sb.AppendLine("// Re-export namespace");
+            sb.AppendLine($"export import {ns.Name} = Internal.{ns.Name};");
+            sb.AppendLine();
+        }
 
         // Export individual types (for convenience)
         if (plan.Imports.NamespaceExports.TryGetValue(ns.Name, out var exports))

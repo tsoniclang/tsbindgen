@@ -210,11 +210,11 @@ async function main() {
         // Step 1: Clean and prepare
         cleanValidationDir();
 
-        // Step 2: Generate all types
-        generateTypes();
-
-        // Step 3: Create tsconfig
+        // Step 2: Create tsconfig (before generation so it exists even if generation fails)
         createTsConfig();
+
+        // Step 3: Generate all types
+        generateTypes();
 
         // Step 4: Validate metadata files
         validateMetadataFiles();

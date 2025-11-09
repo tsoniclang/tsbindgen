@@ -100,6 +100,15 @@ public sealed record MethodSymbol
     /// For interface-sourced members, the interface that contributed this member.
     /// </summary>
     public TypeReference? SourceInterface { get; init; }
+
+    /// <summary>
+    /// Create a new MethodSymbol with updated SourceInterface.
+    /// Wither method for immutability.
+    /// </summary>
+    public MethodSymbol WithSourceInterface(TypeReference? sourceInterface)
+    {
+        return this with { SourceInterface = sourceInterface };
+    }
 }
 
 /// <summary>
@@ -189,7 +198,17 @@ public enum MemberProvenance
     /// <summary>
     /// Normalized from indexer syntax.
     /// </summary>
-    IndexerNormalized
+    IndexerNormalized,
+
+    /// <summary>
+    /// Synthesized to satisfy explicit interface view.
+    /// </summary>
+    ExplicitView,
+
+    /// <summary>
+    /// Marked as ViewOnly due to overload return type conflict.
+    /// </summary>
+    OverloadReturnConflict
 }
 
 public enum EmitScope
@@ -207,5 +226,10 @@ public enum EmitScope
     /// <summary>
     /// Only emit in explicit interface views (As_IInterface properties).
     /// </summary>
-    ViewOnly
+    ViewOnly,
+
+    /// <summary>
+    /// Omitted from emission (unified away by OverloadUnifier).
+    /// </summary>
+    Omitted
 }

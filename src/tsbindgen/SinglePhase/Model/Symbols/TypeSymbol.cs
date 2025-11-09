@@ -108,6 +108,13 @@ public sealed record TypeSymbol
     /// </summary>
     public string? Documentation { get; init; }
 
+    /// <summary>
+    /// Explicit interface views planned for this type.
+    /// Populated by ViewPlanner in Shape phase.
+    /// Empty for interfaces and static classes.
+    /// </summary>
+    public ImmutableArray<Shape.ViewPlanner.ExplicitView> ExplicitViews { get; init; } = ImmutableArray<Shape.ViewPlanner.ExplicitView>.Empty;
+
     // Wither helpers for pure transformations
 
     public TypeSymbol WithMembers(TypeMembers members) => this with { Members = members };
@@ -128,6 +135,9 @@ public sealed record TypeSymbol
         this with { Members = Members with { Fields = Members.Fields.AddRange(fields) } };
 
     public TypeSymbol WithTsEmitName(string tsEmitName) => this with { TsEmitName = tsEmitName };
+
+    public TypeSymbol WithExplicitViews(ImmutableArray<Shape.ViewPlanner.ExplicitView> views) =>
+        this with { ExplicitViews = views };
 }
 
 public enum TypeKind

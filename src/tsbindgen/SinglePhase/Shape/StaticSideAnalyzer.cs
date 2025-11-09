@@ -16,7 +16,7 @@ public static class StaticSideAnalyzer
     public static void Analyze(BuildContext ctx, SymbolGraph graph)
     {
         var action = ctx.Policy.StaticSide.Action;
-        ctx.Log($"StaticSideAnalyzer: Analyzing static-side inheritance (Action: {action})...");
+        ctx.Log("StaticSideAnalyzer", $"Analyzing static-side inheritance (Action: {action})...");
 
         var classes = graph.Namespaces
             .SelectMany(ns => ns.Types)
@@ -35,20 +35,20 @@ public static class StaticSideAnalyzer
 
         if (issuesFound > 0)
         {
-            ctx.Log($"StaticSideAnalyzer: Found {issuesFound} static-side inheritance issues");
+            ctx.Log("StaticSideAnalyzer", $"Found {issuesFound} static-side inheritance issues");
 
             if (action == Core.Policy.StaticSideAction.AutoRename)
             {
-                ctx.Log($"StaticSideAnalyzer: Renamed {renamedCount} conflicting static members");
+                ctx.Log("StaticSideAnalyzer", $"Renamed {renamedCount} conflicting static members");
             }
             else if (action == Core.Policy.StaticSideAction.Analyze)
             {
-                ctx.Log("StaticSideAnalyzer: These can be resolved via renaming or explicit views if needed");
+                ctx.Log("StaticSideAnalyzer", "These can be resolved via renaming or explicit views if needed");
             }
         }
         else
         {
-            ctx.Log("StaticSideAnalyzer: No static-side issues detected");
+            ctx.Log("StaticSideAnalyzer", "No static-side issues detected");
         }
     }
 
@@ -108,7 +108,7 @@ public static class StaticSideAnalyzer
 
                     if (renamed > 0)
                     {
-                        ctx.Log($"StaticSideAnalyzer: Renamed static member '{conflictName}' in {derivedClass.ClrFullName}");
+                        ctx.Log("StaticSideAnalyzer", $"Renamed static member '{conflictName}' in {derivedClass.ClrFullName}");
                     }
                 }
                 else

@@ -90,11 +90,14 @@ public sealed record SymbolGraph
     /// Finds the type by CLR full name, applies the transform, and returns a new graph.
     /// Automatically rebuilds indices.
     /// </summary>
-    public SymbolGraph WithUpdatedType(string clrFullName, Func<TypeSymbol, TypeSymbol> transform)
+    public SymbolGraph WithUpdatedType(string keyOrStableId, Func<TypeSymbol, TypeSymbol> transform)
     {
+        // Determine if key is a StableId (contains assembly:) or ClrFullName
+        bool isStableId = keyOrStableId.Contains(':');
+
         // Find which namespace contains this type
         var targetNamespace = Namespaces.FirstOrDefault(ns =>
-            ns.Types.Any(t => t.ClrFullName == clrFullName || ContainsNestedType(t, clrFullName)));
+            ns.Types.Any(t => MatchesKey(t, keyOrStableId, isStableId)));
 
         if (targetNamespace == null)
             return this; // Type not found - return unchanged
@@ -103,7 +106,7 @@ public sealed record SymbolGraph
         var updatedNamespace = targetNamespace with
         {
             Types = targetNamespace.Types.Select(t =>
-                UpdateTypeRecursive(t, clrFullName, transform)).ToImmutableArray()
+                UpdateTypeRecursive(t, keyOrStableId, isStableId, transform)).ToImmutableArray()
         };
 
         // Replace namespace in graph
@@ -114,25 +117,42 @@ public sealed record SymbolGraph
         return (this with { Namespaces = updatedNamespaces }).WithIndices();
     }
 
-    private static TypeSymbol UpdateTypeRecursive(TypeSymbol type, string targetClrFullName,
+    private static bool MatchesKey(TypeSymbol type, string key, bool isStableId)
+    {
+        if (isStableId)
+            return type.StableId.ToString() == key;
+        else
+            return type.ClrFullName == key || ContainsNestedType(type, key);
+    }
+
+    private static TypeSymbol UpdateTypeRecursive(TypeSymbol type, string key, bool isStableId,
         Func<TypeSymbol, TypeSymbol> transform)
     {
         // If this is the target type, apply transform
-        if (type.ClrFullName == targetClrFullName)
+        bool isMatch = isStableId
+            ? type.StableId.ToString() == key
+            : type.ClrFullName == key;
+
+        if (isMatch)
             return transform(type);
 
-        // Check nested types
-        var hasNestedTarget = type.NestedTypes.Any(n =>
-            n.ClrFullName == targetClrFullName || ContainsNestedType(n, targetClrFullName));
+        // Check nested types (only for ClrFullName matching, not StableId)
+        if (!isStableId)
+        {
+            var hasNestedTarget = type.NestedTypes.Any(n =>
+                n.ClrFullName == key || ContainsNestedType(n, key));
 
-        if (!hasNestedTarget)
-            return type; // No change needed
+            if (!hasNestedTarget)
+                return type; // No change needed
 
-        // Recursively update nested types
-        var updatedNested = type.NestedTypes.Select(n =>
-            UpdateTypeRecursive(n, targetClrFullName, transform)).ToImmutableArray();
+            // Recursively update nested types
+            var updatedNested = type.NestedTypes.Select(n =>
+                UpdateTypeRecursive(n, key, isStableId, transform)).ToImmutableArray();
 
-        return type with { NestedTypes = updatedNested };
+            return type with { NestedTypes = updatedNested };
+        }
+
+        return type; // No change needed
     }
 
     private static bool ContainsNestedType(TypeSymbol type, string clrFullName)

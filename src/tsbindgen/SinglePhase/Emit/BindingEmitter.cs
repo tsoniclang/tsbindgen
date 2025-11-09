@@ -18,7 +18,7 @@ public static class BindingEmitter
 {
     public static void Emit(BuildContext ctx, EmissionPlan plan, string outputDirectory)
     {
-        ctx.Log("BindingEmitter: Generating bindings.json files...");
+        ctx.Log("BindingEmitter", "Generating bindings.json files...");
 
         var emittedCount = 0;
 
@@ -26,7 +26,7 @@ public static class BindingEmitter
         foreach (var nsOrder in plan.EmissionOrder.Namespaces)
         {
             var ns = nsOrder.Namespace;
-            ctx.Log($"  Emitting bindings for: {ns.Name}");
+            ctx.Log("BindingEmitter", $"  Emitting bindings for: {ns.Name}");
 
             // Generate bindings
             var bindings = GenerateBindings(ctx, nsOrder);
@@ -44,11 +44,11 @@ public static class BindingEmitter
             var json = JsonSerializer.Serialize(bindings, jsonOptions);
             File.WriteAllText(outputFile, json);
 
-            ctx.Log($"    → {outputFile}");
+            ctx.Log("BindingEmitter", $"    → {outputFile}");
             emittedCount++;
         }
 
-        ctx.Log($"BindingEmitter: Generated {emittedCount} binding files");
+        ctx.Log("BindingEmitter", $"Generated {emittedCount} binding files");
     }
 
     private static NamespaceBindings GenerateBindings(BuildContext ctx, NamespaceEmitOrder nsOrder)

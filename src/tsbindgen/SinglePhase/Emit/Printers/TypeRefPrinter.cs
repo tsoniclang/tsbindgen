@@ -83,7 +83,7 @@ public static class TypeRefPrinter
         // TypeScript has no pointer types
         // Map to the underlying type (pointer semantics lost)
         // This is tracked in metadata as a limitation
-        ctx.Log($"TypeRefPrinter: Warning - Pointer type mapped to underlying type");
+        ctx.Log("TypeRefPrinter", "Warning - Pointer type mapped to underlying type");
         return Print(ptr.PointeeType, ctx);
     }
 

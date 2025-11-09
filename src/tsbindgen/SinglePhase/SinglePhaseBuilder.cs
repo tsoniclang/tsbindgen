@@ -1,6 +1,7 @@
 using tsbindgen.Core.Policy;
 using tsbindgen.SinglePhase.Load;
 using tsbindgen.SinglePhase.Model;
+using tsbindgen.SinglePhase.Normalize;
 using tsbindgen.SinglePhase.Shape;
 using tsbindgen.SinglePhase.Plan;
 using tsbindgen.SinglePhase.Emit;
@@ -20,59 +21,63 @@ public static class SinglePhaseBuilder
     /// <param name="outputDirectory">Where to write generated files</param>
     /// <param name="policy">Generation policy (uses defaults if null)</param>
     /// <param name="logger">Optional logger for progress messages</param>
+    /// <param name="verboseLogging">Enable verbose logging (all categories)</param>
+    /// <param name="logCategories">Specific log categories to enable</param>
     /// <returns>Build result with statistics and diagnostics</returns>
     public static BuildResult Build(
         IReadOnlyList<string> assemblyPaths,
         string outputDirectory,
         GenerationPolicy? policy = null,
-        Action<string>? logger = null)
+        Action<string>? logger = null,
+        bool verboseLogging = false,
+        HashSet<string>? logCategories = null)
     {
         // Create build context with all shared services
-        var ctx = BuildContext.Create(policy, logger);
+        var ctx = BuildContext.Create(policy, logger, verboseLogging, logCategories);
 
-        ctx.Log("=== Single-Phase Build Started ===");
-        ctx.Log($"Assemblies: {assemblyPaths.Count}");
-        ctx.Log($"Output: {outputDirectory}");
+        ctx.Log("Build", "=== Single-Phase Build Started ===");
+        ctx.Log("Build", $"Assemblies: {assemblyPaths.Count}");
+        ctx.Log("Build", $"Output: {outputDirectory}");
 
         try
         {
             // Phase 1: Load
-            ctx.Log("\n--- Phase 1: Load ---");
+            ctx.Log("Build", "\n--- Phase 1: Load ---");
             var graph = LoadPhase(ctx, assemblyPaths);
             var stats = graph.GetStatistics();
-            ctx.Log($"Loaded: {stats.NamespaceCount} namespaces, {stats.TypeCount} types, {stats.TotalMembers} members");
+            ctx.Log("Build", $"Loaded: {stats.NamespaceCount} namespaces, {stats.TypeCount} types, {stats.TotalMembers} members");
 
             // Phase 2: Normalize (build indices)
-            ctx.Log("\n--- Phase 2: Normalize ---");
+            ctx.Log("Build", "\n--- Phase 2: Normalize ---");
             graph = graph.WithIndices();
-            ctx.Log("Built symbol indices");
+            ctx.Log("Build", "Built symbol indices");
 
             // Phase 3: Shape
-            ctx.Log("\n--- Phase 3: Shape ---");
-            ShapePhase(ctx, graph);
-            ctx.Log("Applied all shaping transformations");
+            ctx.Log("Build", "\n--- Phase 3: Shape ---");
+            graph = ShapePhase(ctx, graph);
+            ctx.Log("Build", "Applied all shaping transformations");
 
             // Phase 3.5: Name Reservation (after Shape, before Plan)
-            ctx.Log("\n--- Phase 3.5: Name Reservation ---");
+            ctx.Log("Build", "\n--- Phase 3.5: Name Reservation ---");
             graph = Normalize.NameReservation.ReserveAllNames(ctx, graph);
-            ctx.Log("Reserved all TypeScript names through Renamer");
+            ctx.Log("Build", "Reserved all TypeScript names through Renamer");
 
             // Phase 4: Plan
-            ctx.Log("\n--- Phase 4: Plan ---");
+            ctx.Log("Build", "\n--- Phase 4: Plan ---");
             var plan = PlanPhase(ctx, graph);
-            ctx.Log($"Planned emission order for {plan.NamespaceCount} namespaces");
+            ctx.Log("Build", $"Planned emission order for {plan.NamespaceCount} namespaces");
 
             // Phase 5: Emit
-            ctx.Log("\n--- Phase 5: Emit ---");
+            ctx.Log("Build", "\n--- Phase 5: Emit ---");
             EmitPhase(ctx, plan, outputDirectory);
-            ctx.Log($"Emitted all files to {outputDirectory}");
+            ctx.Log("Build", $"Emitted all files to {outputDirectory}");
 
             // Gather results
             var diagnostics = ctx.Diagnostics.GetAll();
             var hasErrors = ctx.Diagnostics.HasErrors();
 
-            ctx.Log($"\n=== Build {(hasErrors ? "FAILED" : "SUCCEEDED")} ===");
-            ctx.Log($"Diagnostics: {diagnostics.Count} total");
+            ctx.Log("Build", $"\n=== Build {(hasErrors ? "FAILED" : "SUCCEEDED")} ===");
+            ctx.Log("Build", $"Diagnostics: {diagnostics.Count} total");
 
             return new BuildResult
             {
@@ -84,8 +89,8 @@ public static class SinglePhaseBuilder
         }
         catch (Exception ex)
         {
-            ctx.Log($"\n!!! Build Exception: {ex.Message}");
-            ctx.Log($"Stack trace:\n{ex.StackTrace}");
+            ctx.Log("Build", $"\n!!! Build Exception: {ex.Message}");
+            ctx.Log("Build", $"Stack trace:\n{ex.StackTrace}");
             ctx.Diagnostics.Error("BUILD_EXCEPTION", $"Build failed with exception: {ex.Message}");
 
             return new BuildResult
@@ -128,47 +133,55 @@ public static class SinglePhaseBuilder
     /// <summary>
     /// Phase 3: Shape the symbol graph for TypeScript emission.
     /// Applies all transformations: interface inlining, synthesis, diamond resolution, etc.
+    /// PURE - returns updated graph.
     /// </summary>
-    private static void ShapePhase(BuildContext ctx, SymbolGraph graph)
+    private static SymbolGraph ShapePhase(BuildContext ctx, SymbolGraph graph)
     {
         // The shaping passes will be applied in sequence
         // Each pass may consult or update the Renamer
 
-        // 1. Interface inlining
+        // 1. Build interface indices BEFORE flattening (need original hierarchy)
+        GlobalInterfaceIndex.Build(ctx, graph);
+        InterfaceDeclIndex.Build(ctx, graph);
+
+        // 2. Structural conformance analysis (synthesizes ViewOnly members) - PURE - returns new graph
+        //    Must run before flattening so FindDeclaringInterface can walk hierarchy
+        graph = StructuralConformance.Analyze(ctx, graph);
+
+        // 3. Interface inlining (flatten interfaces - AFTER indices and conformance)
         InterfaceInliner.Inline(ctx, graph);
 
-        // 2. Explicit interface implementation synthesis
+        // 4. Explicit interface implementation synthesis
         ExplicitImplSynthesizer.Synthesize(ctx, graph);
 
-        // 3. Diamond inheritance resolution
+        // 5. Diamond inheritance resolution
         DiamondResolver.Resolve(ctx, graph);
 
-        // 4. Base overload addition
+        // 6. Base overload addition
         BaseOverloadAdder.AddOverloads(ctx, graph);
 
-        // 5. Static-side analysis
+        // 7. Static-side analysis
         StaticSideAnalyzer.Analyze(ctx, graph);
 
-        // 6. Indexer planning (PURE - returns new graph)
+        // 8. Indexer planning (PURE - returns new graph)
         graph = IndexerPlanner.Plan(ctx, graph);
 
-        // 7. Hidden member (C# 'new') planning
+        // 9. Hidden member (C# 'new') planning
         HiddenMemberPlanner.Plan(ctx, graph);
 
-        // 8. Constraint closure
+        // 10. Final indexers pass (PURE - ensures no indexer properties leak)
+        graph = FinalIndexersPass.Run(ctx, graph);
+
+        // 11. Constraint closure
         ConstraintCloser.Close(ctx, graph);
 
-        // 9. Global interface index building (cross-assembly)
-        GlobalInterfaceIndex.Build(ctx, graph);
-
-        // 10. Return-type conflict resolution
+        // 12. Return-type conflict resolution
         OverloadReturnConflictResolver.Resolve(ctx, graph);
 
-        // 11. Structural conformance analysis
-        StructuralConformance.Analyze(ctx, graph);
+        // 13. View planning (explicit interface views) - PURE - returns new graph
+        graph = ViewPlanner.Plan(ctx, graph);
 
-        // 12. View planning (explicit interface views)
-        ViewPlanner.Plan(ctx, graph);
+        return graph;
     }
 
     /// <summary>
@@ -185,6 +198,10 @@ public static class SinglePhaseBuilder
         // Determine stable emission order
         var orderPlanner = new EmitOrderPlanner(ctx);
         var order = orderPlanner.PlanOrder(graph);
+
+        // Unify method overloads (before PhaseGate validation)
+        ctx.Log("Build", "\n--- Phase 4.5: Overload Unification ---");
+        graph = OverloadUnifier.UnifyOverloads(ctx, graph);
 
         // Validate before proceeding
         PhaseGate.Validate(ctx, graph, imports);

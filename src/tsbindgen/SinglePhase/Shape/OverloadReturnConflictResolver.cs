@@ -15,7 +15,7 @@ public static class OverloadReturnConflictResolver
 {
     public static void Resolve(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("OverloadReturnConflictResolver: Resolving return-type conflicts...");
+        ctx.Log("OverloadReturnConflictResolver", "Resolving return-type conflicts...");
 
         var allTypes = graph.Namespaces
             .SelectMany(ns => ns.Types)
@@ -29,7 +29,7 @@ public static class OverloadReturnConflictResolver
             totalResolved += resolved;
         }
 
-        ctx.Log($"OverloadReturnConflictResolver: Resolved {totalResolved} return-type conflicts");
+        ctx.Log("OverloadReturnConflictResolver", $"Resolved {totalResolved} return-type conflicts");
     }
 
     private static int ResolveForType(BuildContext ctx, TypeSymbol type)
@@ -54,7 +54,7 @@ public static class OverloadReturnConflictResolver
                 continue; // Same return type, no conflict
 
             // Return-type conflict detected
-            ctx.Log($"OverloadReturnConflictResolver: Return-type conflict in {type.ClrFullName}.{methods[0].ClrName} - {returnTypes.Count} return types");
+            ctx.Log("OverloadReturnConflictResolver", $"Return-type conflict in {type.ClrFullName}.{methods[0].ClrName} - {returnTypes.Count} return types");
 
             // Select a representative method to keep on the class surface
             // Prefer non-void, prefer immutable returns (no ref/out parameters)
@@ -89,7 +89,7 @@ public static class OverloadReturnConflictResolver
             if (propertyTypes.Count <= 1)
                 continue;
 
-            ctx.Log($"OverloadReturnConflictResolver: Property type conflict in {type.ClrFullName} indexers - {propertyTypes.Count} types");
+            ctx.Log("OverloadReturnConflictResolver", $"Property type conflict in {type.ClrFullName} indexers - {propertyTypes.Count} types");
 
             var representative = properties.First(); // Simple: keep first
 

@@ -16,7 +16,7 @@ public static class HiddenMemberPlanner
 {
     public static void Plan(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("HiddenMemberPlanner: Planning C# 'new' hidden members...");
+        ctx.Log("HiddenMemberPlanner", "Planning C# 'new' hidden members...");
 
         var processedCount = 0;
 
@@ -28,7 +28,7 @@ public static class HiddenMemberPlanner
             }
         }
 
-        ctx.Log($"HiddenMemberPlanner: Processed {processedCount} hidden members");
+        ctx.Log("HiddenMemberPlanner", $"Processed {processedCount} hidden members");
     }
 
     private static int ProcessType(BuildContext ctx, TypeSymbol type)

@@ -12,7 +12,7 @@ public static class ModuleStubEmitter
 {
     public static void Emit(BuildContext ctx, EmissionPlan plan, string outputDirectory)
     {
-        ctx.Log("ModuleStubEmitter: Generating index.js stub files...");
+        ctx.Log("ModuleStubEmitter", "Generating index.js stub files...");
 
         var emittedCount = 0;
 
@@ -20,7 +20,7 @@ public static class ModuleStubEmitter
         foreach (var nsOrder in plan.EmissionOrder.Namespaces)
         {
             var ns = nsOrder.Namespace;
-            ctx.Log($"  Emitting stub for: {ns.Name}");
+            ctx.Log("ModuleStubEmitter", $"  Emitting stub for: {ns.Name}");
 
             // Generate stub content
             var content = GenerateStub(ns.Name);
@@ -32,11 +32,11 @@ public static class ModuleStubEmitter
             var outputFile = Path.Combine(namespacePath, "index.js");
             File.WriteAllText(outputFile, content);
 
-            ctx.Log($"    → {outputFile}");
+            ctx.Log("ModuleStubEmitter", $"    → {outputFile}");
             emittedCount++;
         }
 
-        ctx.Log($"ModuleStubEmitter: Generated {emittedCount} stub files");
+        ctx.Log("ModuleStubEmitter", $"Generated {emittedCount} stub files");
     }
 
     private static string GenerateStub(string namespaceName)

@@ -23,7 +23,7 @@ public static class NameReservation
     /// </summary>
     public static SymbolGraph ReserveAllNames(BuildContext ctx, SymbolGraph graph)
     {
-        ctx.Log("NameReservation: Reserving all TypeScript names...");
+        ctx.Log("NameReservation", "Reserving all TypeScript names...");
 
         int typesReserved = 0;
         int membersReserved = 0;
@@ -43,7 +43,7 @@ public static class NameReservation
             {
                 if (IsCompilerGenerated(type.ClrName))
                 {
-                    ctx.Log($"NameReservation: Skipping compiler-generated type {type.ClrFullName}");
+                    ctx.Log("NameReservation", $"Skipping compiler-generated type {type.ClrFullName}");
                     skippedCompilerGenerated++;
                     continue;
                 }
@@ -58,10 +58,10 @@ public static class NameReservation
             }
         }
 
-        ctx.Log($"NameReservation: Reserved {typesReserved} type names, {membersReserved} member names");
+        ctx.Log("NameReservation", $"Reserved {typesReserved} type names, {membersReserved} member names");
         if (skippedCompilerGenerated > 0)
         {
-            ctx.Log($"NameReservation: Skipped {skippedCompilerGenerated} compiler-generated types");
+            ctx.Log("NameReservation", $"Skipped {skippedCompilerGenerated} compiler-generated types");
         }
 
         // Phase 2: Apply names to graph (pure transformation)
