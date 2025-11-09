@@ -94,6 +94,13 @@ public sealed record NamedTypeReference : TypeReference
     /// True if this is a value type (struct, enum).
     /// </summary>
     public required bool IsValueType { get; init; }
+
+    /// <summary>
+    /// Pre-computed StableId for interface types (format: AssemblyName:FullName).
+    /// Set at load time for interfaces to eliminate repeated computation.
+    /// Null for non-interface types.
+    /// </summary>
+    public string? InterfaceStableId { get; init; }
 }
 
 /// <summary>

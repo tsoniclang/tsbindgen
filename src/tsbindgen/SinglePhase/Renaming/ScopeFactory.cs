@@ -170,11 +170,15 @@ public static class ScopeFactory
     /// <summary>
     /// Extracts interface StableId from TypeReference (same logic as ViewPlanner).
     /// Returns assembly-qualified identifier for grouping/merging.
+    /// HARDENING: Uses pre-stamped InterfaceStableId when available (set at load time).
     /// </summary>
     public static string GetInterfaceStableId(TypeReference ifaceRef)
     {
         return ifaceRef switch
         {
+            // HARDENING: Use pre-stamped StableId for interfaces (set in TypeReferenceFactory)
+            NamedTypeReference named when named.InterfaceStableId != null => named.InterfaceStableId,
+            // Fallback for non-interfaces or old code paths
             NamedTypeReference named => $"{named.AssemblyName}:{named.FullName}",
             NestedTypeReference nested => GetInterfaceStableId(nested.DeclaringType) + "+" + nested.NestedName,
             _ => ifaceRef.ToString() ?? "unknown"

@@ -125,6 +125,15 @@ public sealed class TypeReferenceFactory
             }
         }
 
+        // HARDENING: Stamp interface StableId at load time for interfaces
+        // Format: AssemblyName:FullName (same as ScopeFactory.GetInterfaceStableId)
+        // This eliminates repeated computation and graph lookups
+        string? interfaceStableId = null;
+        if (type.IsInterface)
+        {
+            interfaceStableId = _ctx.Intern($"{assemblyName}:{fullName}");
+        }
+
         return new NamedTypeReference
         {
             AssemblyName = _ctx.Intern(assemblyName),
@@ -133,7 +142,8 @@ public sealed class TypeReferenceFactory
             Name = _ctx.Intern(name),
             Arity = arity,
             TypeArguments = typeArgs,
-            IsValueType = type.IsValueType
+            IsValueType = type.IsValueType,
+            InterfaceStableId = interfaceStableId
         };
     }
 
