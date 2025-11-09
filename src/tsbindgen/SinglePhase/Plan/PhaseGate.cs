@@ -44,8 +44,24 @@ public static class PhaseGate
         ValidateAliases(ctx, graph, imports, validationContext);
 
         // Report results
-        ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings");
+        ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings, {validationContext.InfoCount} info");
         ctx.Log("PhaseGate", $"Sanitized {validationContext.SanitizedNameCount} reserved word identifiers");
+
+        // Print diagnostic summary table
+        if (validationContext.DiagnosticCountsByCode.Count > 0)
+        {
+            ctx.Log("PhaseGate", "");
+            ctx.Log("PhaseGate", "Diagnostic Summary by Code:");
+            ctx.Log("PhaseGate", "─────────────────────────────────────────");
+
+            foreach (var (code, count) in validationContext.DiagnosticCountsByCode.OrderByDescending(kvp => kvp.Value))
+            {
+                var description = GetDiagnosticDescription(code);
+                ctx.Log("PhaseGate", $"  {code}: {count,5} - {description}");
+            }
+
+            ctx.Log("PhaseGate", "─────────────────────────────────────────");
+        }
 
         if (validationContext.ErrorCount > 0)
         {
@@ -78,6 +94,47 @@ public static class PhaseGate
 
         // Step 3: Write detailed diagnostics file with full conformance issues
         WriteDiagnosticsFile(ctx, validationContext);
+
+        // Write summary JSON for CI/snapshot comparison
+        WriteSummaryJson(ctx, validationContext);
+    }
+
+    private static void WriteSummaryJson(BuildContext ctx, ValidationContext validationCtx)
+    {
+        var summaryPath = System.IO.Path.Combine(".tests", "phasegate-summary.json");
+
+        try
+        {
+            System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(summaryPath)!);
+
+            var summary = new
+            {
+                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                totals = new
+                {
+                    errors = validationCtx.ErrorCount,
+                    warnings = validationCtx.WarningCount,
+                    info = validationCtx.InfoCount,
+                    sanitized_names = validationCtx.SanitizedNameCount
+                },
+                diagnostic_counts_by_code = validationCtx.DiagnosticCountsByCode
+                    .OrderBy(kvp => kvp.Key)
+                    .ToDictionary(kvp => kvp.Key, kvp => kvp.Value)
+            };
+
+            var json = System.Text.Json.JsonSerializer.Serialize(summary, new System.Text.Json.JsonSerializerOptions
+            {
+                WriteIndented = true
+            });
+
+            System.IO.File.WriteAllText(summaryPath, json);
+
+            ctx.Log("PhaseGate", $"Summary JSON written to {summaryPath}");
+        }
+        catch (Exception ex)
+        {
+            ctx.Log("PhaseGate", $"WARNING - Failed to write summary JSON: {ex.Message}");
+        }
     }
 
     private static void WriteDiagnosticsFile(BuildContext ctx, ValidationContext validationCtx)
@@ -99,6 +156,7 @@ public static class PhaseGate
             writer.WriteLine($"Summary:");
             writer.WriteLine($"  Errors: {validationCtx.ErrorCount}");
             writer.WriteLine($"  Warnings: {validationCtx.WarningCount}");
+            writer.WriteLine($"  Info: {validationCtx.InfoCount}");
             writer.WriteLine($"  Sanitized identifiers: {validationCtx.SanitizedNameCount}");
             writer.WriteLine();
 
@@ -153,16 +211,20 @@ public static class PhaseGate
                 // Check TsEmitName is set
                 if (string.IsNullOrWhiteSpace(type.TsEmitName))
                 {
-                    validationCtx.ErrorCount++;
-                    validationCtx.Diagnostics.Add($"ERROR: Type {type.ClrFullName} has no TsEmitName");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                        "ERROR",
+                        $"Type {type.ClrFullName} has no TsEmitName");
                 }
 
                 // Check for duplicates within namespace
                 var fullEmitName = $"{ns.Name}.{type.TsEmitName}";
                 if (namesSeen.Contains(fullEmitName))
                 {
-                    validationCtx.ErrorCount++;
-                    validationCtx.Diagnostics.Add($"ERROR: Duplicate TsEmitName '{fullEmitName}' in namespace {ns.Name}");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.DuplicateMember,
+                        "ERROR",
+                        $"Duplicate TsEmitName '{fullEmitName}' in namespace {ns.Name}");
                 }
                 namesSeen.Add(fullEmitName);
 
@@ -178,8 +240,10 @@ public static class PhaseGate
                     else
                     {
                         // Name wasn't sanitized - this is a problem
-                        validationCtx.WarningCount++;
-                        validationCtx.Diagnostics.Add($"WARNING: Type '{type.TsEmitName}' uses TypeScript reserved word but was not sanitized");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ReservedWordUnsanitized,
+                            "WARNING",
+                            $"Type '{type.TsEmitName}' uses TypeScript reserved word but was not sanitized");
                     }
                 }
                 else if (type.ClrName != type.TsEmitName && IsTypeScriptReservedWord(type.ClrName))
@@ -210,8 +274,10 @@ public static class PhaseGate
                 {
                     if (string.IsNullOrWhiteSpace(method.TsEmitName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add($"ERROR: Method {method.ClrName} in {type.ClrFullName} has no TsEmitName");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Method {method.ClrName} in {type.ClrFullName} has no TsEmitName");
                     }
 
                     // Check for collisions within same scope
@@ -220,8 +286,10 @@ public static class PhaseGate
                         var signature = $"{method.TsEmitName}_{method.Parameters.Length}";
                         if (!memberNames.Add(signature))
                         {
-                            validationCtx.WarningCount++;
-                            validationCtx.Diagnostics.Add($"WARNING: Potential method overload collision for {method.TsEmitName} in {type.ClrFullName}");
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.AmbiguousOverload,
+                                "WARNING",
+                                $"Potential method overload collision for {method.TsEmitName} in {type.ClrFullName}");
                         }
                     }
 
@@ -233,8 +301,10 @@ public static class PhaseGate
                 {
                     if (string.IsNullOrWhiteSpace(property.TsEmitName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add($"ERROR: Property {property.ClrName} in {type.ClrFullName} has no TsEmitName");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Property {property.ClrName} in {type.ClrFullName} has no TsEmitName");
                     }
 
                     totalMembers++;
@@ -245,8 +315,10 @@ public static class PhaseGate
                 {
                     if (string.IsNullOrWhiteSpace(field.TsEmitName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add($"ERROR: Field {field.ClrName} in {type.ClrFullName} has no TsEmitName");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Field {field.ClrName} in {type.ClrFullName} has no TsEmitName");
                     }
 
                     totalMembers++;
@@ -262,6 +334,7 @@ public static class PhaseGate
         ctx.Log("PhaseGate", "Validating generic parameters...");
 
         int totalGenericParams = 0;
+        int constraintNarrowings = 0;
 
         foreach (var ns in graph.Namespaces)
         {
@@ -272,8 +345,10 @@ public static class PhaseGate
                     // Check name is valid
                     if (string.IsNullOrWhiteSpace(gp.Name))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add($"ERROR: Generic parameter in {type.ClrFullName} has no name");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Generic parameter in {type.ClrFullName} has no name");
                     }
 
                     // Check constraints are representable
@@ -281,17 +356,53 @@ public static class PhaseGate
                     {
                         if (!IsConstraintRepresentable(constraint))
                         {
-                            validationCtx.WarningCount++;
-                            validationCtx.Diagnostics.Add($"WARNING: Constraint on {gp.Name} in {type.ClrFullName} may not be representable");
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.UnrepresentableConstraint,
+                                "WARNING",
+                                $"Constraint on {gp.Name} in {type.ClrFullName} may not be representable");
                         }
                     }
 
                     totalGenericParams++;
                 }
+
+                // Check for constraint narrowing in derived classes
+                if (type.BaseType != null && type.GenericParameters.Any())
+                {
+                    var baseClass = FindType(graph, type.BaseType);
+                    if (baseClass != null && baseClass.GenericParameters.Any())
+                    {
+                        var derivedGpList = type.GenericParameters.ToList();
+                        var baseGpList = baseClass.GenericParameters.ToList();
+
+                        // Compare constraints between derived and base
+                        for (int i = 0; i < Math.Min(derivedGpList.Count, baseGpList.Count); i++)
+                        {
+                            var derivedGp = derivedGpList[i];
+                            var baseGp = baseGpList[i];
+
+                            var derivedConstraints = derivedGp.Constraints.ToList();
+                            var baseConstraints = baseGp.Constraints.ToList();
+                            var derivedConstraintCount = derivedConstraints.Count;
+                            var baseConstraintCount = baseConstraints.Count;
+
+                            // If derived has more constraints than base, it's narrowing
+                            if (derivedConstraintCount > baseConstraintCount)
+                            {
+                                // Emit INFO (not warning) - constraint narrowing is usually benign in TS
+                                validationCtx.RecordDiagnostic(
+                                    Core.Diagnostics.DiagnosticCodes.ConstraintNarrowing,
+                                    "INFO",
+                                    $"Generic parameter {derivedGp.Name} in {type.ClrFullName} narrows constraints from base class ({baseConstraintCount} → {derivedConstraintCount} constraints)");
+                                constraintNarrowings++;
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        ctx.Log("PhaseGate", $"Validated {totalGenericParams} generic parameters");
+        ctx.Log("PhaseGate", $"Validated {totalGenericParams} generic parameters ({constraintNarrowings} constraint narrowings detected)");
     }
 
     private static void ValidateInterfaceConformance(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
@@ -325,6 +436,7 @@ public static class PhaseGate
 
                 // Step 3: Aggregate conformance issues per type instead of per method
                 var conformanceIssues = new List<string>();
+                var covarianceIssues = new List<string>();
 
                 // Check that all claimed interfaces have corresponding members
                 foreach (var ifaceRef in type.Interfaces)
@@ -372,6 +484,45 @@ public static class PhaseGate
                             // else: Signatures differ in CLR but are compatible in TS (e.g., covariance) - no warning
                         }
                     }
+
+                    // Check properties for covariance issues (TypeScript doesn't support property covariance)
+                    var representableProperties = type.Members.Properties
+                        .Where(p => p.EmitScope == EmitScope.ClassSurface)
+                        .ToList();
+
+                    foreach (var requiredProperty in iface.Members.Properties)
+                    {
+                        var matchingProperty = representableProperties.FirstOrDefault(p =>
+                            p.ClrName == requiredProperty.ClrName);
+
+                        if (matchingProperty == null)
+                        {
+                            conformanceIssues.Add($"  Missing property {requiredProperty.ClrName} from {GetInterfaceName(ifaceRef)}");
+                        }
+                        else
+                        {
+                            // Check if property types differ (potential covariance)
+                            // In TypeScript, properties are invariant, not covariant
+                            // So even if CLR allows covariant return types, TS does not
+                            var classPropertyType = GetPropertyTypeString(matchingProperty);
+                            var ifacePropertyType = GetPropertyTypeString(requiredProperty);
+
+                            if (classPropertyType != ifacePropertyType)
+                            {
+                                // This is a property covariance issue
+                                covarianceIssues.Add($"  Property {requiredProperty.ClrName} ({ifacePropertyType} → {classPropertyType})");
+                            }
+                        }
+                    }
+                }
+
+                // Emit aggregated covariance summary (one per type, not one per property)
+                if (covarianceIssues.Count > 0)
+                {
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.CovarianceSummary,
+                        "INFO",
+                        $"{type.ClrFullName} has {covarianceIssues.Count} property covariance issues (TS doesn't support property covariance)");
                 }
 
                 if (conformanceIssues.Count > 0)
@@ -380,8 +531,10 @@ public static class PhaseGate
                     validationCtx.InterfaceConformanceIssuesByType[type.ClrFullName] = conformanceIssues;
 
                     // Emit one-line summary to console
-                    validationCtx.WarningCount++;
-                    validationCtx.Diagnostics.Add($"WARNING: {type.ClrFullName} has {conformanceIssues.Count} interface conformance issues (see diagnostics file)");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.StructuralConformanceFailure,
+                        "WARNING",
+                        $"{type.ClrFullName} has {conformanceIssues.Count} interface conformance issues (see diagnostics file)");
                 }
 
                 typesChecked++;
@@ -412,8 +565,10 @@ public static class PhaseGate
                 // Check that base class is actually a class
                 if (baseClass.Kind != TypeKind.Class)
                 {
-                    validationCtx.ErrorCount++;
-                    validationCtx.Diagnostics.Add($"ERROR: {type.ClrFullName} inherits from non-class {baseClass.ClrFullName}");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.CircularInheritance,
+                        "ERROR",
+                        $"{type.ClrFullName} inherits from non-class {baseClass.ClrFullName}");
                 }
 
                 inheritanceChecked++;
@@ -464,10 +619,12 @@ public static class PhaseGate
         var circularDeps = DetectCircularDependencies(imports);
         if (circularDeps.Count > 0)
         {
-            validationCtx.WarningCount += circularDeps.Count;
             foreach (var cycle in circularDeps)
             {
-                validationCtx.Diagnostics.Add($"WARNING: Circular dependency detected: {cycle}");
+                validationCtx.RecordDiagnostic(
+                    Core.Diagnostics.DiagnosticCodes.CircularInheritance,
+                    "WARNING",
+                    $"Circular dependency detected: {cycle}");
             }
         }
 
@@ -538,6 +695,33 @@ public static class PhaseGate
             Model.Types.PointerTypeReference => false,
             Model.Types.ByRefTypeReference => false,
             _ => true
+        };
+    }
+
+    private static string GetPropertyTypeString(Model.Symbols.MemberSymbols.PropertySymbol property)
+    {
+        // Get a string representation of the property type for comparison
+        // This is a simple comparison - if types have the same full name, they're considered the same
+        return GetTypeFullName(property.PropertyType);
+    }
+
+    private static string GetDiagnosticDescription(string code)
+    {
+        return code switch
+        {
+            Core.Diagnostics.DiagnosticCodes.ValidationFailed => "Validation failed",
+            Core.Diagnostics.DiagnosticCodes.DuplicateMember => "Duplicate members",
+            Core.Diagnostics.DiagnosticCodes.AmbiguousOverload => "Ambiguous overloads",
+            Core.Diagnostics.DiagnosticCodes.ReservedWordUnsanitized => "Reserved words not sanitized",
+            Core.Diagnostics.DiagnosticCodes.CovarianceSummary => "Property covariance (TS limitation)",
+            Core.Diagnostics.DiagnosticCodes.StructuralConformanceFailure => "Interface conformance failures",
+            Core.Diagnostics.DiagnosticCodes.CircularInheritance => "Circular inheritance/dependencies",
+            Core.Diagnostics.DiagnosticCodes.ViewCoverageMismatch => "ViewOnly member coverage issues",
+            Core.Diagnostics.DiagnosticCodes.IndexerConflict => "Indexer conflicts",
+            Core.Diagnostics.DiagnosticCodes.InterfaceNotFound => "External interface references",
+            Core.Diagnostics.DiagnosticCodes.NameConflictUnresolved => "Name conflicts",
+            Core.Diagnostics.DiagnosticCodes.UnrepresentableConstraint => "Unrepresentable constraints",
+            _ => "Unknown diagnostic"
         };
     }
 
@@ -694,9 +878,10 @@ public static class PhaseGate
                 {
                     if (property.IsIndexer)
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: Indexer property {property.ClrName} in {type.ClrFullName} must not be ViewOnly (should be converted to methods or kept as property)");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.IndexerConflict,
+                            "ERROR",
+                            $"Indexer property {property.ClrName} in {type.ClrFullName} must not be ViewOnly (should be converted to methods or kept as property)");
                     }
                 }
 
@@ -719,9 +904,10 @@ public static class PhaseGate
                     }
 
                     // For regular classes/structs, ViewOnly members without views is an error
-                    validationCtx.ErrorCount++;
-                    validationCtx.Diagnostics.Add(
-                        $"ERROR: Type {type.ClrFullName} has {viewOnlyMethods.Count + viewOnlyProperties.Count} ViewOnly members but no explicit views planned");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.ViewCoverageMismatch,
+                        "ERROR",
+                        $"Type {type.ClrFullName} has {viewOnlyMethods.Count + viewOnlyProperties.Count} ViewOnly members but no explicit views planned");
                     orphanedViewOnlyMembers += viewOnlyMethods.Count + viewOnlyProperties.Count;
                     continue;
                 }
@@ -738,9 +924,10 @@ public static class PhaseGate
 
                     if (matchingView == null)
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: ViewOnly method {method.ClrName} in {type.ClrFullName} does not appear in any explicit view");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ViewCoverageMismatch,
+                            "ERROR",
+                            $"ViewOnly method {method.ClrName} in {type.ClrFullName} does not appear in any explicit view");
                         orphanedViewOnlyMembers++;
                         continue;
                     }
@@ -752,9 +939,10 @@ public static class PhaseGate
                         var sourceIfaceName = GetTypeFullName(method.SourceInterface);
                         if (viewIfaceName != sourceIfaceName)
                         {
-                            validationCtx.ErrorCount++;
-                            validationCtx.Diagnostics.Add(
-                                $"ERROR: ViewOnly method {method.ClrName} in {type.ClrFullName} has SourceInterface {sourceIfaceName} but appears in view for {viewIfaceName}");
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.ViewCoverageMismatch,
+                                "ERROR",
+                                $"ViewOnly method {method.ClrName} in {type.ClrFullName} has SourceInterface {sourceIfaceName} but appears in view for {viewIfaceName}");
                             orphanedViewOnlyMembers++;
                         }
                     }
@@ -769,9 +957,10 @@ public static class PhaseGate
 
                     if (matchingView == null)
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: ViewOnly property {property.ClrName} in {type.ClrFullName} does not appear in any explicit view");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ViewCoverageMismatch,
+                            "ERROR",
+                            $"ViewOnly property {property.ClrName} in {type.ClrFullName} does not appear in any explicit view");
                         orphanedViewOnlyMembers++;
                         continue;
                     }
@@ -783,9 +972,10 @@ public static class PhaseGate
                         var sourceIfaceName = GetTypeFullName(property.SourceInterface);
                         if (viewIfaceName != sourceIfaceName)
                         {
-                            validationCtx.ErrorCount++;
-                            validationCtx.Diagnostics.Add(
-                                $"ERROR: ViewOnly property {property.ClrName} in {type.ClrFullName} has SourceInterface {sourceIfaceName} but appears in view for {viewIfaceName}");
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.ViewCoverageMismatch,
+                                "ERROR",
+                                $"ViewOnly property {property.ClrName} in {type.ClrFullName} has SourceInterface {sourceIfaceName} but appears in view for {viewIfaceName}");
                             orphanedViewOnlyMembers++;
                         }
                     }
@@ -800,9 +990,10 @@ public static class PhaseGate
                     {
                         // Interface not in graph - it should be external and importable
                         // This is a warning, not an error (external interfaces are expected)
-                        validationCtx.WarningCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"WARNING: View {view.ViewPropertyName} in {type.ClrFullName} references external interface (should be imported)");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.InterfaceNotFound,
+                            "WARNING",
+                            $"View {view.ViewPropertyName} in {type.ClrFullName} references external interface (should be imported)");
                     }
                 }
             }
@@ -851,18 +1042,20 @@ public static class PhaseGate
 
                 if (string.IsNullOrWhiteSpace(finalName))
                 {
-                    validationCtx.ErrorCount++;
-                    validationCtx.Diagnostics.Add(
-                        $"ERROR: Type {type.ClrFullName} has no final name from Renamer");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                        "ERROR",
+                        $"Type {type.ClrFullName} has no final name from Renamer");
                     continue;
                 }
 
                 // Check for duplicates within namespace
                 if (!typeNamesInNamespace.Add(finalName))
                 {
-                    validationCtx.ErrorCount++;
-                    validationCtx.Diagnostics.Add(
-                        $"ERROR: Duplicate final type name '{finalName}' in namespace {ns.Name}");
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.DuplicateMember,
+                        "ERROR",
+                        $"Duplicate final type name '{finalName}' in namespace {ns.Name}");
                     duplicateTypes++;
                 }
             }
@@ -892,9 +1085,10 @@ public static class PhaseGate
 
                     if (string.IsNullOrWhiteSpace(finalName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: Method {method.ClrName} in {type.ClrFullName} has no final name from Renamer");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Method {method.ClrName} in {type.ClrFullName} has no final name from Renamer");
                         continue;
                     }
 
@@ -908,9 +1102,10 @@ public static class PhaseGate
                     if (!scopeSet.Add(signature))
                     {
                         // This is a warning, not an error (overloads are allowed)
-                        validationCtx.WarningCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"WARNING: Duplicate {scopeName} method signature '{signature}' in {type.ClrFullName} (on class surface)");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.AmbiguousOverload,
+                            "WARNING",
+                            $"Duplicate {scopeName} method signature '{signature}' in {type.ClrFullName} (on class surface)");
                     }
                 }
 
@@ -923,9 +1118,10 @@ public static class PhaseGate
 
                     if (string.IsNullOrWhiteSpace(finalName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: Property {property.ClrName} in {type.ClrFullName} has no final name from Renamer");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Property {property.ClrName} in {type.ClrFullName} has no final name from Renamer");
                         continue;
                     }
 
@@ -935,9 +1131,10 @@ public static class PhaseGate
 
                     if (!scopeSet.Add(finalName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: Duplicate {scopeName} property name '{finalName}' in {type.ClrFullName} (on class surface)");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.DuplicateMember,
+                            "ERROR",
+                            $"Duplicate {scopeName} property name '{finalName}' in {type.ClrFullName} (on class surface)");
                         duplicateMembers++;
                     }
                 }
@@ -951,9 +1148,10 @@ public static class PhaseGate
 
                     if (string.IsNullOrWhiteSpace(finalName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: Field {field.ClrName} in {type.ClrFullName} has no final name from Renamer");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.ValidationFailed,
+                            "ERROR",
+                            $"Field {field.ClrName} in {type.ClrFullName} has no final name from Renamer");
                         continue;
                     }
 
@@ -963,9 +1161,10 @@ public static class PhaseGate
 
                     if (!scopeSet.Add(finalName))
                     {
-                        validationCtx.ErrorCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"ERROR: Duplicate {scopeName} field name '{finalName}' in {type.ClrFullName} (on class surface)");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.DuplicateMember,
+                            "ERROR",
+                            $"Duplicate {scopeName} field name '{finalName}' in {type.ClrFullName} (on class surface)");
                         duplicateMembers++;
                     }
                 }
@@ -1018,9 +1217,10 @@ public static class PhaseGate
                         // Check for alias collisions
                         if (!aliasesInScope.Add(typeImport.Alias))
                         {
-                            validationCtx.ErrorCount++;
-                            validationCtx.Diagnostics.Add(
-                                $"ERROR: Import alias '{typeImport.Alias}' collides in namespace {ns}");
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.NameConflictUnresolved,
+                                "ERROR",
+                                $"Import alias '{typeImport.Alias}' collides in namespace {ns}");
                             aliasCollisions++;
                         }
                     }
@@ -1028,9 +1228,10 @@ public static class PhaseGate
                     // Check that imported type names don't collide with each other
                     if (!typeNamesInScope.Add(effectiveName))
                     {
-                        validationCtx.WarningCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"WARNING: Imported type name '{effectiveName}' appears multiple times in namespace {ns}");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.NameConflictUnresolved,
+                            "WARNING",
+                            $"Imported type name '{effectiveName}' appears multiple times in namespace {ns}");
                     }
                 }
             }
@@ -1045,9 +1246,10 @@ public static class PhaseGate
 
                     if (typeNamesInScope.Contains(localTypeName))
                     {
-                        validationCtx.WarningCount++;
-                        validationCtx.Diagnostics.Add(
-                            $"WARNING: Imported type name '{localTypeName}' in namespace {ns} collides with local type {localType.ClrFullName}");
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.NameConflictUnresolved,
+                            "WARNING",
+                            $"Imported type name '{localTypeName}' in namespace {ns} collides with local type {localType.ClrFullName}");
                     }
                 }
             }
@@ -1069,11 +1271,45 @@ internal sealed class ValidationContext
 {
     public int ErrorCount { get; set; }
     public int WarningCount { get; set; }
+    public int InfoCount { get; set; }
     public List<string> Diagnostics { get; set; } = new();
+
+    // Track diagnostic counts by code (e.g., TBG120, TBG211, etc.)
+    public Dictionary<string, int> DiagnosticCountsByCode { get; set; } = new();
 
     // Step 1: Track sanitized names (reserved words that were properly escaped)
     public int SanitizedNameCount { get; set; }
 
     // Step 3: Aggregate interface conformance issues by type (for one-line summaries)
     public Dictionary<string, List<string>> InterfaceConformanceIssuesByType { get; set; } = new();
+
+    /// <summary>
+    /// Record a diagnostic with its code for tracking.
+    /// </summary>
+    public void RecordDiagnostic(string code, string severity, string message)
+    {
+        // Track count by code
+        if (!DiagnosticCountsByCode.ContainsKey(code))
+        {
+            DiagnosticCountsByCode[code] = 0;
+        }
+        DiagnosticCountsByCode[code]++;
+
+        // Update severity counters
+        switch (severity.ToUpperInvariant())
+        {
+            case "ERROR":
+                ErrorCount++;
+                break;
+            case "WARNING":
+                WarningCount++;
+                break;
+            case "INFO":
+                InfoCount++;
+                break;
+        }
+
+        // Add to diagnostics list
+        Diagnostics.Add($"{severity.ToUpperInvariant()}: [{code}] {message}");
+    }
 }

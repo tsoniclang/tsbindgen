@@ -151,18 +151,31 @@ public static class InterfaceInliner
 
         foreach (var prop in properties)
         {
-            // For indexers, include parameters in signature
+            // TypeScript doesn't support property overloads, so deduplicate by name only
+            // (not by full signature including type)
+            // For indexers, include parameters to distinguish different indexer overloads
             var indexParams = prop.IndexParameters.Select(p => GetTypeFullName(p.Type)).ToList();
 
-            var sig = ctx.CanonicalizeProperty(
-                prop.ClrName,
-                indexParams,
-                GetTypeFullName(prop.PropertyType));
-
-            if (!seen.ContainsKey(sig))
+            string key;
+            if (prop.IsIndexer)
             {
-                seen[sig] = prop;
+                // Indexers: use full signature (name + params + type)
+                key = ctx.CanonicalizeProperty(
+                    prop.ClrName,
+                    indexParams,
+                    GetTypeFullName(prop.PropertyType));
             }
+            else
+            {
+                // Regular properties: use name only (TypeScript doesn't allow property overloads)
+                key = prop.ClrName;
+            }
+
+            if (!seen.ContainsKey(key))
+            {
+                seen[key] = prop;
+            }
+            // If duplicate, keep the first one (most derived/specific)
         }
 
         return seen.Values.ToList();

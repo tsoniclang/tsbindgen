@@ -10,11 +10,12 @@
  * 5. Reports error breakdown by category
  *
  * Usage:
- *   node scripts/validate-new.js           # Full validation
- *   node scripts/validate-new.js --skip-tsc # Skip TypeScript compilation
+ *   node scripts/validate-new.js              # Full validation
+ *   node scripts/validate-new.js --skip-tsc   # Skip TypeScript compilation
+ *   node scripts/validate-new.js --verbose    # Enable verbose logging from tsbindgen
  */
 
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -47,33 +48,71 @@ function cleanValidationDir() {
     fs.mkdirSync(VALIDATION_DIR, { recursive: true });
 }
 
-function generateTypes() {
-    log('Generating TypeScript declarations using Single-Phase Architecture...');
-    log(`  Source: ${DOTNET_RUNTIME_PATH}`);
-    log(`  Output: ${VALIDATION_DIR}`);
-    log(`  Pipeline: Single-Phase Architecture (--use-new-pipeline)`);
-    log('');
-
-    const projectPath = path.join(PROJECT_ROOT, 'src', 'tsbindgen', 'tsbindgen.csproj');
-
-    try {
-        const output = execSync(
-            `dotnet run --project "${projectPath}" -- generate -d "${DOTNET_RUNTIME_PATH}" -o "${VALIDATION_DIR}" --use-new-pipeline --verbose`,
-            {
-                stdio: 'pipe',
-                encoding: 'utf-8',
-                maxBuffer: 50 * 1024 * 1024 // 50MB buffer for verbose output
-            }
-        );
-
-        console.log(output);
-        log('✓ Type generation completed');
+function generateTypes(verbose = false) {
+    return new Promise((resolve, reject) => {
+        log('Generating TypeScript declarations using Single-Phase Architecture...');
+        log(`  Source: ${DOTNET_RUNTIME_PATH}`);
+        log(`  Output: ${VALIDATION_DIR}`);
+        log(`  Pipeline: Single-Phase Architecture (--use-new-pipeline)`);
+        if (verbose) {
+            log(`  Verbose: enabled`);
+        }
         log('');
-    } catch (err) {
-        error('Failed to generate types');
-        console.error(err.stderr || err.stdout || err.message);
-        throw new Error('Type generation failed');
-    }
+
+        const projectPath = path.join(PROJECT_ROOT, 'src', 'tsbindgen', 'tsbindgen.csproj');
+
+        // Build arguments array
+        const args = [
+            'run',
+            '--project', projectPath,
+            '--',
+            'generate',
+            '-d', DOTNET_RUNTIME_PATH,
+            '-o', VALIDATION_DIR,
+            '--use-new-pipeline'
+        ];
+
+        // Add --verbose only if requested
+        if (verbose) {
+            args.push('--verbose');
+        }
+
+        // Use spawn for streaming output (no buffering, no shell)
+        const child = spawn('dotnet', args, {
+            stdio: ['inherit', 'pipe', 'pipe'], // stdin=inherit, stdout=pipe, stderr=pipe
+            shell: false // Direct execution, no shell wrapper
+        });
+
+        // Stream stdout in real-time
+        child.stdout.on('data', (data) => {
+            process.stdout.write(data);
+        });
+
+        // Stream stderr in real-time
+        child.stderr.on('data', (data) => {
+            process.stderr.write(data);
+        });
+
+        // Handle process completion
+        child.on('close', (code) => {
+            if (code === 0) {
+                log('');
+                log('✓ Type generation completed');
+                log('');
+                resolve();
+            } else {
+                error(`Type generation failed with exit code ${code}`);
+                reject(new Error('Type generation failed'));
+            }
+        });
+
+        // Handle process errors
+        child.on('error', (err) => {
+            error('Failed to spawn dotnet process');
+            console.error(err);
+            reject(err);
+        });
+    });
 }
 
 function createTsConfig() {
@@ -214,8 +253,9 @@ async function main() {
     console.log('================================================================');
     console.log('');
 
-    // Check for --skip-tsc flag
+    // Check for command-line flags
     const skipTsc = process.argv.includes('--skip-tsc');
+    const verbose = process.argv.includes('--verbose');
 
     try {
         // Step 1: Clean and prepare
@@ -224,8 +264,8 @@ async function main() {
         // Step 2: Create tsconfig (before generation so it exists even if generation fails)
         createTsConfig();
 
-        // Step 3: Generate all types using new pipeline
-        generateTypes();
+        // Step 3: Generate all types using new pipeline (streaming, no buffer)
+        await generateTypes(verbose);
 
         // Step 4: Validate metadata files
         validateMetadataFiles();

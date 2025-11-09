@@ -52,6 +52,11 @@ public static class FinalIndexersPass
                 // Convert all indexers to methods + remove all indexer properties
                 ctx.Log("FinalIndexersPass", $"Converting {indexers.Length} indexers to methods in {type.ClrFullName}");
 
+                // Emit INFO diagnostic for intentional indexer omission (noise reduction)
+                ctx.Diagnostics.Info(
+                    Core.Diagnostics.DiagnosticCodes.IndexerConflict,
+                    $"Omitted {indexers.Length} indexer properties from {type.ClrFullName} (converted to methods)");
+
                 var methods = indexers
                     .SelectMany(idx => ToIndexerMethods(ctx, type, idx, policy.MethodName))
                     .ToImmutableArray();

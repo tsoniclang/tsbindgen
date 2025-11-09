@@ -14,6 +14,11 @@ public static class DiagnosticCodes
     public const string NameConflictUnresolved = "TBG100";
     public const string AmbiguousOverload = "TBG101";
     public const string DuplicateMember = "TBG102";
+    public const string ReservedWordUnsanitized = "TBG120"; // Reserved word not sanitized
+
+    // Overload unification
+    public const string OverloadUnified = "TBG211"; // Info-only, counted
+    public const string OverloadUnresolvable = "TBG212"; // Warning
 
     // Interface/inheritance issues
     public const string DiamondInheritanceDetected = "TBG200";
@@ -27,6 +32,7 @@ public static class DiagnosticCodes
     public const string PropertyCovarianceUnsupported = "TBG300";
     public const string StaticSideVariance = "TBG301";
     public const string IndexerConflict = "TBG302";
+    public const string CovarianceSummary = "TBG310"; // Info-only summary per type
 
     // Policy violations
     public const string PolicyViolation = "TBG400";
@@ -35,10 +41,12 @@ public static class DiagnosticCodes
     public const string IncompatibleConstraints = "TBG403";
     public const string UnrepresentableConstraint = "TBG404";
     public const string ValidationFailed = "TBG405";
+    public const string ConstraintNarrowing = "TBG410"; // Warning when constraints are narrowed
 
     // Renaming issues
     public const string RenameConflict = "TBG500";
     public const string ExplicitOverrideNotApplied = "TBG501";
+    public const string ViewCoverageMismatch = "TBG510"; // Error: view planning mismatch
 
     // Metadata issues
     public const string MissingMetadataToken = "TBG600";
