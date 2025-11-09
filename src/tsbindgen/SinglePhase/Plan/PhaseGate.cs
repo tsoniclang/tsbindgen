@@ -63,6 +63,9 @@ public static class PhaseGate
         // PhaseGate Hardening - M5: EmitScope invariants (PG_INT_002, PG_INT_003)
         ValidateEmitScopeInvariants(ctx, graph, validationContext);
 
+        // PhaseGate Hardening - M5: Scope mismatches (PG_SCOPE_003, PG_SCOPE_004) - Step 6
+        ValidateScopeMismatches(ctx, graph, validationContext);
+
         // PhaseGate Hardening - M5: Class surface uniqueness (PG_NAME_005)
         ValidateClassSurfaceUniqueness(ctx, graph, validationContext);
 
@@ -753,6 +756,14 @@ public static class PhaseGate
             Core.Diagnostics.DiagnosticCodes.PG_CT_001 => "Non-benign constraint loss",
             Core.Diagnostics.DiagnosticCodes.PG_CT_002 => "Constructor constraint loss (override)",
             Core.Diagnostics.DiagnosticCodes.PG_IFC_001 => "Interface method not assignable (erased)",
+            Core.Diagnostics.DiagnosticCodes.PG_NAME_003 => "View member collision within view scope",
+            Core.Diagnostics.DiagnosticCodes.PG_NAME_004 => "View member name shadows class surface",
+            Core.Diagnostics.DiagnosticCodes.PG_NAME_005 => "Duplicate property name on class surface",
+            Core.Diagnostics.DiagnosticCodes.PG_INT_002 => "Member in both ClassSurface and ViewOnly",
+            Core.Diagnostics.DiagnosticCodes.PG_INT_003 => "ClassSurface member has SourceInterface",
+            Core.Diagnostics.DiagnosticCodes.PG_FIN_003 => "Member missing final name after reservation",
+            Core.Diagnostics.DiagnosticCodes.PG_SCOPE_003 => "Empty/malformed scope key",
+            Core.Diagnostics.DiagnosticCodes.PG_SCOPE_004 => "Scope kind doesn't match EmitScope",
             _ => "Unknown diagnostic"
         };
     }
@@ -2302,6 +2313,162 @@ public static class PhaseGate
         }
 
         ctx.Log("[PG]", $"M5: EmitScope invariants - {dualScopeErrors} dual-scope errors, {sourceInterfaceErrors} SourceInterface errors");
+    }
+
+    /// <summary>
+    /// Step 6: Validate scope mismatches.
+    /// PG_SCOPE_003: Detects empty/malformed scope keys.
+    /// PG_SCOPE_004: Detects class/view scope kind doesn't match EmitScope.
+    /// </summary>
+    private static void ValidateScopeMismatches(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M5: Validating scope mismatches (Step 6)...");
+
+        int malformedScopeErrors = 0;
+        int scopeEmitMismatchErrors = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                // Check all ClassSurface members - verify they can be looked up with class scope
+                foreach (var method in type.Members.Methods.Where(m => m.EmitScope == EmitScope.ClassSurface))
+                {
+                    var scope = ScopeFactory.ClassSurface(type, method.IsStatic);
+
+                    // PG_SCOPE_003: Check for malformed scope key
+                    if (string.IsNullOrWhiteSpace(scope.ScopeKey) ||
+                        !scope.ScopeKey.StartsWith("type:", StringComparison.Ordinal))
+                    {
+                        malformedScopeErrors++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_SCOPE_003,
+                            "ERROR",
+                            $"Malformed scope key for ClassSurface member\n" +
+                            $"  type:     {type.ClrFullName}\n" +
+                            $"  member:   {method.ClrName}\n" +
+                            $"  scope:    {scope.ScopeKey}\n" +
+                            $"  expected: type:...");
+                    }
+
+                    // Verify decision exists (should have been caught by post-reservation audit)
+                    if (!ctx.Renamer.TryGetDecision(method.StableId, scope, out _))
+                    {
+                        // This should have been caught by post-reservation audit in NameReservation
+                        // If we get here, it means the audit has a gap
+                        scopeEmitMismatchErrors++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_SCOPE_004,
+                            "ERROR",
+                            $"ClassSurface method missing decision in class scope\n" +
+                            $"  type:       {type.ClrFullName}\n" +
+                            $"  method:     {method.ClrName}\n" +
+                            $"  EmitScope:  {method.EmitScope}\n" +
+                            $"  scope:      {scope.ScopeKey}\n" +
+                            $"  reason:     Class-surface members must have decisions in class scope");
+                    }
+                }
+
+                // Check similar for properties, fields, events
+                foreach (var property in type.Members.Properties.Where(p => p.EmitScope == EmitScope.ClassSurface))
+                {
+                    var scope = ScopeFactory.ClassSurface(type, property.IsStatic);
+                    if (string.IsNullOrWhiteSpace(scope.ScopeKey) ||
+                        !scope.ScopeKey.StartsWith("type:", StringComparison.Ordinal))
+                    {
+                        malformedScopeErrors++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_SCOPE_003,
+                            "ERROR",
+                            $"Malformed scope key for ClassSurface property\n" +
+                            $"  type:     {type.ClrFullName}\n" +
+                            $"  property: {property.ClrName}\n" +
+                            $"  scope:    {scope.ScopeKey}");
+                    }
+                }
+
+                // Check ViewOnly members - verify they can be looked up with view scope
+                foreach (var view in type.ExplicitViews)
+                {
+                    var interfaceStableId = ScopeFactory.GetInterfaceStableId(view.InterfaceReference);
+
+                    foreach (var viewMember in view.ViewMembers)
+                    {
+                        // Find the actual member to check EmitScope and isStatic
+                        bool isViewOnly = false;
+                        bool isStatic = false;
+
+                        switch (viewMember.Kind)
+                        {
+                            case Shape.ViewPlanner.ViewMemberKind.Method:
+                                var method = type.Members.Methods.FirstOrDefault(m => m.StableId.Equals(viewMember.StableId));
+                                if (method != null)
+                                {
+                                    isViewOnly = method.EmitScope == EmitScope.ViewOnly;
+                                    isStatic = method.IsStatic;
+                                }
+                                break;
+                            case Shape.ViewPlanner.ViewMemberKind.Property:
+                                var property = type.Members.Properties.FirstOrDefault(p => p.StableId.Equals(viewMember.StableId));
+                                if (property != null)
+                                {
+                                    isViewOnly = property.EmitScope == EmitScope.ViewOnly;
+                                    isStatic = property.IsStatic;
+                                }
+                                break;
+                            case Shape.ViewPlanner.ViewMemberKind.Event:
+                                var ev = type.Members.Events.FirstOrDefault(e => e.StableId.Equals(viewMember.StableId));
+                                if (ev != null)
+                                {
+                                    isViewOnly = ev.EmitScope == EmitScope.ViewOnly;
+                                    isStatic = ev.IsStatic;
+                                }
+                                break;
+                        }
+
+                        // Only check ViewOnly members
+                        if (!isViewOnly)
+                            continue;
+
+                        var scope = ScopeFactory.ViewSurface(type, interfaceStableId, isStatic);
+
+                        // PG_SCOPE_003: Check for malformed scope key
+                        if (string.IsNullOrWhiteSpace(scope.ScopeKey) ||
+                            !scope.ScopeKey.StartsWith("view:", StringComparison.Ordinal))
+                        {
+                            malformedScopeErrors++;
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.PG_SCOPE_003,
+                                "ERROR",
+                                $"Malformed scope key for ViewOnly member\n" +
+                                $"  type:      {type.ClrFullName}\n" +
+                                $"  member:    {viewMember.ClrName}\n" +
+                                $"  view:      {view.ViewPropertyName}\n" +
+                                $"  scope:     {scope.ScopeKey}\n" +
+                                $"  expected:  view:...");
+                        }
+
+                        // PG_SCOPE_004: Verify view member has decision in view scope (not class scope)
+                        if (!ctx.Renamer.TryGetDecision(viewMember.StableId, scope, out _))
+                        {
+                            scopeEmitMismatchErrors++;
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.PG_SCOPE_004,
+                                "ERROR",
+                                $"ViewOnly member missing decision in view scope\n" +
+                                $"  type:       {type.ClrFullName}\n" +
+                                $"  member:     {viewMember.ClrName}\n" +
+                                $"  view:       {view.ViewPropertyName}\n" +
+                                $"  EmitScope:  ViewOnly\n" +
+                                $"  scope:      {scope.ScopeKey}\n" +
+                                $"  reason:     View-only members must have decisions in view scope");
+                        }
+                    }
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M5: Scope mismatches - {malformedScopeErrors} malformed scope errors, {scopeEmitMismatchErrors} scope/EmitScope mismatch errors");
     }
 
     /// <summary>

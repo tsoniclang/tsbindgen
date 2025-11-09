@@ -78,4 +78,11 @@ public static class DiagnosticCodes
     // PhaseGate hardening - EmitScope integrity
     public const string PG_INT_002 = "PG_INT_002"; // Member appears in both ClassSurface and ViewOnly
     public const string PG_INT_003 = "PG_INT_003"; // ClassSurface member has SourceInterface set
+
+    // PhaseGate hardening - Final name completeness (Step 5)
+    public const string PG_FIN_003 = "PG_FIN_003"; // Member missing final name in scope after reservation
+
+    // PhaseGate hardening - Scope validation (Step 6)
+    public const string PG_SCOPE_003 = "PG_SCOPE_003"; // Empty/malformed scope key
+    public const string PG_SCOPE_004 = "PG_SCOPE_004"; // Scope kind doesn't match EmitScope
 }
