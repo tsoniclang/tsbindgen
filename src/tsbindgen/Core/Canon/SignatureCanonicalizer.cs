@@ -13,7 +13,9 @@ public static class SignatureCanonicalizer
 {
     /// <summary>
     /// Create a canonical signature for a method.
-    /// Format: "MethodName(param1Type,param2Type,...):ReturnType"
+    /// Format: "(param1Type,param2Type,...):ReturnType"
+    /// NOTE: Method name is NOT included here - it's stored separately in MemberStableId.MemberName
+    /// and concatenated in MemberStableId.ToString()
     /// </summary>
     public static string CanonicalizeMethod(
         string methodName,
@@ -21,7 +23,8 @@ public static class SignatureCanonicalizer
         string returnType)
     {
         var sb = new StringBuilder();
-        sb.Append(methodName);
+        // BUG FIX: Do NOT append methodName here - it's already in MemberStableId.MemberName
+        // Previous code: sb.Append(methodName); caused "AddNewAddNew" duplication
         sb.Append('(');
 
         for (int i = 0; i < parameterTypes.Count; i++)
@@ -39,8 +42,8 @@ public static class SignatureCanonicalizer
 
     /// <summary>
     /// Create a canonical signature for a property.
-    /// Format: "PropertyName[param1Type,param2Type,...]:PropertyType"
-    /// For non-indexer properties, parameters are empty.
+    /// Format: "[param1Type,param2Type,...]:PropertyType" (for indexers) or ":PropertyType" (for regular properties)
+    /// NOTE: Property name is NOT included here - it's stored separately in MemberStableId.MemberName
     /// </summary>
     public static string CanonicalizeProperty(
         string propertyName,
@@ -48,7 +51,7 @@ public static class SignatureCanonicalizer
         string propertyType)
     {
         var sb = new StringBuilder();
-        sb.Append(propertyName);
+        // BUG FIX: Do NOT append propertyName here - it's already in MemberStableId.MemberName
 
         if (indexParameterTypes.Count > 0)
         {
@@ -69,20 +72,24 @@ public static class SignatureCanonicalizer
 
     /// <summary>
     /// Create a canonical signature for a field.
-    /// Format: "FieldName:FieldType"
+    /// Format: ":FieldType"
+    /// NOTE: Field name is NOT included here - it's stored separately in MemberStableId.MemberName
     /// </summary>
     public static string CanonicalizeField(string fieldName, string fieldType)
     {
-        return $"{fieldName}:{NormalizeTypeName(fieldType)}";
+        // BUG FIX: Do NOT include fieldName here - it's already in MemberStableId.MemberName
+        return $":{NormalizeTypeName(fieldType)}";
     }
 
     /// <summary>
     /// Create a canonical signature for an event.
-    /// Format: "EventName:DelegateType"
+    /// Format: ":DelegateType"
+    /// NOTE: Event name is NOT included here - it's stored separately in MemberStableId.MemberName
     /// </summary>
     public static string CanonicalizeEvent(string eventName, string delegateType)
     {
-        return $"{eventName}:{NormalizeTypeName(delegateType)}";
+        // BUG FIX: Do NOT include eventName here - it's already in MemberStableId.MemberName
+        return $":{NormalizeTypeName(delegateType)}";
     }
 
     /// <summary>
@@ -109,15 +116,19 @@ public static class SignatureCanonicalizer
     /// <summary>
     /// Extract method signature from a canonical signature.
     /// Useful for debugging and diagnostics.
+    /// NOTE: After the AddNew bug fix, canonical signatures no longer include the method name.
+    /// Format is now: "(param1,param2):ReturnType" instead of "MethodName(param1,param2):ReturnType"
     /// </summary>
-    public static (string name, string[] parameters, string returnType) ParseMethodSignature(
+    public static (string? name, string[] parameters, string returnType) ParseMethodSignature(
         string canonicalSignature)
     {
         var parenIndex = canonicalSignature.IndexOf('(');
         var closeParenIndex = canonicalSignature.IndexOf(')');
         var colonIndex = canonicalSignature.IndexOf(':', closeParenIndex);
 
-        var name = canonicalSignature[..parenIndex];
+        // BUG FIX: Canonical signature no longer includes method name
+        // Return null for name since it's not in the signature anymore
+        var name = parenIndex > 0 ? canonicalSignature[..parenIndex] : null;
         var paramsStr = canonicalSignature[(parenIndex + 1)..closeParenIndex];
         var returnType = canonicalSignature[(colonIndex + 1)..];
 
