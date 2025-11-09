@@ -53,7 +53,7 @@ function generateTypes(verbose = false) {
         log('Generating TypeScript declarations using Single-Phase Architecture...');
         log(`  Source: ${DOTNET_RUNTIME_PATH}`);
         log(`  Output: ${VALIDATION_DIR}`);
-        log(`  Pipeline: Single-Phase Architecture (--use-new-pipeline)`);
+        log(`  Pipeline: Single-Phase Architecture (default)`);
         if (verbose) {
             log(`  Verbose: enabled`);
         }
@@ -68,8 +68,7 @@ function generateTypes(verbose = false) {
             '--',
             'generate',
             '-d', DOTNET_RUNTIME_PATH,
-            '-o', VALIDATION_DIR,
-            '--use-new-pipeline'
+            '-o', VALIDATION_DIR
         ];
 
         // Add --verbose only if requested
