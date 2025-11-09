@@ -8,14 +8,13 @@ using tsbindgen.Snapshot;
 namespace tsbindgen.Cli;
 
 /// <summary>
-/// CLI command for generating TypeScript declarations from .NET assemblies.
-/// Defaults to Single-Phase Architecture pipeline; use --use-old-pipeline for legacy two-phase pipeline.
+/// CLI command for the two-phase pipeline: generate snapshots + views.
 /// </summary>
 public static class GenerateCommand
 {
     public static Command Create()
     {
-        var command = new Command("generate", "Generate TypeScript declarations from .NET assemblies");
+        var command = new Command("generate", "Generate TypeScript declarations from .NET assemblies (two-phase pipeline)");
 
         // Assembly input options
         var assemblyOption = new Option<string[]>(
@@ -93,13 +92,8 @@ public static class GenerateCommand
 
         var useNewPipelineOption = new Option<bool>(
             name: "--use-new-pipeline",
-            getDefaultValue: () => true,
-            description: "Use Single-Phase Architecture pipeline (default; use --use-old-pipeline to use legacy two-phase pipeline)");
-
-        var useOldPipelineOption = new Option<bool>(
-            name: "--use-old-pipeline",
             getDefaultValue: () => false,
-            description: "Use legacy two-phase pipeline instead of Single-Phase Architecture");
+            description: "Use Single-Phase Architecture pipeline (experimental)");
 
         command.AddOption(assemblyOption);
         command.AddOption(assemblyDirOption);
@@ -116,7 +110,6 @@ public static class GenerateCommand
         command.AddOption(debugSnapshotOption);
         command.AddOption(debugTypeListOption);
         command.AddOption(useNewPipelineOption);
-        command.AddOption(useOldPipelineOption);
 
         command.SetHandler(async (context) =>
         {
@@ -135,10 +128,6 @@ public static class GenerateCommand
             var debugSnapshot = context.ParseResult.GetValueForOption(debugSnapshotOption);
             var debugTypeList = context.ParseResult.GetValueForOption(debugTypeListOption);
             var useNewPipeline = context.ParseResult.GetValueForOption(useNewPipelineOption);
-            var useOldPipeline = context.ParseResult.GetValueForOption(useOldPipelineOption);
-
-            // Determine which pipeline to use: if --use-old-pipeline is specified, use old; otherwise use new (default)
-            var useSinglePhase = !useOldPipeline;
 
             await ExecuteAsync(
                 assemblies,
@@ -155,7 +144,7 @@ public static class GenerateCommand
                 logs,
                 debugSnapshot,
                 debugTypeList,
-                useSinglePhase);
+                useNewPipeline);
         });
 
         return command;
@@ -176,7 +165,7 @@ public static class GenerateCommand
         string[] logs,
         bool debugSnapshot,
         bool debugTypeList,
-        bool useSinglePhase)
+        bool useNewPipeline)
     {
         try
         {
@@ -202,9 +191,9 @@ public static class GenerateCommand
             }
 
             // Route to appropriate pipeline
-            if (useSinglePhase)
+            if (useNewPipeline)
             {
-                await ExecuteSinglePhaseAsync(
+                await ExecuteNewPipelineAsync(
                     allAssemblies,
                     outDir,
                     namespaceFilter,
@@ -446,9 +435,9 @@ public static class GenerateCommand
     }
 
     /// <summary>
-    /// Execute using Single-Phase Architecture pipeline (default).
+    /// Execute using Single-Phase Architecture pipeline (experimental).
     /// </summary>
-    private static async Task ExecuteSinglePhaseAsync(
+    private static async Task ExecuteNewPipelineAsync(
         List<string> allAssemblies,
         string outDir,
         string[] namespaceFilter,
@@ -461,7 +450,7 @@ public static class GenerateCommand
         bool verbose,
         string[] logs)
     {
-        Console.WriteLine("=== Using Single-Phase Architecture Pipeline ===");
+        Console.WriteLine("=== Using Single-Phase Architecture Pipeline (Experimental) ===");
         Console.WriteLine();
 
         // Build policy from CLI options
