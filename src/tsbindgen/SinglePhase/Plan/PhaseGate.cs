@@ -43,6 +43,9 @@ public static class PhaseGate
         ValidateFinalNames(ctx, graph, validationContext);
         ValidateAliases(ctx, graph, imports, validationContext);
 
+        // PhaseGate Hardening - M1: Identifier sanitization verification
+        ValidateIdentifiers(ctx, graph, validationContext);
+
         // Report results
         ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings, {validationContext.InfoCount} info");
         ctx.Log("PhaseGate", $"Sanitized {validationContext.SanitizedNameCount} reserved word identifiers");
@@ -721,6 +724,14 @@ public static class PhaseGate
             Core.Diagnostics.DiagnosticCodes.InterfaceNotFound => "External interface references",
             Core.Diagnostics.DiagnosticCodes.NameConflictUnresolved => "Name conflicts",
             Core.Diagnostics.DiagnosticCodes.UnrepresentableConstraint => "Unrepresentable constraints",
+            // PhaseGate Hardening diagnostics
+            Core.Diagnostics.DiagnosticCodes.PG_ID_001 => "Reserved identifier not sanitized",
+            Core.Diagnostics.DiagnosticCodes.PG_OV_001 => "Duplicate erased signature",
+            Core.Diagnostics.DiagnosticCodes.PG_VIEW_001 => "Empty view (no members)",
+            Core.Diagnostics.DiagnosticCodes.PG_VIEW_002 => "Duplicate view for same interface",
+            Core.Diagnostics.DiagnosticCodes.PG_VIEW_003 => "Invalid/unsanitized view property name",
+            Core.Diagnostics.DiagnosticCodes.PG_CT_001 => "Non-benign constraint loss",
+            Core.Diagnostics.DiagnosticCodes.PG_IFC_001 => "Interface method not assignable (erased)",
             _ => "Unknown diagnostic"
         };
     }
@@ -1260,6 +1271,167 @@ public static class PhaseGate
         if (aliasCollisions > 0)
         {
             ctx.Log("PhaseGate", $"Found {aliasCollisions} alias collisions");
+        }
+    }
+
+    /// <summary>
+    /// PhaseGate Hardening M1: Validate all identifiers are properly sanitized.
+    /// Checks that all TypeScript reserved words have been escaped with underscore suffix.
+    /// Catches every unsanitized TS reserved word before emit (types, members, parameters, view members).
+    /// </summary>
+    private static void ValidateIdentifiers(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M1: Validating identifier sanitization...");
+
+        int totalIdentifiersChecked = 0;
+        int unsanitizedCount = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            // Check namespace name
+            if (!string.IsNullOrWhiteSpace(ns.Name))
+            {
+                totalIdentifiersChecked++;
+                CheckIdentifier(ctx, validationCtx, "namespace", ns.Name, ns.Name, ns.Name, ref unsanitizedCount);
+            }
+
+            foreach (var type in ns.Types)
+            {
+                // Get the final emitted name from Renamer
+                var namespaceScope = new Core.Renaming.NamespaceScope
+                {
+                    Namespace = ns.Name,
+                    IsInternal = true,
+                    ScopeKey = ns.Name
+                };
+
+                var emittedTypeName = ctx.Renamer.GetFinalTypeName(type.StableId, namespaceScope);
+
+                // Check type name
+                totalIdentifiersChecked++;
+                CheckIdentifier(ctx, validationCtx, "type", type.ClrFullName, type.StableId.ToString(), emittedTypeName, ref unsanitizedCount);
+
+                // Check type parameters
+                foreach (var tp in type.GenericParameters)
+                {
+                    totalIdentifiersChecked++;
+                    CheckIdentifier(ctx, validationCtx, "type parameter", $"{type.ClrFullName}.{tp.Name}", type.StableId.ToString(), tp.Name, ref unsanitizedCount);
+                }
+
+                // Create type scope for member name lookups
+                var typeScope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = false, // Will be overridden per member
+                    ScopeKey = type.ClrFullName
+                };
+
+                // Check methods
+                foreach (var method in type.Members.Methods)
+                {
+                    // Skip private/internal members that won't be emitted
+                    if (method.Visibility != Visibility.Public)
+                        continue;
+
+                    var emittedMethodName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+
+                    totalIdentifiersChecked++;
+                    CheckIdentifier(ctx, validationCtx, "method", $"{type.ClrFullName}::{method.ClrName}", method.StableId.ToString(), emittedMethodName, ref unsanitizedCount);
+
+                    // Check method parameters
+                    int paramIndex = 0;
+                    foreach (var param in method.Parameters)
+                    {
+                        totalIdentifiersChecked++;
+                        CheckIdentifier(ctx, validationCtx, "parameter", $"{type.ClrFullName}::{method.ClrName}", $"{method.StableId}#param{paramIndex}", param.Name, ref unsanitizedCount);
+                        paramIndex++;
+                    }
+
+                    // Check method type parameters
+                    foreach (var tp in method.GenericParameters)
+                    {
+                        totalIdentifiersChecked++;
+                        CheckIdentifier(ctx, validationCtx, "method type parameter", $"{type.ClrFullName}::{method.ClrName}.{tp.Name}", method.StableId.ToString(), tp.Name, ref unsanitizedCount);
+                    }
+                }
+
+                // Check properties
+                foreach (var property in type.Members.Properties)
+                {
+                    if (property.Visibility != Visibility.Public)
+                        continue;
+
+                    var emittedPropertyName = ctx.Renamer.GetFinalMemberName(property.StableId, typeScope, property.IsStatic);
+
+                    totalIdentifiersChecked++;
+                    CheckIdentifier(ctx, validationCtx, "property", $"{type.ClrFullName}::{property.ClrName}", property.StableId.ToString(), emittedPropertyName, ref unsanitizedCount);
+
+                    // Check indexer parameters
+                    int indexerParamIndex = 0;
+                    foreach (var param in property.IndexParameters)
+                    {
+                        totalIdentifiersChecked++;
+                        CheckIdentifier(ctx, validationCtx, "indexer parameter", $"{type.ClrFullName}::{property.ClrName}", $"{property.StableId}#param{indexerParamIndex}", param.Name, ref unsanitizedCount);
+                        indexerParamIndex++;
+                    }
+                }
+
+                // Check fields
+                foreach (var field in type.Members.Fields)
+                {
+                    if (field.Visibility != Visibility.Public)
+                        continue;
+
+                    var emittedFieldName = ctx.Renamer.GetFinalMemberName(field.StableId, typeScope, field.IsStatic);
+
+                    totalIdentifiersChecked++;
+                    CheckIdentifier(ctx, validationCtx, "field", $"{type.ClrFullName}::{field.ClrName}", field.StableId.ToString(), emittedFieldName, ref unsanitizedCount);
+                }
+
+                // Check events
+                foreach (var evt in type.Members.Events)
+                {
+                    if (evt.Visibility != Visibility.Public)
+                        continue;
+
+                    var emittedEventName = ctx.Renamer.GetFinalMemberName(evt.StableId, typeScope, evt.IsStatic);
+
+                    totalIdentifiersChecked++;
+                    CheckIdentifier(ctx, validationCtx, "event", $"{type.ClrFullName}::{evt.ClrName}", evt.StableId.ToString(), emittedEventName, ref unsanitizedCount);
+                }
+
+                // Check view members
+                foreach (var view in type.ExplicitViews)
+                {
+                    // Check view property name
+                    totalIdentifiersChecked++;
+                    CheckIdentifier(ctx, validationCtx, "view property", $"{type.ClrFullName}.{view.ViewPropertyName}", type.StableId.ToString(), view.ViewPropertyName, ref unsanitizedCount);
+
+                    // Note: ViewMembers reference existing members already checked above, no need to re-check
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M1: Checked {totalIdentifiersChecked} identifiers, found {unsanitizedCount} unsanitized reserved words");
+    }
+
+    private static void CheckIdentifier(BuildContext ctx, ValidationContext validationCtx, string symbolKind, string owner, string stableId, string emittedName, ref int unsanitizedCount)
+    {
+        if (string.IsNullOrWhiteSpace(emittedName))
+            return;
+
+        // Check if the emitted name is a TypeScript reserved word and doesn't have the trailing underscore
+        if (Core.TypeScriptReservedWords.IsReservedWord(emittedName) && !emittedName.EndsWith("_"))
+        {
+            unsanitizedCount++;
+            validationCtx.RecordDiagnostic(
+                Core.Diagnostics.DiagnosticCodes.PG_ID_001,
+                "ERROR",
+                $"Reserved identifier not sanitized\n" +
+                $"  where:   {symbolKind}\n" +
+                $"  owner:   {owner}\n" +
+                $"  stable:  {stableId}\n" +
+                $"  name:    {emittedName}  →  {emittedName}_  (expected suffix \"_\")");
         }
     }
 }

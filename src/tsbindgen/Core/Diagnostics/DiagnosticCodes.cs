@@ -51,4 +51,21 @@ public static class DiagnosticCodes
     // Metadata issues
     public const string MissingMetadataToken = "TBG600";
     public const string BindingAmbiguity = "TBG601";
+
+    // PhaseGate hardening - Identifier validation
+    public const string PG_ID_001 = "PG_ID_001"; // Reserved identifier not sanitized
+
+    // PhaseGate hardening - Overload collisions
+    public const string PG_OV_001 = "PG_OV_001"; // Duplicate erased signature in surface
+
+    // PhaseGate hardening - View integrity
+    public const string PG_VIEW_001 = "PG_VIEW_001"; // Empty view (no members)
+    public const string PG_VIEW_002 = "PG_VIEW_002"; // Duplicate view for same interface
+    public const string PG_VIEW_003 = "PG_VIEW_003"; // Invalid/unsanitized view property name
+
+    // PhaseGate hardening - Constraint mismatches
+    public const string PG_CT_001 = "PG_CT_001"; // Non-benign constraint loss
+
+    // PhaseGate hardening - Interface conformance
+    public const string PG_IFC_001 = "PG_IFC_001"; // Interface method not assignable (erased)
 }
