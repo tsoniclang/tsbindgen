@@ -1,4 +1,4 @@
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -41,11 +41,12 @@ public static class HiddenMemberPlanner
             return 0;
 
         var count = 0;
+        // M5 FIX: Use correct scope format with type: prefix
         var typeScope = new TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = false, // Will be set per member
-            ScopeKey = type.ClrFullName
+            ScopeKey = $"type:{type.ClrFullName}" // Base scope, ReserveMemberName will add #static or #instance
         };
 
         // Process methods marked with IsNew

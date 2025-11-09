@@ -1,7 +1,6 @@
 using System.Collections.Immutable;
 using System.Reflection;
-using tsbindgen.Core;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;

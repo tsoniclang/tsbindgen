@@ -47,11 +47,11 @@ public static class ClassPrinter
         var sb = new StringBuilder();
 
         // Get final TypeScript name from Renamer
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true, // We're in internal scope
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -108,11 +108,11 @@ public static class ClassPrinter
         // Structs emit as classes in TypeScript (with metadata noting value semantics)
         var sb = new StringBuilder();
 
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -153,11 +153,11 @@ public static class ClassPrinter
         // Static classes emit as abstract classes with static members in TypeScript
         var sb = new StringBuilder();
 
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -177,11 +177,11 @@ public static class ClassPrinter
     {
         var sb = new StringBuilder();
 
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -190,7 +190,7 @@ public static class ClassPrinter
         sb.AppendLine(" {");
 
         // Create type scope for enum member name resolution
-        var typeScope = new Core.Renaming.TypeScope
+        var typeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = true, // Enum members are like static fields
@@ -228,11 +228,11 @@ public static class ClassPrinter
         // Delegates emit as type aliases to function signatures
         var sb = new StringBuilder();
 
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -273,11 +273,11 @@ public static class ClassPrinter
     {
         var sb = new StringBuilder();
 
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var finalName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -314,7 +314,7 @@ public static class ClassPrinter
         var members = type.Members;
 
         // Create type scope for member name resolution
-        var typeScope = new Core.Renaming.TypeScope
+        var typeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = false, // Instance members
@@ -372,7 +372,7 @@ public static class ClassPrinter
         var members = type.Members;
 
         // Create type scope for static member name resolution
-        var staticTypeScope = new Core.Renaming.TypeScope
+        var staticTypeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = true, // Static members
@@ -430,7 +430,7 @@ public static class ClassPrinter
         var members = type.Members;
 
         // Create type scope for member name resolution (interfaces don't have static members)
-        var typeScope = new Core.Renaming.TypeScope
+        var typeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = false,

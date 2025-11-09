@@ -19,7 +19,7 @@ public static class MethodPrinter
         var sb = new StringBuilder();
 
         // Get the final TS name from Renamer
-        var typeScope = new Core.Renaming.TypeScope
+        var typeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = method.StableId.DeclaringClrFullName,
             IsStatic = method.IsStatic,
@@ -136,7 +136,7 @@ public static class MethodPrinter
         var sb = new StringBuilder();
 
         // Get final name
-        var typeScope = new Core.Renaming.TypeScope
+        var typeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = method.StableId.DeclaringClrFullName,
             IsStatic = method.IsStatic,

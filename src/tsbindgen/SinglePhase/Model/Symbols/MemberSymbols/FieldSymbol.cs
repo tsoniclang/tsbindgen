@@ -1,4 +1,4 @@
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model.Types;
 
 namespace tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;

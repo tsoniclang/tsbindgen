@@ -3,7 +3,7 @@ using tsbindgen.Core.Diagnostics;
 using tsbindgen.Core.Intern;
 using tsbindgen.Core.Naming;
 using tsbindgen.Core.Policy;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 
 namespace tsbindgen.SinglePhase;
 

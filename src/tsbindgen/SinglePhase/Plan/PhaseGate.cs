@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using tsbindgen.Core.Diagnostics;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -1058,7 +1058,7 @@ public static class PhaseGate
         {
             var typeNamesInNamespace = new HashSet<string>();
 
-            var namespaceScope = new Core.Renaming.NamespaceScope
+            var namespaceScope = new SinglePhase.Renaming.NamespaceScope
             {
                 Namespace = ns.Name,
                 IsInternal = true,
@@ -1101,7 +1101,7 @@ public static class PhaseGate
                 var instanceMemberNames = new HashSet<string>();
                 var staticMemberNames = new HashSet<string>();
 
-                var typeScope = new Core.Renaming.TypeScope
+                var typeScope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = false, // Will be overridden per member
@@ -1227,7 +1227,7 @@ public static class PhaseGate
             var aliasesInScope = new HashSet<string>();
             var typeNamesInScope = new HashSet<string>();
 
-            var namespaceScope = new Core.Renaming.NamespaceScope
+            var namespaceScope = new SinglePhase.Renaming.NamespaceScope
             {
                 Namespace = ns,
                 IsInternal = true,
@@ -1319,7 +1319,7 @@ public static class PhaseGate
             foreach (var type in ns.Types)
             {
                 // Get the final emitted name from Renamer
-                var namespaceScope = new Core.Renaming.NamespaceScope
+                var namespaceScope = new SinglePhase.Renaming.NamespaceScope
                 {
                     Namespace = ns.Name,
                     IsInternal = true,
@@ -1342,7 +1342,7 @@ public static class PhaseGate
                 }
 
                 // Create type scope for member name lookups
-                var typeScope = new Core.Renaming.TypeScope
+                var typeScope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = false, // Will be overridden per member
@@ -1519,7 +1519,7 @@ public static class PhaseGate
         {
             foreach (var type in ns.Types)
             {
-                var typeScope = new Core.Renaming.TypeScope
+                var typeScope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = false,
@@ -1567,7 +1567,7 @@ public static class PhaseGate
         BuildContext ctx,
         ValidationContext validationCtx,
         TypeSymbol type,
-        Core.Renaming.TypeScope typeScope,
+        SinglePhase.Renaming.TypeScope typeScope,
         string surfaceName,
         List<MethodSymbol> methods,
         List<PropertySymbol> properties)
@@ -2266,9 +2266,9 @@ public static class PhaseGate
             foreach (var type in ns.Types)
             {
                 // PG_INT_002: Check for members appearing in both ClassSurface and ViewOnly
-                var scopeMap = new Dictionary<Core.Renaming.MemberStableId, (bool ClassSurface, bool ViewOnly)>();
+                var scopeMap = new Dictionary<SinglePhase.Renaming.MemberStableId, (bool ClassSurface, bool ViewOnly)>();
 
-                void MarkMember(Core.Renaming.MemberStableId id, EmitScope scope)
+                void MarkMember(SinglePhase.Renaming.MemberStableId id, EmitScope scope)
                 {
                     if (!scopeMap.TryGetValue(id, out var existing))
                         existing = (false, false);
@@ -2336,7 +2336,7 @@ public static class PhaseGate
     /// <summary>
     /// Format a MemberStableId for diagnostics.
     /// </summary>
-    internal static string FormatMemberStableId(Core.Renaming.MemberStableId id)
+    internal static string FormatMemberStableId(SinglePhase.Renaming.MemberStableId id)
     {
         // Avoid duplicating member name if already in CanonicalSignature
         var sig = id.CanonicalSignature.StartsWith(id.MemberName + "(", System.StringComparison.Ordinal)

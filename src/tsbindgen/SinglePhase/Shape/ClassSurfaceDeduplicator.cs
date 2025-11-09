@@ -81,7 +81,7 @@ public static class ClassSurfaceDeduplicator
         if (groups.Count == 0)
             return (type.Members.Properties, 0);
 
-        var demotions = new HashSet<Core.Renaming.MemberStableId>();
+        var demotions = new HashSet<SinglePhase.Renaming.MemberStableId>();
         int totalDemoted = 0;
 
         foreach (var group in groups)

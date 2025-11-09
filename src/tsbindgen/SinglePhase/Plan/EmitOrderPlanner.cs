@@ -53,7 +53,7 @@ public sealed class EmitOrderPlanner
         // 3. Arity (for overloaded generic types)
 
         // Get namespace scope for name resolution (assuming all types in same namespace)
-        var nsScope = types.Count > 0 ? new Core.Renaming.NamespaceScope
+        var nsScope = types.Count > 0 ? new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = types[0].Namespace,
             IsInternal = true,
@@ -102,7 +102,7 @@ public sealed class EmitOrderPlanner
         var orderedFields = type.Members.Fields
             .OrderBy(f => f.IsStatic)
             .ThenBy(f => {
-                var scope = new Core.Renaming.TypeScope
+                var scope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = f.IsStatic,
@@ -115,7 +115,7 @@ public sealed class EmitOrderPlanner
         var orderedProperties = type.Members.Properties
             .OrderBy(p => p.IsStatic)
             .ThenBy(p => {
-                var scope = new Core.Renaming.TypeScope
+                var scope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = p.IsStatic,
@@ -129,7 +129,7 @@ public sealed class EmitOrderPlanner
         var orderedEvents = type.Members.Events
             .OrderBy(e => e.IsStatic)
             .ThenBy(e => {
-                var scope = new Core.Renaming.TypeScope
+                var scope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = e.IsStatic,
@@ -142,7 +142,7 @@ public sealed class EmitOrderPlanner
         var orderedMethods = type.Members.Methods
             .OrderBy(m => m.IsStatic)
             .ThenBy(m => {
-                var scope = new Core.Renaming.TypeScope
+                var scope = new SinglePhase.Renaming.TypeScope
                 {
                     TypeFullName = type.ClrFullName,
                     IsStatic = m.IsStatic,

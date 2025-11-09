@@ -129,7 +129,7 @@ public static class InternalIndexEmitter
         var sb = new StringBuilder();
 
         // Get final type name
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
@@ -170,7 +170,7 @@ public static class InternalIndexEmitter
         var sb = new StringBuilder();
 
         // Get final type name
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,

@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -113,11 +113,12 @@ public static class BaseOverloadAdder
 
     private static MethodSymbol CreateBaseOverloadMethod(BuildContext ctx, TypeSymbol derivedClass, MethodSymbol baseMethod)
     {
+        // M5 FIX: Base scope without #static/#instance suffix - ReserveMemberName will add it
         var typeScope = new TypeScope
         {
             TypeFullName = derivedClass.ClrFullName,
             IsStatic = false,
-            ScopeKey = $"{derivedClass.ClrFullName}#instance"
+            ScopeKey = $"type:{derivedClass.ClrFullName}"
         };
 
         var stableId = new MemberStableId

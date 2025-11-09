@@ -3,6 +3,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -73,11 +74,12 @@ public static class MetadataEmitter
     private static TypeMetadata GenerateTypeMetadata(TypeSymbol type, BuildContext ctx)
     {
         // Get final TypeScript name from Renamer
-        var nsScope = new Core.Renaming.NamespaceScope
+        // M5 FIX: ScopeKey should match the format used during reservation
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = type.Namespace,
             IsInternal = true,
-            ScopeKey = $"ns:{type.Namespace}:internal"
+            ScopeKey = $"ns:{type.Namespace}"
         };
         var tsEmitName = ctx.Renamer.GetFinalTypeName(type.StableId, nsScope);
 
@@ -101,14 +103,21 @@ public static class MetadataEmitter
 
     private static MethodMetadata GenerateMethodMetadata(MethodSymbol method, TypeSymbol declaringType, BuildContext ctx)
     {
-        // Get final TS name from Renamer
-        var typeScope = new Core.Renaming.TypeScope
+        // M5 FIX: Use view scope for ViewOnly members, class scope for others
+        string tsEmitName;
+        if (method.EmitScope == EmitScope.ViewOnly && method.SourceInterface != null)
         {
-            TypeFullName = declaringType.ClrFullName,
-            IsStatic = method.IsStatic,
-            ScopeKey = $"type:{declaringType.ClrFullName}#{(method.IsStatic ? "static" : "instance")}"
-        };
-        var tsEmitName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+            // ViewOnly member - use view scope
+            var interfaceStableId = RenamerScopes.GetInterfaceStableId(method.SourceInterface);
+            var viewScope = RenamerScopes.ViewScope(declaringType, interfaceStableId, method.IsStatic);
+            tsEmitName = ctx.Renamer.GetFinalMemberName(method.StableId, viewScope, method.IsStatic);
+        }
+        else
+        {
+            // Class surface member - use class scope
+            var classScope = method.IsStatic ? RenamerScopes.ClassStatic(declaringType) : RenamerScopes.ClassInstance(declaringType);
+            tsEmitName = ctx.Renamer.GetFinalMemberName(method.StableId, classScope, method.IsStatic);
+        }
 
         // Generate normalized signature for universal matching
         var normalizedSignature = SignatureNormalization.NormalizeMethod(method);
@@ -133,14 +142,21 @@ public static class MetadataEmitter
 
     private static PropertyMetadata GeneratePropertyMetadata(PropertySymbol property, TypeSymbol declaringType, BuildContext ctx)
     {
-        // Get final TS name from Renamer
-        var typeScope = new Core.Renaming.TypeScope
+        // M5 FIX: Use view scope for ViewOnly members, class scope for others
+        string tsEmitName;
+        if (property.EmitScope == EmitScope.ViewOnly && property.SourceInterface != null)
         {
-            TypeFullName = declaringType.ClrFullName,
-            IsStatic = property.IsStatic,
-            ScopeKey = $"type:{declaringType.ClrFullName}#{(property.IsStatic ? "static" : "instance")}"
-        };
-        var tsEmitName = ctx.Renamer.GetFinalMemberName(property.StableId, typeScope, property.IsStatic);
+            // ViewOnly member - use view scope
+            var interfaceStableId = RenamerScopes.GetInterfaceStableId(property.SourceInterface);
+            var viewScope = RenamerScopes.ViewScope(declaringType, interfaceStableId, property.IsStatic);
+            tsEmitName = ctx.Renamer.GetFinalMemberName(property.StableId, viewScope, property.IsStatic);
+        }
+        else
+        {
+            // Class surface member - use class scope
+            var classScope = property.IsStatic ? RenamerScopes.ClassStatic(declaringType) : RenamerScopes.ClassInstance(declaringType);
+            tsEmitName = ctx.Renamer.GetFinalMemberName(property.StableId, classScope, property.IsStatic);
+        }
 
         // Generate normalized signature for universal matching
         var normalizedSignature = SignatureNormalization.NormalizeProperty(property);
@@ -165,14 +181,9 @@ public static class MetadataEmitter
 
     private static FieldMetadata GenerateFieldMetadata(FieldSymbol field, TypeSymbol declaringType, BuildContext ctx)
     {
-        // Get final TS name from Renamer
-        var typeScope = new Core.Renaming.TypeScope
-        {
-            TypeFullName = declaringType.ClrFullName,
-            IsStatic = field.IsStatic,
-            ScopeKey = $"type:{declaringType.ClrFullName}#{(field.IsStatic ? "static" : "instance")}"
-        };
-        var tsEmitName = ctx.Renamer.GetFinalMemberName(field.StableId, typeScope, field.IsStatic);
+        // Fields are always ClassSurface, use class scope
+        var classScope = field.IsStatic ? RenamerScopes.ClassStatic(declaringType) : RenamerScopes.ClassInstance(declaringType);
+        var tsEmitName = ctx.Renamer.GetFinalMemberName(field.StableId, classScope, field.IsStatic);
 
         // Generate normalized signature for universal matching
         var normalizedSignature = SignatureNormalization.NormalizeField(field);
@@ -190,14 +201,9 @@ public static class MetadataEmitter
 
     private static EventMetadata GenerateEventMetadata(EventSymbol evt, TypeSymbol declaringType, BuildContext ctx)
     {
-        // Get final TS name from Renamer
-        var typeScope = new Core.Renaming.TypeScope
-        {
-            TypeFullName = declaringType.ClrFullName,
-            IsStatic = evt.IsStatic,
-            ScopeKey = $"type:{declaringType.ClrFullName}#{(evt.IsStatic ? "static" : "instance")}"
-        };
-        var tsEmitName = ctx.Renamer.GetFinalMemberName(evt.StableId, typeScope, evt.IsStatic);
+        // Events are always ClassSurface, use class scope
+        var classScope = evt.IsStatic ? RenamerScopes.ClassStatic(declaringType) : RenamerScopes.ClassInstance(declaringType);
+        var tsEmitName = ctx.Renamer.GetFinalMemberName(evt.StableId, classScope, evt.IsStatic);
 
         // Generate normalized signature for universal matching
         var normalizedSignature = SignatureNormalization.NormalizeEvent(evt);

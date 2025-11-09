@@ -109,7 +109,7 @@ public static class ImportPlanner
         var exports = new List<ExportStatement>();
 
         // Create namespace scope for name resolution
-        var nsScope = new Core.Renaming.NamespaceScope
+        var nsScope = new SinglePhase.Renaming.NamespaceScope
         {
             Namespace = ns.Name,
             IsInternal = true,

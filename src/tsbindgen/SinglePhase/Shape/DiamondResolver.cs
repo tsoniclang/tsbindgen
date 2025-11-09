@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -132,11 +132,12 @@ public static class DiamondResolver
 
     private static void EnsureMethodRenamed(BuildContext ctx, TypeSymbol type, MethodSymbol method)
     {
+        // M5 FIX: Base scope without #static/#instance suffix - ReserveMemberName will add it
         var typeScope = new TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = method.IsStatic,
-            ScopeKey = $"{type.ClrFullName}#{(method.IsStatic ? "static" : "instance")}"
+            ScopeKey = $"type:{type.ClrFullName}"
         };
 
         // Reserve through renamer with DiamondResolved reason

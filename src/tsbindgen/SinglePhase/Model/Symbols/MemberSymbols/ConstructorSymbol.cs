@@ -1,5 +1,5 @@
 using System.Collections.Immutable;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 
 namespace tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
 

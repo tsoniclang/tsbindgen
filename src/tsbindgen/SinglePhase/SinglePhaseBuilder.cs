@@ -317,7 +317,7 @@ public sealed record BuildResult
     public required bool Success { get; init; }
     public required SymbolGraphStatistics Statistics { get; init; }
     public required IReadOnlyList<Core.Diagnostics.Diagnostic> Diagnostics { get; init; }
-    public required IReadOnlyCollection<Core.Renaming.RenameDecision> RenameDecisions { get; init; }
+    public required IReadOnlyCollection<SinglePhase.Renaming.RenameDecision> RenameDecisions { get; init; }
 }
 
 /// <summary>

@@ -135,7 +135,7 @@ public static class StaticSideAnalyzer
         if (conflictingMembers.Count == 0)
             return 0;
 
-        var typeScope = new Core.Renaming.TypeScope
+        var typeScope = new SinglePhase.Renaming.TypeScope
         {
             TypeFullName = derivedClass.ClrFullName,
             IsStatic = true,

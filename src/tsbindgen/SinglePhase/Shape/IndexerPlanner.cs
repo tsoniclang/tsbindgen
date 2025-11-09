@@ -1,7 +1,7 @@
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
-using tsbindgen.Core.Renaming;
+using tsbindgen.SinglePhase.Renaming;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
@@ -109,11 +109,12 @@ public static class IndexerPlanner
         // Getter: T get_Item(TIndex index)
         // Setter: void set_Item(TIndex index, T value)
 
+        // M5 FIX: Base scope without #static/#instance suffix - ReserveMemberName will add it
         var typeScope = new TypeScope
         {
             TypeFullName = type.ClrFullName,
             IsStatic = indexer.IsStatic,
-            ScopeKey = $"{type.ClrFullName}#{(indexer.IsStatic ? "static" : "instance")}"
+            ScopeKey = $"type:{type.ClrFullName}"
         };
 
         // Always create getter
@@ -131,6 +132,7 @@ public static class IndexerPlanner
                     GetTypeFullName(indexer.PropertyType))
             };
 
+            // Reserve with base scope - ReserveMemberName adds #static/#instance
             ctx.Renamer.ReserveMemberName(
                 getterStableId,
                 getterName,
@@ -138,7 +140,9 @@ public static class IndexerPlanner
                 "IndexerGetter",
                 indexer.IsStatic);
 
-            var getterTsEmitName = ctx.Renamer.GetFinalMemberName(getterStableId, typeScope, indexer.IsStatic);
+            // Get final name with full scope (including #static/#instance)
+            var getterScope = indexer.IsStatic ? RenamerScopes.ClassStatic(type) : RenamerScopes.ClassInstance(type);
+            var getterTsEmitName = ctx.Renamer.GetFinalMemberName(getterStableId, getterScope, indexer.IsStatic);
 
             yield return new MethodSymbol
             {
@@ -191,6 +195,7 @@ public static class IndexerPlanner
                     "System.Void")
             };
 
+            // Reserve with base scope - ReserveMemberName adds #static/#instance
             ctx.Renamer.ReserveMemberName(
                 setterStableId,
                 setterName,
@@ -198,7 +203,9 @@ public static class IndexerPlanner
                 "IndexerSetter",
                 indexer.IsStatic);
 
-            var setterTsEmitName = ctx.Renamer.GetFinalMemberName(setterStableId, typeScope, indexer.IsStatic);
+            // Get final name with full scope (including #static/#instance)
+            var setterScope = indexer.IsStatic ? RenamerScopes.ClassStatic(type) : RenamerScopes.ClassInstance(type);
+            var setterTsEmitName = ctx.Renamer.GetFinalMemberName(setterStableId, setterScope, indexer.IsStatic);
 
             yield return new MethodSymbol
             {
