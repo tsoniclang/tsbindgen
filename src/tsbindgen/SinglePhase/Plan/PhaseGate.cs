@@ -53,6 +53,9 @@ public static class PhaseGate
         // PhaseGate Hardening - M3: View integrity validation (3 hard rules)
         ValidateViewsIntegrity(ctx, graph, validationContext);
 
+        // PhaseGate Hardening - M4: Constraint mismatch classification
+        ValidateConstraintMismatches(ctx, graph, validationContext);
+
         // Report results
         ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings, {validationContext.InfoCount} info");
         ctx.Log("PhaseGate", $"Sanitized {validationContext.SanitizedNameCount} reserved word identifiers");
@@ -1783,6 +1786,121 @@ public static class PhaseGate
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// M4: Validate constraint mismatches and classify as benign vs non-benign.
+    /// Benign widenings (class/struct/notnull → TS object/unknown) emit WARNING.
+    /// Non-benign losses (new(), other constraints) emit ERROR.
+    /// </summary>
+    private static void ValidateConstraintMismatches(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M4: Validating constraint mismatches (classify benign vs non-benign)...");
+
+        int benignWidenings = 0;
+        int nonBenignLosses = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                // Type-level generic parameters
+                foreach (var gp in type.GenericParameters)
+                {
+                    ClassifyConstraintDifferences(ctx, validationCtx, gp, type.ClrFullName,
+                        ref benignWidenings, ref nonBenignLosses, graph);
+                }
+
+                // Method-level generic parameters
+                foreach (var method in type.Members.Methods)
+                {
+                    if (method.Visibility != Visibility.Public)
+                        continue;
+
+                    foreach (var gp in method.GenericParameters)
+                    {
+                        ClassifyConstraintDifferences(ctx, validationCtx, gp,
+                            $"{type.ClrFullName}.{method.ClrName}()",
+                            ref benignWidenings, ref nonBenignLosses, graph);
+                    }
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M4: Found {benignWidenings} benign constraint widenings (WARNING), {nonBenignLosses} non-benign losses (ERROR)");
+    }
+
+    private static void ClassifyConstraintDifferences(
+        BuildContext ctx,
+        ValidationContext validationCtx,
+        GenericParameterSymbol gp,
+        string ownerName,
+        ref int benignCount,
+        ref int nonBenignCount,
+        SymbolGraph graph)
+    {
+        // Check SpecialConstraints (these are always "lost" in TypeScript since TS doesn't support them)
+        if (gp.SpecialConstraints != GenericParameterConstraints.None)
+        {
+            // Benign: class (ReferenceType), notnull (NotNullable), struct (ValueType)
+            var benignFlags = GenericParameterConstraints.ReferenceType |
+                             GenericParameterConstraints.NotNullable |
+                             GenericParameterConstraints.ValueType;
+
+            var benignLoss = (gp.SpecialConstraints & benignFlags);
+            var nonBenignLoss = (gp.SpecialConstraints & ~benignFlags);
+
+            if (benignLoss != GenericParameterConstraints.None)
+            {
+                validationCtx.RecordDiagnostic(
+                    Core.Diagnostics.DiagnosticCodes.PG_CT_001,
+                    "WARNING",
+                    $"Benign constraint widening on {gp.Name}\n" +
+                    $"  owner:    {ownerName}\n" +
+                    $"  clr:      {benignLoss}\n" +
+                    $"  ts:       (no equivalent - widened to TS top type)");
+                benignCount++;
+            }
+
+            // Non-benign: new() (DefaultConstructor)
+            if (nonBenignLoss != GenericParameterConstraints.None)
+            {
+                validationCtx.RecordDiagnostic(
+                    Core.Diagnostics.DiagnosticCodes.PG_CT_001,
+                    "ERROR",
+                    $"Non-benign constraint loss on {gp.Name}\n" +
+                    $"  owner:    {ownerName}\n" +
+                    $"  clr:      {nonBenignLoss}\n" +
+                    $"  ts:       (no equivalent - constraint dropped)");
+                nonBenignCount++;
+            }
+        }
+
+        // Check type constraints for enum types (benign widening to number)
+        foreach (var constraint in gp.Constraints)
+        {
+            if (IsEnumConstraint(constraint, graph))
+            {
+                validationCtx.RecordDiagnostic(
+                    Core.Diagnostics.DiagnosticCodes.PG_CT_001,
+                    "WARNING",
+                    $"Benign constraint widening on {gp.Name}\n" +
+                    $"  owner:    {ownerName}\n" +
+                    $"  clr:      {GetTypeReferenceName(constraint)} (enum)\n" +
+                    $"  ts:       number (enum widened to number)");
+                benignCount++;
+            }
+        }
+    }
+
+    private static bool IsEnumConstraint(TypeReference typeRef, SymbolGraph graph)
+    {
+        var typeName = GetTypeReferenceName(typeRef);
+        var type = graph.Namespaces
+            .SelectMany(ns => ns.Types)
+            .FirstOrDefault(t => t.ClrFullName == typeName);
+
+        return type?.Kind == TypeKind.Enum;
     }
 }
 
