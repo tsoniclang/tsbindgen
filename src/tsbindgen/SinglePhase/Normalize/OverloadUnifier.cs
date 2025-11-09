@@ -49,7 +49,7 @@ public static class OverloadUnifier
 
         ctx.Log("OverloadUnifier", $"Unified {totalUnified} overloads across {typesProcessed} types");
 
-        return graph with { Namespaces = updatedNamespaces };
+        return (graph with { Namespaces = updatedNamespaces }).WithIndices();
     }
 
     /// <summary>

@@ -35,7 +35,8 @@ public static class PolicyDefaults
 
         Emission = new EmissionPolicy
         {
-            NameTransform = NameTransformStrategy.CamelCase,
+            TypeNameTransform = NameTransformStrategy.None,
+            MemberNameTransform = NameTransformStrategy.CamelCase,
             SortOrder = SortOrderStrategy.ByKindThenName,
             EmitDocComments = false
         },

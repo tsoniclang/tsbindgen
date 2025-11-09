@@ -27,7 +27,7 @@ public static class ImportPlanner
         // Plan imports for each namespace
         foreach (var ns in graph.Namespaces)
         {
-            PlanNamespaceImports(ctx, ns, importGraph, plan);
+            PlanNamespaceImports(ctx, ns, graph, importGraph, plan);
             PlanNamespaceExports(ctx, ns, plan);
         }
 
@@ -39,6 +39,7 @@ public static class ImportPlanner
     private static void PlanNamespaceImports(
         BuildContext ctx,
         NamespaceSymbol ns,
+        SymbolGraph graph,
         ImportGraphData importGraph,
         ImportPlan plan)
     {
@@ -53,37 +54,48 @@ public static class ImportPlanner
 
         foreach (var targetNamespace in dependencies.OrderBy(d => d))
         {
-            // Get all types referenced from target namespace
-            var referencedTypes = importGraph.CrossNamespaceReferences
+            // Get all types referenced from target namespace (CLR names)
+            var referencedTypeClrNames = importGraph.CrossNamespaceReferences
                 .Where(r => r.SourceNamespace == ns.Name && r.TargetNamespace == targetNamespace)
                 .Select(r => r.TargetType)
                 .Distinct()
                 .OrderBy(t => t)
                 .ToList();
 
-            if (referencedTypes.Count == 0)
+            if (referencedTypeClrNames.Count == 0)
                 continue;
 
-            // Determine import path
-            var importPath = NamespaceToModulePath(ctx, targetNamespace);
+            // Determine import path using PathPlanner
+            var importPath = PathPlanner.GetSpecifier(ns.Name, targetNamespace);
 
             // Check for name collisions and create aliases if needed
             var typeImports = new List<TypeImport>();
 
-            foreach (var typeName in referencedTypes)
+            foreach (var clrName in referencedTypeClrNames)
             {
-                var simpleName = GetSimpleTypeName(typeName);
-                var alias = DetermineAlias(ctx, ns.Name, targetNamespace, simpleName, aliases);
+                // Look up TypeSymbol to get TypeScript emit name
+                if (!graph.TryGetType(clrName, out var typeSymbol) || typeSymbol == null)
+                {
+                    ctx.Log("ImportPlanner", $"WARNING: Cannot find type {clrName} in graph (may be external)");
+                    continue;
+                }
+
+                // Get TypeScript emit name (e.g., "TypeConverter$StandardValuesCollection")
+                var tsName = ctx.Renamer.GetFinalTypeName(typeSymbol);
+                var alias = DetermineAlias(ctx, ns.Name, targetNamespace, tsName, aliases);
 
                 typeImports.Add(new TypeImport(
-                    TypeName: simpleName,
+                    TypeName: tsName,
                     Alias: alias));
 
                 if (alias != null)
                 {
-                    aliases[simpleName] = alias;
+                    aliases[tsName] = alias;
                 }
             }
+
+            if (typeImports.Count == 0)
+                continue;
 
             var importStatement = new ImportStatement(
                 ImportPath: importPath,
@@ -127,33 +139,6 @@ public static class ImportPlanner
             plan.NamespaceExports[ns.Name] = exports;
             ctx.Log("ImportPlanner", $"{ns.Name} exports {exports.Count} types");
         }
-    }
-
-    private static string NamespaceToModulePath(BuildContext ctx, string namespaceName)
-    {
-        // Convert namespace to relative module path
-        // Example: "System.Collections.Generic" -> "../System.Collections.Generic/index"
-
-        var policy = ctx.Policy.Modules;
-
-        if (policy.UseNamespaceDirectories)
-        {
-            // Each namespace gets its own directory with index.d.ts
-            return $"../{namespaceName}/index";
-        }
-        else
-        {
-            // Flat structure: all in same directory
-            return $"./{namespaceName}";
-        }
-    }
-
-    private static string GetSimpleTypeName(string fullTypeName)
-    {
-        // Extract simple type name from full name
-        // "System.Collections.Generic.List`1" -> "List`1"
-        var lastDot = fullTypeName.LastIndexOf('.');
-        return lastDot >= 0 ? fullTypeName.Substring(lastDot + 1) : fullTypeName;
     }
 
     private static string? DetermineAlias(
@@ -224,6 +209,17 @@ public sealed class ImportPlan
     /// Maps namespace name to dictionary of type aliases (original name -> alias).
     /// </summary>
     public Dictionary<string, Dictionary<string, string>> ImportAliases { get; init; } = new();
+
+    /// <summary>
+    /// Gets import statements for a specific namespace.
+    /// Returns empty list if namespace has no imports.
+    /// </summary>
+    public IReadOnlyList<ImportStatement> GetImportsFor(string namespaceName)
+    {
+        return NamespaceImports.TryGetValue(namespaceName, out var imports)
+            ? imports
+            : new List<ImportStatement>();
+    }
 }
 
 /// <summary>

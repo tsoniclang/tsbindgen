@@ -28,7 +28,7 @@ public static class InternalIndexEmitter
             ctx.Log("InternalIndexEmitter", $"  Emitting namespace: {ns.Name}");
 
             // Generate .d.ts content
-            var content = GenerateNamespaceDeclaration(ctx, nsOrder);
+            var content = GenerateNamespaceDeclaration(ctx, plan.Imports, nsOrder);
 
             // Write to file: output/Namespace.Name/internal/index.d.ts (or _root for empty namespace)
             var namespacePath = Path.Combine(outputDirectory, ns.Name);
@@ -47,7 +47,7 @@ public static class InternalIndexEmitter
         ctx.Log("InternalIndexEmitter", $"Generated {emittedCount} declaration files");
     }
 
-    private static string GenerateNamespaceDeclaration(BuildContext ctx, NamespaceEmitOrder nsOrder)
+    private static string GenerateNamespaceDeclaration(BuildContext ctx, ImportPlan importPlan, NamespaceEmitOrder nsOrder)
     {
         var sb = new StringBuilder();
 
@@ -60,6 +60,27 @@ public static class InternalIndexEmitter
         // Branded primitive types (emitted in all namespaces for cross-namespace type references)
         // Every namespace needs these to reference System types (Int32 → int, etc.)
         EmitBrandedPrimitives(sb);
+
+        // Emit import statements for cross-namespace type references
+        var imports = importPlan.GetImportsFor(nsOrder.Namespace.Name);
+        if (imports.Count > 0)
+        {
+            sb.AppendLine("// Import types from other namespaces");
+
+            // Sort imports by module specifier for stable output
+            foreach (var import in imports.OrderBy(i => i.ImportPath))
+            {
+                // Build type list with aliases if needed
+                var typeImports = import.TypeImports
+                    .OrderBy(ti => ti.TypeName)
+                    .Select(ti => ti.Alias != null ? $"{ti.TypeName} as {ti.Alias}" : ti.TypeName);
+
+                var typeList = string.Join(", ", typeImports);
+                sb.AppendLine($"import type {{ {typeList} }} from \"{import.ImportPath}\";");
+            }
+
+            sb.AppendLine(); // Blank line after imports
+        }
 
         // ROOT NAMESPACE FIX: Types in root namespace (empty name) are emitted at module level
         // No namespace wrapper for root - types are module-level declarations

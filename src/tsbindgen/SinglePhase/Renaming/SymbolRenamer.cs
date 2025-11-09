@@ -18,7 +18,9 @@ public sealed class SymbolRenamer
     // M5 FIX: Key by (StableId, ScopeKey) to support dual-scope reservations (class + view)
     private readonly Dictionary<(StableId Id, string ScopeKey), RenameDecision> _decisions = new();
     private readonly Dictionary<StableId, string> _explicitOverrides = new();
-    private Func<string, string>? _styleTransform;
+    // Per-kind transforms: types and members can have different styles
+    private Func<string, string> _typeStyleTransform = static s => s;
+    private Func<string, string> _memberStyleTransform = static s => s;
 
     /// <summary>
     /// Apply explicit CLI/user overrides. Called first, before any other reservations.
@@ -38,25 +40,26 @@ public sealed class SymbolRenamer
     }
 
     /// <summary>
-    /// Adopt a style transform (e.g., camelCase) that applies to all identifiers.
+    /// Adopt a style transform for TYPE names (classes, interfaces, enums).
     /// Called once during context setup, before any reservations.
     /// </summary>
-    public void AdoptStyleTransform(Func<string, string> transform)
+    public void AdoptTypeStyleTransform(Func<string, string> transform)
     {
-        _styleTransform = transform;
+        _typeStyleTransform = transform ?? (static s => s);
     }
 
     /// <summary>
-    /// Apply the style transform to a name without reserving it.
-    /// Used for collision detection when checking if a name is already taken.
+    /// Adopt a style transform for MEMBER names (methods, properties, fields).
+    /// Called once during context setup, before any reservations.
     /// </summary>
-    public string ApplyStyleTransform(string name)
+    public void AdoptMemberStyleTransform(Func<string, string> transform)
     {
-        return _styleTransform?.Invoke(name) ?? name;
+        _memberStyleTransform = transform ?? (static s => s);
     }
 
     /// <summary>
     /// Reserve a type name in a namespace scope.
+    /// Applies the type style transform.
     /// </summary>
     public void ReserveTypeName(
         StableId stableId,
@@ -73,7 +76,8 @@ public sealed class SymbolRenamer
             scope,
             reason,
             decisionSource,
-            isStatic: null);
+            isStatic: null,
+            styleTransform: _typeStyleTransform);
 
         // Record decision
         RecordDecision(new RenameDecision
@@ -93,6 +97,7 @@ public sealed class SymbolRenamer
     /// <summary>
     /// Reserve a member name in a type scope.
     /// Static and instance members are tracked separately.
+    /// Applies the member style transform.
     /// </summary>
     public void ReserveMemberName(
         StableId stableId,
@@ -115,7 +120,8 @@ public sealed class SymbolRenamer
             effectiveScope,
             reason,
             decisionSource,
-            isStatic);
+            isStatic,
+            styleTransform: _memberStyleTransform);
 
         // Record decision
         RecordDecision(new RenameDecision
@@ -316,24 +322,17 @@ public sealed class SymbolRenamer
     /// <summary>
     /// Peek at what final name would be assigned in a scope without committing.
     /// Used for collision detection before reservation.
-    /// Applies style transform and sanitization, then finds next available suffix if needed.
+    /// Applies member style transform and sanitization, then finds next available suffix if needed.
     /// </summary>
     public string PeekFinalMemberName(RenameScope scope, string requestedBase, bool isStatic)
     {
-        if (_styleTransform == null)
-        {
-            throw new InvalidOperationException(
-                "PeekFinalMemberName called before style transform was set. " +
-                "Ensure AdoptStyleTransform is called during context initialization.");
-        }
-
         // Create effective scope for static/instance
         var effectiveScope = scope is TypeScope ts
             ? ts with { IsStatic = isStatic, ScopeKey = $"{ts.ScopeKey}#{(isStatic ? "static" : "instance")}" }
             : scope;
 
         // Apply transforms like in ResolveNameWithConflicts
-        var styled = _styleTransform.Invoke(requestedBase);
+        var styled = _memberStyleTransform.Invoke(requestedBase);
         var sanitized = TypeScriptReservedWords.Sanitize(styled).Sanitized;
 
         if (!_tablesByScope.TryGetValue(effectiveScope.ScopeKey, out var table))
@@ -376,7 +375,8 @@ public sealed class SymbolRenamer
         RenameScope scope,
         string reason,
         string decisionSource,
-        bool? isStatic)
+        bool? isStatic,
+        Func<string, string> styleTransform)
     {
         // 1. Check for explicit override
         if (_explicitOverrides.TryGetValue(stableId, out var explicitName))
@@ -386,8 +386,8 @@ public sealed class SymbolRenamer
             // Explicit override conflicts - fall through to suffix strategy
         }
 
-        // 2. Apply style transform if set
-        var styled = _styleTransform?.Invoke(requested) ?? requested;
+        // 2. Apply style transform
+        var styled = styleTransform.Invoke(requested);
 
         // 3. Sanitize TypeScript reserved words (add trailing underscore if needed)
         var sanitized = TypeScriptReservedWords.Sanitize(styled).Sanitized;

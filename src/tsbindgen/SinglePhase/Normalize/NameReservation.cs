@@ -910,7 +910,7 @@ public static class NameReservation
     private static SymbolGraph ApplyNamesToGraph(BuildContext ctx, SymbolGraph graph)
     {
         var updatedNamespaces = graph.Namespaces.Select(ns => ApplyNamesToNamespace(ctx, ns)).ToImmutableArray();
-        return graph with { Namespaces = updatedNamespaces };
+        return (graph with { Namespaces = updatedNamespaces }).WithIndices();
     }
 
     private static NamespaceSymbol ApplyNamesToNamespace(BuildContext ctx, NamespaceSymbol ns)

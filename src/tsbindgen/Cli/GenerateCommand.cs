@@ -471,7 +471,7 @@ public static class GenerateCommand
             {
                 Emission = policy.Emission with
                 {
-                    NameTransform = transform == NameTransformOption.CamelCase
+                    MemberNameTransform = transform == NameTransformOption.CamelCase
                         ? Core.Policy.NameTransformStrategy.CamelCase
                         : Core.Policy.NameTransformStrategy.None
                 }

@@ -37,7 +37,7 @@ public static class ClassSurfaceDeduplicator
         }
 
         ctx.Log("ClassSurfaceDeduplicator", $"Demoted {totalDemoted} duplicate members to ViewOnly");
-        return graph with { Namespaces = updatedNamespaces.ToImmutable() };
+        return (graph with { Namespaces = updatedNamespaces.ToImmutable() }).WithIndices();
     }
 
     private static (TypeSymbol UpdatedType, int Demoted) DeduplicateType(BuildContext ctx, TypeSymbol type)

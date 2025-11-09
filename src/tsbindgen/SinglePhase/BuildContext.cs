@@ -68,12 +68,17 @@ public sealed class BuildContext
         // Apply explicit overrides from policy
         renamer.ApplyExplicitOverrides(policy.Renaming.ExplicitMap);
 
-        // Adopt style transform
-        if (policy.Emission.NameTransform != NameTransformStrategy.None)
-        {
-            renamer.AdoptStyleTransform(name =>
-                NameTransform.Apply(name, policy.Emission.NameTransform));
-        }
+        // Adopt style transforms from policy (types and members can have different casing)
+        var typeTransform = policy.Emission.TypeNameTransform != NameTransformStrategy.None
+            ? new Func<string, string>(name => NameTransform.Apply(name, policy.Emission.TypeNameTransform))
+            : static name => name; // Identity
+
+        var memberTransform = policy.Emission.MemberNameTransform != NameTransformStrategy.None
+            ? new Func<string, string>(name => NameTransform.Apply(name, policy.Emission.MemberNameTransform))
+            : static name => name; // Identity
+
+        renamer.AdoptTypeStyleTransform(typeTransform);
+        renamer.AdoptMemberStyleTransform(memberTransform);
 
         return new BuildContext
         {

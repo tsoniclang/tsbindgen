@@ -143,9 +143,16 @@ public enum ConstraintMergeStrategy
 public sealed record EmissionPolicy
 {
     /// <summary>
-    /// Name transformation strategy (camelCase, PascalCase, etc.).
+    /// Name transformation strategy for TYPE names (classes, interfaces, enums).
+    /// Default: None (preserve PascalCase from C#).
     /// </summary>
-    public required NameTransformStrategy NameTransform { get; init; }
+    public NameTransformStrategy TypeNameTransform { get; init; } = NameTransformStrategy.None;
+
+    /// <summary>
+    /// Name transformation strategy for MEMBER names (methods, properties, fields).
+    /// Default: CamelCase (TypeScript convention).
+    /// </summary>
+    public NameTransformStrategy MemberNameTransform { get; init; } = NameTransformStrategy.CamelCase;
 
     /// <summary>
     /// Sorting order for types and members.
