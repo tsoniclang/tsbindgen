@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
+using tsbindgen.SinglePhase.Renaming;
 
 namespace tsbindgen.SinglePhase.Shape;
 
@@ -135,12 +136,8 @@ public static class StaticSideAnalyzer
         if (conflictingMembers.Count == 0)
             return 0;
 
-        var typeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = derivedClass.ClrFullName,
-            IsStatic = true,
-            ScopeKey = $"{derivedClass.ClrFullName}#static"
-        };
+        // Use base scope for ReserveMemberName - it will add #static suffix
+        var typeScope = ScopeFactory.ClassBase(derivedClass);
 
         // Rename each conflicting member using Renamer
         foreach (var member in conflictingMembers)

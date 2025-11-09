@@ -98,12 +98,7 @@ public sealed class EmitOrderPlanner
         var orderedFields = type.Members.Fields
             .OrderBy(f => f.IsStatic)
             .ThenBy(f => {
-                var scope = new SinglePhase.Renaming.TypeScope
-                {
-                    TypeFullName = type.ClrFullName,
-                    IsStatic = f.IsStatic,
-                    ScopeKey = $"type:{type.ClrFullName}#{(f.IsStatic ? "static" : "instance")}"
-                };
+                var scope = ScopeFactory.ClassSurface(type, f.IsStatic);
                 return _ctx.Renamer.GetFinalMemberName(f.StableId, scope, f.IsStatic);
             })
             .ToList();
@@ -111,12 +106,7 @@ public sealed class EmitOrderPlanner
         var orderedProperties = type.Members.Properties
             .OrderBy(p => p.IsStatic)
             .ThenBy(p => {
-                var scope = new SinglePhase.Renaming.TypeScope
-                {
-                    TypeFullName = type.ClrFullName,
-                    IsStatic = p.IsStatic,
-                    ScopeKey = $"type:{type.ClrFullName}#{(p.IsStatic ? "static" : "instance")}"
-                };
+                var scope = ScopeFactory.ClassSurface(type, p.IsStatic);
                 return _ctx.Renamer.GetFinalMemberName(p.StableId, scope, p.IsStatic);
             })
             .ThenBy(p => p.StableId.CanonicalSignature)
@@ -125,12 +115,7 @@ public sealed class EmitOrderPlanner
         var orderedEvents = type.Members.Events
             .OrderBy(e => e.IsStatic)
             .ThenBy(e => {
-                var scope = new SinglePhase.Renaming.TypeScope
-                {
-                    TypeFullName = type.ClrFullName,
-                    IsStatic = e.IsStatic,
-                    ScopeKey = $"type:{type.ClrFullName}#{(e.IsStatic ? "static" : "instance")}"
-                };
+                var scope = ScopeFactory.ClassSurface(type, e.IsStatic);
                 return _ctx.Renamer.GetFinalMemberName(e.StableId, scope, e.IsStatic);
             })
             .ToList();
@@ -138,12 +123,7 @@ public sealed class EmitOrderPlanner
         var orderedMethods = type.Members.Methods
             .OrderBy(m => m.IsStatic)
             .ThenBy(m => {
-                var scope = new SinglePhase.Renaming.TypeScope
-                {
-                    TypeFullName = type.ClrFullName,
-                    IsStatic = m.IsStatic,
-                    ScopeKey = $"type:{type.ClrFullName}#{(m.IsStatic ? "static" : "instance")}"
-                };
+                var scope = ScopeFactory.ClassSurface(type, m.IsStatic);
                 return _ctx.Renamer.GetFinalMemberName(m.StableId, scope, m.IsStatic);
             })
             .ThenBy(m => m.Arity)

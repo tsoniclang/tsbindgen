@@ -2,6 +2,7 @@ using System.Text;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
+using tsbindgen.SinglePhase.Renaming;
 
 namespace tsbindgen.SinglePhase.Emit.Printers;
 
@@ -14,19 +15,13 @@ public static class MethodPrinter
     /// <summary>
     /// Print a method signature to TypeScript.
     /// </summary>
-    public static string Print(MethodSymbol method, BuildContext ctx)
+    public static string Print(MethodSymbol method, TypeSymbol declaringType, BuildContext ctx)
     {
         var sb = new StringBuilder();
 
-        // Get the final TS name from Renamer
-        var typeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = method.StableId.DeclaringClrFullName,
-            IsStatic = method.IsStatic,
-            ScopeKey = $"{method.StableId.DeclaringClrFullName}#{(method.IsStatic ? "static" : "instance")}"
-        };
-
-        var finalName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+        // Get the final TS name from Renamer using correct scope
+        var scope = ScopeFactory.ClassSurface(declaringType, method.IsStatic);
+        var finalName = ctx.Renamer.GetFinalMemberName(method.StableId, scope, method.IsStatic);
 
         // Modifiers
         if (method.IsStatic)
@@ -124,26 +119,20 @@ public static class MethodPrinter
     /// Print method with params array handling.
     /// Converts params T[] parameter to ...name: T[]
     /// </summary>
-    public static string PrintWithParamsExpansion(MethodSymbol method, BuildContext ctx)
+    public static string PrintWithParamsExpansion(MethodSymbol method, TypeSymbol declaringType, BuildContext ctx)
     {
         // Check if last parameter is params
         var hasParams = method.Parameters.Length > 0 && method.Parameters[^1].IsParams;
 
         if (!hasParams)
-            return Print(method, ctx);
+            return Print(method, declaringType, ctx);
 
         // Build method signature with params expansion
         var sb = new StringBuilder();
 
-        // Get final name
-        var typeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = method.StableId.DeclaringClrFullName,
-            IsStatic = method.IsStatic,
-            ScopeKey = $"{method.StableId.DeclaringClrFullName}#{(method.IsStatic ? "static" : "instance")}"
-        };
-
-        var finalName = ctx.Renamer.GetFinalMemberName(method.StableId, typeScope, method.IsStatic);
+        // Get final name using correct scope
+        var scope = ScopeFactory.ClassSurface(declaringType, method.IsStatic);
+        var finalName = ctx.Renamer.GetFinalMemberName(method.StableId, scope, method.IsStatic);
 
         // Modifiers
         if (method.IsStatic)
@@ -194,11 +183,11 @@ public static class MethodPrinter
     /// Print multiple method overloads.
     /// Used for methods with same name but different signatures.
     /// </summary>
-    public static IEnumerable<string> PrintOverloads(IEnumerable<MethodSymbol> overloads, BuildContext ctx)
+    public static IEnumerable<string> PrintOverloads(IEnumerable<MethodSymbol> overloads, TypeSymbol declaringType, BuildContext ctx)
     {
         foreach (var method in overloads)
         {
-            yield return Print(method, ctx);
+            yield return Print(method, declaringType, ctx);
         }
     }
 

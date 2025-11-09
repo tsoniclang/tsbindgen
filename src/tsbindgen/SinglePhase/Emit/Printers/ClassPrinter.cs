@@ -171,12 +171,7 @@ public static class ClassPrinter
         sb.AppendLine(" {");
 
         // Create type scope for enum member name resolution
-        var typeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = type.ClrFullName,
-            IsStatic = true, // Enum members are like static fields
-            ScopeKey = $"type:{type.ClrFullName}#static"
-        };
+        var typeScope = ScopeFactory.ClassStatic(type); // Enum members are like static fields
 
         // Emit enum fields
         var fields = type.Members.Fields.Where(f => f.IsConst).ToList();
@@ -285,12 +280,7 @@ public static class ClassPrinter
         var members = type.Members;
 
         // Create type scope for member name resolution
-        var typeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = type.ClrFullName,
-            IsStatic = false, // Instance members
-            ScopeKey = $"type:{type.ClrFullName}#instance"
-        };
+        var typeScope = ScopeFactory.ClassInstance(type); // Instance members
 
         // Constructors
         foreach (var ctor in members.Constructors.Where(c => !c.IsStatic))
@@ -330,7 +320,7 @@ public static class ClassPrinter
         foreach (var method in members.Methods.Where(m => !m.IsStatic))
         {
             sb.Append("    ");
-            sb.Append(MethodPrinter.Print(method, ctx));
+            sb.Append(MethodPrinter.Print(method, type, ctx));
             sb.AppendLine(";");
         }
 
@@ -343,12 +333,7 @@ public static class ClassPrinter
         var members = type.Members;
 
         // Create type scope for static member name resolution
-        var staticTypeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = type.ClrFullName,
-            IsStatic = true, // Static members
-            ScopeKey = $"type:{type.ClrFullName}#static"
-        };
+        var staticTypeScope = ScopeFactory.ClassStatic(type); // Static members
 
         // Static fields
         foreach (var field in members.Fields.Where(f => f.IsStatic && !f.IsConst))
@@ -391,7 +376,7 @@ public static class ClassPrinter
         foreach (var method in members.Methods.Where(m => m.IsStatic))
         {
             sb.Append("    ");
-            sb.Append(MethodPrinter.Print(method, ctx));
+            sb.Append(MethodPrinter.Print(method, type, ctx));
             sb.AppendLine(";");
         }
     }
@@ -401,12 +386,7 @@ public static class ClassPrinter
         var members = type.Members;
 
         // Create type scope for member name resolution (interfaces don't have static members)
-        var typeScope = new SinglePhase.Renaming.TypeScope
-        {
-            TypeFullName = type.ClrFullName,
-            IsStatic = false,
-            ScopeKey = $"type:{type.ClrFullName}#instance"
-        };
+        var typeScope = ScopeFactory.ClassInstance(type);
 
         // Properties
         foreach (var prop in members.Properties)
@@ -425,7 +405,7 @@ public static class ClassPrinter
         foreach (var method in members.Methods)
         {
             sb.Append("    ");
-            sb.Append(MethodPrinter.Print(method, ctx));
+            sb.Append(MethodPrinter.Print(method, type, ctx));
             sb.AppendLine(";");
         }
     }
