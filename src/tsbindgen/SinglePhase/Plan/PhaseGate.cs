@@ -50,6 +50,9 @@ public static class PhaseGate
         // PhaseGate Hardening - M2: Overload collision detection
         ValidateOverloadCollisions(ctx, graph, validationContext);
 
+        // PhaseGate Hardening - M3: View integrity validation (3 hard rules)
+        ValidateViewsIntegrity(ctx, graph, validationContext);
+
         // Report results
         ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings, {validationContext.InfoCount} info");
         ctx.Log("PhaseGate", $"Sanitized {validationContext.SanitizedNameCount} reserved word identifiers");
@@ -1636,6 +1639,150 @@ public static class PhaseGate
             "System.Decimal" => "number",
             _ => fullName.Replace("`", "_") // Replace generic arity marker
         };
+    }
+
+    /// <summary>
+    /// PhaseGate Hardening M3: Validate view integrity (3 hard rules).
+    /// 1. PG_VIEW_001: Each ExplicitView must contain ≥1 ViewMember (non-empty)
+    /// 2. PG_VIEW_002: No two views for the same InterfaceStableId on a type
+    /// 3. PG_VIEW_003: View property name must be valid TS identifier (sanitized if reserved)
+    /// </summary>
+    private static void ValidateViewsIntegrity(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M3: Validating view integrity (3 hard rules)...");
+
+        int totalViews = 0;
+        int emptyViews = 0;
+        int duplicateViews = 0;
+        int invalidViewNames = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                if (type.ExplicitViews.Length == 0)
+                    continue;
+
+                totalViews += type.ExplicitViews.Length;
+
+                // Track interfaces we've seen for this type (to detect duplicates)
+                var seenInterfaces = new Dictionary<string, string>(); // StableId -> ViewPropertyName
+
+                foreach (var view in type.ExplicitViews)
+                {
+                    // Rule 1: PG_VIEW_001 - Non-empty (must contain ≥1 ViewMember)
+                    if (view.ViewMembers.Length == 0)
+                    {
+                        emptyViews++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_VIEW_001,
+                            "ERROR",
+                            $"Empty view (no members)\n" +
+                            $"  type:     {type.ClrFullName}\n" +
+                            $"  view:     {view.ViewPropertyName}\n" +
+                            $"  iface:    {GetTypeReferenceName(view.InterfaceReference)}");
+                    }
+
+                    // Rule 2: PG_VIEW_002 - Unique target (no two views for same interface)
+                    // Use interface StableId for comparison
+                    var ifaceStableId = GetInterfaceStableId(graph, view.InterfaceReference);
+                    if (ifaceStableId != null)
+                    {
+                        if (seenInterfaces.TryGetValue(ifaceStableId, out var existingViewName))
+                        {
+                            duplicateViews++;
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.PG_VIEW_002,
+                                "ERROR",
+                                $"Duplicate view for interface on type\n" +
+                                $"  type:      {type.ClrFullName}\n" +
+                                $"  interface: {GetTypeReferenceName(view.InterfaceReference)}\n" +
+                                $"  views:     {existingViewName}, {view.ViewPropertyName}");
+                        }
+                        else
+                        {
+                            seenInterfaces[ifaceStableId] = view.ViewPropertyName;
+                        }
+                    }
+
+                    // Rule 3: PG_VIEW_003 - Valid/sanitized view property name
+                    // View property name must be a valid TS identifier
+                    // If it's a reserved word, it must end with "_"
+                    if (Core.TypeScriptReservedWords.IsReservedWord(view.ViewPropertyName) &&
+                        !view.ViewPropertyName.EndsWith("_"))
+                    {
+                        invalidViewNames++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_VIEW_003,
+                            "ERROR",
+                            $"Invalid/unsanitized view property name\n" +
+                            $"  type:     {type.ClrFullName}\n" +
+                            $"  view:     {view.ViewPropertyName}\n" +
+                            $"  expected: {view.ViewPropertyName}_\n" +
+                            $"  reason:   TypeScript reserved word");
+                    }
+
+                    // Check for invalid characters in view property name
+                    if (!IsValidTypeScriptIdentifier(view.ViewPropertyName))
+                    {
+                        invalidViewNames++;
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_VIEW_003,
+                            "ERROR",
+                            $"Invalid view property name (contains invalid characters)\n" +
+                            $"  type:     {type.ClrFullName}\n" +
+                            $"  view:     {view.ViewPropertyName}\n" +
+                            $"  reason:   Invalid TypeScript identifier");
+                    }
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M3: Validated {totalViews} views - {emptyViews} empty, {duplicateViews} duplicates, {invalidViewNames} invalid names");
+    }
+
+    private static string? GetInterfaceStableId(SymbolGraph graph, TypeReference ifaceRef)
+    {
+        var fullName = GetTypeReferenceName(ifaceRef);
+
+        var iface = graph.Namespaces
+            .SelectMany(ns => ns.Types)
+            .FirstOrDefault(t => t.ClrFullName == fullName && t.Kind == TypeKind.Interface);
+
+        return iface?.StableId.ToString();
+    }
+
+    private static string GetTypeReferenceName(TypeReference typeRef)
+    {
+        return typeRef switch
+        {
+            NamedTypeReference named => named.FullName,
+            NestedTypeReference nested => nested.FullReference.FullName,
+            _ => typeRef.ToString() ?? "Unknown"
+        };
+    }
+
+    /// <summary>
+    /// Check if a string is a valid TypeScript identifier.
+    /// Must start with letter, _, or $ and contain only letters, digits, _, or $.
+    /// </summary>
+    private static bool IsValidTypeScriptIdentifier(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+            return false;
+
+        // Must start with letter, _, or $
+        if (!char.IsLetter(name[0]) && name[0] != '_' && name[0] != '$')
+            return false;
+
+        // Subsequent characters can be letters, digits, _, or $
+        for (int i = 1; i < name.Length; i++)
+        {
+            if (!char.IsLetterOrDigit(name[i]) && name[i] != '_' && name[i] != '$')
+                return false;
+        }
+
+        return true;
     }
 }
 
