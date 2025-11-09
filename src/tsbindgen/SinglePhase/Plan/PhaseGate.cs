@@ -5,6 +5,7 @@ using tsbindgen.Core.Diagnostics;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
 using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
+using tsbindgen.SinglePhase.Model.Types;
 
 namespace tsbindgen.SinglePhase.Plan;
 
@@ -45,6 +46,9 @@ public static class PhaseGate
 
         // PhaseGate Hardening - M1: Identifier sanitization verification
         ValidateIdentifiers(ctx, graph, validationContext);
+
+        // PhaseGate Hardening - M2: Overload collision detection
+        ValidateOverloadCollisions(ctx, graph, validationContext);
 
         // Report results
         ctx.Log("PhaseGate", $"Validation complete - {validationContext.ErrorCount} errors, {validationContext.WarningCount} warnings, {validationContext.InfoCount} info");
@@ -1433,6 +1437,205 @@ public static class PhaseGate
                 $"  stable:  {stableId}\n" +
                 $"  name:    {emittedName}  →  {emittedName}_  (expected suffix \"_\")");
         }
+    }
+
+    /// <summary>
+    /// PhaseGate Hardening M2: Validate no duplicate erased TS signatures in same surface.
+    /// Checks class surface and each explicit view separately.
+    /// Groups by (Name, Arity, ErasedParameterTypes, IsStatic).
+    /// </summary>
+    private static void ValidateOverloadCollisions(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("[PG]", "M2: Validating overload collisions...");
+
+        int totalCollisions = 0;
+        int totalSurfacesChecked = 0;
+
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                var typeScope = new Core.Renaming.TypeScope
+                {
+                    TypeFullName = type.ClrFullName,
+                    IsStatic = false,
+                    ScopeKey = type.ClrFullName
+                };
+
+                // Check class surface
+                totalSurfacesChecked++;
+                var classSurfaceCollisions = CheckSurfaceForCollisions(ctx, validationCtx, type, typeScope, "class surface",
+                    type.Members.Methods.Where(m => m.EmitScope == EmitScope.ClassSurface && m.Visibility == Visibility.Public).ToList(),
+                    type.Members.Properties.Where(p => p.EmitScope == EmitScope.ClassSurface && p.Visibility == Visibility.Public).ToList());
+                totalCollisions += classSurfaceCollisions;
+
+                // Check each explicit view separately
+                foreach (var view in type.ExplicitViews)
+                {
+                    totalSurfacesChecked++;
+
+                    // Collect ViewOnly members for this view
+                    var viewMethods = view.ViewMembers
+                        .Where(vm => vm.Kind == Shape.ViewPlanner.ViewMemberKind.Method)
+                        .Select(vm => type.Members.Methods.FirstOrDefault(m => m.StableId.Equals(vm.StableId)))
+                        .Where(m => m != null)
+                        .Cast<MethodSymbol>()
+                        .ToList();
+
+                    var viewProperties = view.ViewMembers
+                        .Where(vm => vm.Kind == Shape.ViewPlanner.ViewMemberKind.Property)
+                        .Select(vm => type.Members.Properties.FirstOrDefault(p => p.StableId.Equals(vm.StableId)))
+                        .Where(p => p != null)
+                        .Cast<PropertySymbol>()
+                        .ToList();
+
+                    var viewSurfaceCollisions = CheckSurfaceForCollisions(ctx, validationCtx, type, typeScope,
+                        $"view {view.ViewPropertyName}", viewMethods, viewProperties);
+                    totalCollisions += viewSurfaceCollisions;
+                }
+            }
+        }
+
+        ctx.Log("[PG]", $"M2: Checked {totalSurfacesChecked} surfaces, found {totalCollisions} signature collisions");
+    }
+
+    private static int CheckSurfaceForCollisions(
+        BuildContext ctx,
+        ValidationContext validationCtx,
+        TypeSymbol type,
+        Core.Renaming.TypeScope typeScope,
+        string surfaceName,
+        List<MethodSymbol> methods,
+        List<PropertySymbol> properties)
+    {
+        int collisionCount = 0;
+
+        // Group methods by erased signature key: (Name, IsStatic, ErasedSignature)
+        // Methods and properties are in separate namespaces, so we check them separately
+        var methodGroups = methods
+            .GroupBy(m =>
+            {
+                var finalName = ctx.Renamer.GetFinalMemberName(m.StableId, typeScope, m.IsStatic);
+                var erasedParams = string.Join(", ", m.Parameters.Select(p => EraseTypeToString(p.Type)));
+                var erasedReturn = EraseTypeToString(m.ReturnType);
+                return (finalName, m.IsStatic, erasedParams, erasedReturn);
+            })
+            .Where(g => g.Count() > 1)
+            .ToList();
+
+        foreach (var group in methodGroups)
+        {
+            var (name, isStatic, erasedParams, erasedReturn) = group.Key;
+            var members = group.ToList();
+            var scopeName = isStatic ? "static" : "instance";
+            var erasedSignature = $"{name}({erasedParams}): {erasedReturn}";
+
+            // Build member list with StableIds
+            var memberDetails = string.Join("\n", members.Select(m =>
+                $"    - stable: {m.StableId}\n" +
+                $"      clr:    {type.ClrFullName}::{m.ClrName}"));
+
+            validationCtx.RecordDiagnostic(
+                Core.Diagnostics.DiagnosticCodes.PG_OV_001,
+                "ERROR",
+                $"Duplicate erased signature in {surfaceName}\n" +
+                $"  type:      {type.ClrFullName}\n" +
+                $"  scope:     {scopeName}\n" +
+                $"  signature: {erasedSignature}\n" +
+                $"  members:\n{memberDetails}");
+
+            collisionCount++;
+        }
+
+        // Properties don't have overloads in TypeScript, but we can still check for duplicates
+        // Group by (Name, IsStatic) only
+        var propertyGroups = properties
+            .GroupBy(p =>
+            {
+                var finalName = ctx.Renamer.GetFinalMemberName(p.StableId, typeScope, p.IsStatic);
+                return (finalName, p.IsStatic);
+            })
+            .Where(g => g.Count() > 1)
+            .ToList();
+
+        foreach (var group in propertyGroups)
+        {
+            var (name, isStatic) = group.Key;
+            var members = group.ToList();
+            var scopeName = isStatic ? "static" : "instance";
+
+            // Build member list with StableIds
+            var memberDetails = string.Join("\n", members.Select(p =>
+                $"    - stable: {p.StableId}\n" +
+                $"      clr:    {type.ClrFullName}::{p.ClrName}\n" +
+                $"      type:   {EraseTypeToString(p.PropertyType)}"));
+
+            validationCtx.RecordDiagnostic(
+                Core.Diagnostics.DiagnosticCodes.PG_OV_001,
+                "ERROR",
+                $"Duplicate property name in {surfaceName}\n" +
+                $"  type:      {type.ClrFullName}\n" +
+                $"  scope:     {scopeName}\n" +
+                $"  property:  {name}\n" +
+                $"  members:\n{memberDetails}");
+
+            collisionCount++;
+        }
+
+        return collisionCount;
+    }
+
+    /// <summary>
+    /// Erase a TypeReference to a simple string representation for signature comparison.
+    /// Simplified version that doesn't require TsEmitName on types.
+    /// </summary>
+    private static string EraseTypeToString(TypeReference typeRef)
+    {
+        return typeRef switch
+        {
+            NamedTypeReference named when named.TypeArguments.Count > 0 =>
+                $"{SimplifyTypeName(named.FullName)}<{string.Join(", ", named.TypeArguments.Select(EraseTypeToString))}>",
+
+            NamedTypeReference named => SimplifyTypeName(named.FullName),
+
+            NestedTypeReference nested => SimplifyTypeName(nested.FullReference.FullName),
+
+            GenericParameterReference gp => gp.Name,
+
+            ArrayTypeReference arr => $"ReadonlyArray<{EraseTypeToString(arr.ElementType)}>",
+
+            PointerTypeReference ptr => EraseTypeToString(ptr.PointeeType),
+            ByRefTypeReference byref => EraseTypeToString(byref.ReferencedType),
+
+            _ => "unknown"
+        };
+    }
+
+    /// <summary>
+    /// Simplify type name to TypeScript-level representation.
+    /// Maps common BCL types to their TS equivalents.
+    /// </summary>
+    private static string SimplifyTypeName(string fullName)
+    {
+        return fullName switch
+        {
+            "System.Void" => "void",
+            "System.Object" => "any",
+            "System.String" => "string",
+            "System.Boolean" => "boolean",
+            "System.Int32" => "number",
+            "System.Int64" => "number",
+            "System.Double" => "number",
+            "System.Single" => "number",
+            "System.Byte" => "number",
+            "System.SByte" => "number",
+            "System.Int16" => "number",
+            "System.UInt16" => "number",
+            "System.UInt32" => "number",
+            "System.UInt64" => "number",
+            "System.Decimal" => "number",
+            _ => fullName.Replace("`", "_") // Replace generic arity marker
+        };
     }
 }
 
