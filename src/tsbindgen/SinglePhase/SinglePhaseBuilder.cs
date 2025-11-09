@@ -148,17 +148,17 @@ public static class SinglePhaseBuilder
         //    Must run before flattening so FindDeclaringInterface can walk hierarchy
         graph = StructuralConformance.Analyze(ctx, graph);
 
-        // 3. Interface inlining (flatten interfaces - AFTER indices and conformance)
-        InterfaceInliner.Inline(ctx, graph);
+        // 3. Interface inlining (flatten interfaces - AFTER indices and conformance) - PURE - returns new graph
+        graph = InterfaceInliner.Inline(ctx, graph);
 
-        // 4. Explicit interface implementation synthesis
-        ExplicitImplSynthesizer.Synthesize(ctx, graph);
+        // 4. Explicit interface implementation synthesis - PURE - returns new graph
+        graph = ExplicitImplSynthesizer.Synthesize(ctx, graph);
 
         // 5. Diamond inheritance resolution
-        DiamondResolver.Resolve(ctx, graph);
+        graph = DiamondResolver.Resolve(ctx, graph);
 
         // 6. Base overload addition
-        BaseOverloadAdder.AddOverloads(ctx, graph);
+        graph = BaseOverloadAdder.AddOverloads(ctx, graph);
 
         // 7. Static-side analysis
         StaticSideAnalyzer.Analyze(ctx, graph);
@@ -173,10 +173,10 @@ public static class SinglePhaseBuilder
         graph = FinalIndexersPass.Run(ctx, graph);
 
         // 11. Constraint closure
-        ConstraintCloser.Close(ctx, graph);
+        graph = ConstraintCloser.Close(ctx, graph);
 
         // 12. Return-type conflict resolution
-        OverloadReturnConflictResolver.Resolve(ctx, graph);
+        graph = OverloadReturnConflictResolver.Resolve(ctx, graph);
 
         // 13. View planning (explicit interface views) - PURE - returns new graph
         graph = ViewPlanner.Plan(ctx, graph);

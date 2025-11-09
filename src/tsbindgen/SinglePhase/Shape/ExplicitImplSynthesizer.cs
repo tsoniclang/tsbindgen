@@ -13,10 +13,11 @@ namespace tsbindgen.SinglePhase.Shape;
 /// <summary>
 /// Synthesizes missing interface members for classes/structs.
 /// Ensures all interface-required members exist on implementing types.
+/// PURE - returns new SymbolGraph.
 /// </summary>
 public static class ExplicitImplSynthesizer
 {
-    public static void Synthesize(BuildContext ctx, SymbolGraph graph)
+    public static SymbolGraph Synthesize(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("ExplicitImplSynthesizer", "Synthesizing missing interface members...");
 
@@ -28,17 +29,20 @@ public static class ExplicitImplSynthesizer
         ctx.Log("ExplicitImplSynthesizer", $"Processing {classesAndStructs.Count} classes/structs");
 
         int totalSynthesized = 0;
+        var updatedGraph = graph;
 
         foreach (var type in classesAndStructs)
         {
-            var synthesizedCount = SynthesizeForType(ctx, graph, type);
+            var (newGraph, synthesizedCount) = SynthesizeForType(ctx, updatedGraph, type);
+            updatedGraph = newGraph;
             totalSynthesized += synthesizedCount;
         }
 
         ctx.Log("ExplicitImplSynthesizer", $"Synthesized {totalSynthesized} interface members");
+        return updatedGraph;
     }
 
-    private static int SynthesizeForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type)
+    private static (SymbolGraph UpdatedGraph, int SynthesizedCount) SynthesizeForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type)
     {
         ctx.Log("ExplicitImplSynthesizer", $"Processing type {type.ClrFullName} with {type.Interfaces.Length} interfaces");
 
@@ -53,7 +57,7 @@ public static class ExplicitImplSynthesizer
         if (missing.Count == 0)
         {
             ctx.Log("ExplicitImplSynthesizer", $"Type {type.ClrFullName} has all required members - nothing to synthesize");
-            return 0;
+            return (graph, 0);
         }
 
         ctx.Log("ExplicitImplSynthesizer", $"Type {type.ClrFullName} missing {missing.Count} interface members");
@@ -74,21 +78,18 @@ public static class ExplicitImplSynthesizer
             synthesizedProperties.Add(synthesized);
         }
 
-        // Add synthesized members to the type
-        var updatedMembers = new TypeMembers
+        // Add synthesized members to the type (immutably)
+        var synthesizedCount = synthesizedMethods.Count + synthesizedProperties.Count;
+        var updatedGraph = graph.WithUpdatedType(type.StableId.ToString(), t => t with
         {
-            Methods = type.Members.Methods.Concat(synthesizedMethods).ToImmutableArray(),
-            Properties = type.Members.Properties.Concat(synthesizedProperties).ToImmutableArray(),
-            Fields = type.Members.Fields,
-            Events = type.Members.Events,
-            Constructors = type.Members.Constructors
-        };
+            Members = t.Members with
+            {
+                Methods = t.Members.Methods.Concat(synthesizedMethods).ToImmutableArray(),
+                Properties = t.Members.Properties.Concat(synthesizedProperties).ToImmutableArray()
+            }
+        });
 
-        // Update type (using reflection)
-        var membersProperty = typeof(TypeSymbol).GetProperty(nameof(TypeSymbol.Members));
-        membersProperty!.SetValue(type, updatedMembers);
-
-        return synthesizedMethods.Count + synthesizedProperties.Count;
+        return (updatedGraph, synthesizedCount);
     }
 
     /// <summary>

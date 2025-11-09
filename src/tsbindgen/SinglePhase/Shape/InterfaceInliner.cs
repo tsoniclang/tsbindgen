@@ -12,10 +12,11 @@ namespace tsbindgen.SinglePhase.Shape;
 /// <summary>
 /// Inlines interface hierarchies - removes extends chains.
 /// Flattens all inherited members into each interface so TypeScript doesn't need extends.
+/// PURE - returns new SymbolGraph.
 /// </summary>
 public static class InterfaceInliner
 {
-    public static void Inline(BuildContext ctx, SymbolGraph graph)
+    public static SymbolGraph Inline(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("InterfaceInliner", "Inlining interface hierarchies...");
 
@@ -26,15 +27,17 @@ public static class InterfaceInliner
 
         ctx.Log("InterfaceInliner", $"Found {interfacesToInline.Count} interfaces to inline");
 
+        var updatedGraph = graph;
         foreach (var iface in interfacesToInline)
         {
-            InlineInterface(ctx, iface, graph);
+            updatedGraph = InlineInterface(ctx, updatedGraph, iface);
         }
 
         ctx.Log("InterfaceInliner", "Complete");
+        return updatedGraph;
     }
 
-    private static void InlineInterface(BuildContext ctx, TypeSymbol iface, SymbolGraph graph)
+    private static SymbolGraph InlineInterface(BuildContext ctx, SymbolGraph graph, TypeSymbol iface)
     {
         // Collect all members from this interface and all base interfaces
         var allMembers = new List<MethodSymbol>(iface.Members.Methods);
@@ -92,15 +95,14 @@ public static class InterfaceInliner
             Constructors = iface.Members.Constructors // Interfaces don't have constructors
         };
 
-        // Replace members (using reflection since TypeSymbol properties have init-only setters)
-        var membersProperty = typeof(TypeSymbol).GetProperty(nameof(TypeSymbol.Members));
-        membersProperty!.SetValue(iface, newMembers);
-
-        // Clear the Interfaces list (no more extends in TypeScript)
-        var interfacesProperty = typeof(TypeSymbol).GetProperty(nameof(TypeSymbol.Interfaces));
-        interfacesProperty!.SetValue(iface, ImmutableArray<TypeReference>.Empty);
-
         ctx.Log("InterfaceInliner", $"Inlined {iface.ClrFullName} - {uniqueMethods.Count} methods, {uniqueProperties.Count} properties");
+
+        // Create updated type with inlined members and cleared interfaces (immutably)
+        return graph.WithUpdatedType(iface.StableId.ToString(), t => t with
+        {
+            Members = newMembers,
+            Interfaces = ImmutableArray<TypeReference>.Empty
+        });
     }
 
     private static string GetTypeFullName(TypeReference typeRef)

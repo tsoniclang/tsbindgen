@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using tsbindgen.Core.Renaming;
 using tsbindgen.SinglePhase.Model;
@@ -11,10 +12,11 @@ namespace tsbindgen.SinglePhase.Shape;
 /// Resolves diamond inheritance conflicts.
 /// When multiple inheritance paths bring the same method with potentially different signatures,
 /// this ensures all variants are available in TypeScript.
+/// PURE - returns new SymbolGraph.
 /// </summary>
 public static class DiamondResolver
 {
-    public static void Resolve(BuildContext ctx, SymbolGraph graph)
+    public static SymbolGraph Resolve(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("DiamondResolver", "Resolving diamond inheritance...");
 
@@ -24,7 +26,7 @@ public static class DiamondResolver
         {
             ctx.Log("DiamondResolver", "Strategy is Error - analyzing for conflicts");
             AnalyzeForDiamonds(ctx, graph);
-            return;
+            return graph;
         }
 
         var allTypes = graph.Namespaces
@@ -32,17 +34,20 @@ public static class DiamondResolver
             .ToList();
 
         int totalResolved = 0;
+        var updatedGraph = graph;
 
         foreach (var type in allTypes)
         {
-            var resolved = ResolveForType(ctx, graph, type, strategy);
+            var (newGraph, resolved) = ResolveForType(ctx, updatedGraph, type, strategy);
+            updatedGraph = newGraph;
             totalResolved += resolved;
         }
 
         ctx.Log("DiamondResolver", $"Resolved {totalResolved} diamond conflicts");
+        return updatedGraph;
     }
 
-    private static int ResolveForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type, Core.Policy.DiamondResolutionStrategy strategy)
+    private static (SymbolGraph UpdatedGraph, int ResolvedCount) ResolveForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type, Core.Policy.DiamondResolutionStrategy strategy)
     {
         // Find methods that come from multiple paths
         var methodGroups = type.Members.Methods
@@ -51,9 +56,10 @@ public static class DiamondResolver
             .ToList();
 
         if (methodGroups.Count == 0)
-            return 0;
+            return (graph, 0);
 
         int resolved = 0;
+        var methodsToMarkViewOnly = new HashSet<MethodSymbol>();
 
         // Sort by method name for deterministic iteration
         foreach (var group in methodGroups.OrderBy(g => g.Key))
@@ -90,16 +96,38 @@ public static class DiamondResolver
             {
                 // Keep only the most derived version (first in list, typically)
                 // Mark others as ViewOnly
-                var preferred = methods.First();
                 foreach (var method in methods.Skip(1))
                 {
-                    MarkAsViewOnly(type, method);
+                    methodsToMarkViewOnly.Add(method);
                 }
                 resolved++;
             }
         }
 
-        return resolved;
+        // If no methods need updating, return original graph
+        if (methodsToMarkViewOnly.Count == 0)
+            return (graph, resolved);
+
+        // Build new method list with updated EmitScope
+        var updatedMethods = type.Members.Methods.Select(m =>
+        {
+            if (methodsToMarkViewOnly.Contains(m))
+            {
+                return m with { EmitScope = EmitScope.ViewOnly };
+            }
+            return m;
+        }).ToImmutableArray();
+
+        // Update the type immutably
+        var updatedGraph = graph.WithUpdatedType(type.StableId.ToString(), t => t with
+        {
+            Members = t.Members with
+            {
+                Methods = updatedMethods
+            }
+        });
+
+        return (updatedGraph, resolved);
     }
 
     private static void EnsureMethodRenamed(BuildContext ctx, TypeSymbol type, MethodSymbol method)
@@ -118,13 +146,6 @@ public static class DiamondResolver
             typeScope,
             "DiamondResolved",
             method.IsStatic);
-    }
-
-    private static void MarkAsViewOnly(TypeSymbol type, MethodSymbol method)
-    {
-        // Update EmitScope to ViewOnly using reflection
-        var emitScopeProperty = typeof(MethodSymbol).GetProperty(nameof(MethodSymbol.EmitScope));
-        emitScopeProperty!.SetValue(method, EmitScope.ViewOnly);
     }
 
     private static void AnalyzeForDiamonds(BuildContext ctx, SymbolGraph graph)

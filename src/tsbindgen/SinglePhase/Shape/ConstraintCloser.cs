@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Linq;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
+using tsbindgen.SinglePhase.Model.Symbols.MemberSymbols;
 using tsbindgen.SinglePhase.Model.Types;
 
 namespace tsbindgen.SinglePhase.Shape;
@@ -14,14 +15,14 @@ namespace tsbindgen.SinglePhase.Shape;
 /// </summary>
 public static class ConstraintCloser
 {
-    public static void Close(BuildContext ctx, SymbolGraph graph)
+    public static SymbolGraph Close(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("ConstraintCloser", "Closing generic constraints...");
 
         // Step 1: Resolve raw constraint types into TypeReferences
-        ResolveAllConstraints(ctx, graph);
+        var updatedGraph = ResolveAllConstraints(ctx, graph);
 
-        var allTypes = graph.Namespaces
+        var allTypes = updatedGraph.Namespaces
             .SelectMany(ns => ns.Types)
             .ToList();
 
@@ -54,49 +55,37 @@ public static class ConstraintCloser
         }
 
         ctx.Log("ConstraintCloser", $"Closed {totalClosed} generic parameter constraints");
+        return updatedGraph;
     }
 
     /// <summary>
     /// Resolve raw System.Type constraints into TypeReferences.
     /// Uses the memoized TypeReferenceFactory with cycle detection.
+    /// PURE - returns new SymbolGraph.
     /// </summary>
-    private static void ResolveAllConstraints(BuildContext ctx, SymbolGraph graph)
+    private static SymbolGraph ResolveAllConstraints(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("ConstraintCloser", "Resolving constraint types...");
 
         // Create TypeReferenceFactory for constraint resolution
         var typeFactory = new Load.TypeReferenceFactory(ctx);
         int totalResolved = 0;
+        var updatedGraph = graph;
 
         foreach (var ns in graph.Namespaces)
         {
             foreach (var type in ns.Types)
             {
+                bool typeNeedsUpdate = false;
+                ImmutableArray<GenericParameterSymbol> updatedTypeGenericParams = type.GenericParameters;
+                ImmutableArray<MethodSymbol> updatedMethods = type.Members.Methods;
+
                 // Resolve type-level generic parameter constraints
-                foreach (var gp in type.GenericParameters)
+                if (type.GenericParameters.Length > 0)
                 {
-                    if (gp.RawConstraintTypes != null && gp.RawConstraintTypes.Length > 0)
-                    {
-                        var constraintsBuilder = ImmutableArray.CreateBuilder<TypeReference>();
+                    var typeGenericParamsBuilder = ImmutableArray.CreateBuilder<GenericParameterSymbol>();
 
-                        foreach (var rawType in gp.RawConstraintTypes)
-                        {
-                            // Uses memoized factory with cycle detection
-                            var resolved = typeFactory.Create(rawType);
-                            constraintsBuilder.Add(resolved);
-                            totalResolved++;
-                        }
-
-                        // Update the Constraints property using reflection (init-only)
-                        var constraintsProperty = typeof(GenericParameterSymbol).GetProperty(nameof(GenericParameterSymbol.Constraints));
-                        constraintsProperty!.SetValue(gp, constraintsBuilder.ToImmutable());
-                    }
-                }
-
-                // Resolve method-level generic parameter constraints
-                foreach (var method in type.Members.Methods)
-                {
-                    foreach (var gp in method.GenericParameters)
+                    foreach (var gp in type.GenericParameters)
                     {
                         if (gp.RawConstraintTypes != null && gp.RawConstraintTypes.Length > 0)
                         {
@@ -104,21 +93,99 @@ public static class ConstraintCloser
 
                             foreach (var rawType in gp.RawConstraintTypes)
                             {
+                                // Uses memoized factory with cycle detection
                                 var resolved = typeFactory.Create(rawType);
                                 constraintsBuilder.Add(resolved);
                                 totalResolved++;
                             }
 
-                            // Update the Constraints property using reflection (init-only)
-                            var constraintsProperty = typeof(GenericParameterSymbol).GetProperty(nameof(GenericParameterSymbol.Constraints));
-                            constraintsProperty!.SetValue(gp, constraintsBuilder.ToImmutable());
+                            // Create updated GenericParameterSymbol with resolved constraints
+                            var updatedGp = gp with { Constraints = constraintsBuilder.ToImmutable() };
+                            typeGenericParamsBuilder.Add(updatedGp);
+                            typeNeedsUpdate = true;
+                        }
+                        else
+                        {
+                            typeGenericParamsBuilder.Add(gp);
                         }
                     }
+
+                    updatedTypeGenericParams = typeGenericParamsBuilder.ToImmutable();
+                }
+
+                // Resolve method-level generic parameter constraints
+                if (type.Members.Methods.Length > 0)
+                {
+                    var methodsBuilder = ImmutableArray.CreateBuilder<MethodSymbol>();
+
+                    foreach (var method in type.Members.Methods)
+                    {
+                        if (method.GenericParameters.Length > 0)
+                        {
+                            var methodGenericParamsBuilder = ImmutableArray.CreateBuilder<GenericParameterSymbol>();
+                            bool methodNeedsUpdate = false;
+
+                            foreach (var gp in method.GenericParameters)
+                            {
+                                if (gp.RawConstraintTypes != null && gp.RawConstraintTypes.Length > 0)
+                                {
+                                    var constraintsBuilder = ImmutableArray.CreateBuilder<TypeReference>();
+
+                                    foreach (var rawType in gp.RawConstraintTypes)
+                                    {
+                                        var resolved = typeFactory.Create(rawType);
+                                        constraintsBuilder.Add(resolved);
+                                        totalResolved++;
+                                    }
+
+                                    // Create updated GenericParameterSymbol with resolved constraints
+                                    var updatedGp = gp with { Constraints = constraintsBuilder.ToImmutable() };
+                                    methodGenericParamsBuilder.Add(updatedGp);
+                                    methodNeedsUpdate = true;
+                                }
+                                else
+                                {
+                                    methodGenericParamsBuilder.Add(gp);
+                                }
+                            }
+
+                            if (methodNeedsUpdate)
+                            {
+                                var updatedMethod = method with { GenericParameters = methodGenericParamsBuilder.ToImmutable() };
+                                methodsBuilder.Add(updatedMethod);
+                                typeNeedsUpdate = true;
+                            }
+                            else
+                            {
+                                methodsBuilder.Add(method);
+                            }
+                        }
+                        else
+                        {
+                            methodsBuilder.Add(method);
+                        }
+                    }
+
+                    updatedMethods = methodsBuilder.ToImmutable();
+                }
+
+                // Update the type if any changes were made
+                if (typeNeedsUpdate)
+                {
+                    updatedGraph = updatedGraph.WithUpdatedType(type.StableId.ToString(), t => t with
+                    {
+                        GenericParameters = updatedTypeGenericParams,
+                        Members = t.Members with
+                        {
+                            Methods = updatedMethods
+                        }
+                    });
                 }
             }
         }
 
         ctx.Log("ConstraintCloser", $"Resolved {totalResolved} constraint types");
+        return updatedGraph;
     }
 
     private static void CloseConstraints(BuildContext ctx, GenericParameterSymbol gp)

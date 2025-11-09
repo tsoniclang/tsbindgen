@@ -11,10 +11,11 @@ namespace tsbindgen.SinglePhase.Shape;
 /// <summary>
 /// Adds base class overloads when derived class differs.
 /// In TypeScript, all overloads must be present on the derived class.
+/// PURE - returns new SymbolGraph.
 /// </summary>
 public static class BaseOverloadAdder
 {
-    public static void AddOverloads(BuildContext ctx, SymbolGraph graph)
+    public static SymbolGraph AddOverloads(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("BaseOverloadAdder", "Adding base class overloads...");
 
@@ -24,22 +25,25 @@ public static class BaseOverloadAdder
             .ToList();
 
         int totalAdded = 0;
+        var updatedGraph = graph;
 
         foreach (var derivedClass in classes)
         {
-            var added = AddOverloadsForClass(ctx, graph, derivedClass);
+            var (newGraph, added) = AddOverloadsForClass(ctx, updatedGraph, derivedClass);
+            updatedGraph = newGraph;
             totalAdded += added;
         }
 
         ctx.Log("BaseOverloadAdder", $"Added {totalAdded} base overloads");
+        return updatedGraph;
     }
 
-    private static int AddOverloadsForClass(BuildContext ctx, SymbolGraph graph, TypeSymbol derivedClass)
+    private static (SymbolGraph UpdatedGraph, int AddedCount) AddOverloadsForClass(BuildContext ctx, SymbolGraph graph, TypeSymbol derivedClass)
     {
         // Find the base class
         var baseClass = FindBaseClass(graph, derivedClass);
         if (baseClass == null)
-            return 0; // External base or System.Object
+            return (graph, 0); // External base or System.Object
 
         // Find methods in derived that override or hide base methods
         var derivedMethodsByName = derivedClass.Members.Methods
@@ -91,24 +95,20 @@ public static class BaseOverloadAdder
         }
 
         if (addedMethods.Count == 0)
-            return 0;
+            return (graph, 0);
 
         ctx.Log("BaseOverloadAdder", $"Adding {addedMethods.Count} base overloads to {derivedClass.ClrFullName}");
 
-        // Add to derived class
-        var updatedMembers = new TypeMembers
+        // Add to derived class (immutably)
+        var updatedGraph = graph.WithUpdatedType(derivedClass.StableId.ToString(), t => t with
         {
-            Methods = derivedClass.Members.Methods.Concat(addedMethods).ToImmutableArray(),
-            Properties = derivedClass.Members.Properties,
-            Fields = derivedClass.Members.Fields,
-            Events = derivedClass.Members.Events,
-            Constructors = derivedClass.Members.Constructors
-        };
+            Members = t.Members with
+            {
+                Methods = t.Members.Methods.Concat(addedMethods).ToImmutableArray()
+            }
+        });
 
-        var membersProperty = typeof(TypeSymbol).GetProperty(nameof(TypeSymbol.Members));
-        membersProperty!.SetValue(derivedClass, updatedMembers);
-
-        return addedMethods.Count;
+        return (updatedGraph, addedMethods.Count);
     }
 
     private static MethodSymbol CreateBaseOverloadMethod(BuildContext ctx, TypeSymbol derivedClass, MethodSymbol baseMethod)

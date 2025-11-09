@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Collections.Immutable;
 using System.Linq;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
@@ -10,10 +11,11 @@ namespace tsbindgen.SinglePhase.Shape;
 /// Resolves return-type conflicts in overloads.
 /// TypeScript doesn't support method overloads that differ only in return type.
 /// This component detects such conflicts and marks non-representative overloads as ViewOnly.
+/// PURE - returns new SymbolGraph.
 /// </summary>
 public static class OverloadReturnConflictResolver
 {
-    public static void Resolve(BuildContext ctx, SymbolGraph graph)
+    public static SymbolGraph Resolve(BuildContext ctx, SymbolGraph graph)
     {
         ctx.Log("OverloadReturnConflictResolver", "Resolving return-type conflicts...");
 
@@ -22,17 +24,20 @@ public static class OverloadReturnConflictResolver
             .ToList();
 
         int totalResolved = 0;
+        var updatedGraph = graph;
 
         foreach (var type in allTypes)
         {
-            var resolved = ResolveForType(ctx, type);
+            var (newGraph, resolved) = ResolveForType(ctx, updatedGraph, type);
+            updatedGraph = newGraph;
             totalResolved += resolved;
         }
 
         ctx.Log("OverloadReturnConflictResolver", $"Resolved {totalResolved} return-type conflicts");
+        return updatedGraph;
     }
 
-    private static int ResolveForType(BuildContext ctx, TypeSymbol type)
+    private static (SymbolGraph UpdatedGraph, int ResolvedCount) ResolveForType(BuildContext ctx, SymbolGraph graph, TypeSymbol type)
     {
         // Group methods by signature excluding return type, sorted for deterministic iteration
         var methodGroups = type.Members.Methods
@@ -42,6 +47,7 @@ public static class OverloadReturnConflictResolver
             .ToList();
 
         int resolved = 0;
+        var methodsToMarkViewOnly = new HashSet<MethodSymbol>();
 
         foreach (var group in methodGroups)
         {
@@ -65,7 +71,7 @@ public static class OverloadReturnConflictResolver
             {
                 if (method != representative)
                 {
-                    MarkAsViewOnly(method);
+                    methodsToMarkViewOnly.Add(method);
                 }
             }
 
@@ -79,6 +85,8 @@ public static class OverloadReturnConflictResolver
             .Where(g => g.Count() > 1)
             .OrderBy(g => g.Key)
             .ToList();
+
+        var propertiesToMarkViewOnly = new HashSet<PropertySymbol>();
 
         foreach (var group in propertyGroups)
         {
@@ -97,14 +105,47 @@ public static class OverloadReturnConflictResolver
             {
                 if (property != representative)
                 {
-                    MarkPropertyAsViewOnly(property);
+                    propertiesToMarkViewOnly.Add(property);
                 }
             }
 
             resolved++;
         }
 
-        return resolved;
+        // If nothing needs updating, return original graph
+        if (methodsToMarkViewOnly.Count == 0 && propertiesToMarkViewOnly.Count == 0)
+            return (graph, resolved);
+
+        // Build updated member lists immutably
+        var updatedMethods = type.Members.Methods.Select(m =>
+        {
+            if (methodsToMarkViewOnly.Contains(m))
+            {
+                return m with { EmitScope = EmitScope.ViewOnly };
+            }
+            return m;
+        }).ToImmutableArray();
+
+        var updatedProperties = type.Members.Properties.Select(p =>
+        {
+            if (propertiesToMarkViewOnly.Contains(p))
+            {
+                return p with { EmitScope = EmitScope.ViewOnly };
+            }
+            return p;
+        }).ToImmutableArray();
+
+        // Update the type immutably
+        var updatedGraph = graph.WithUpdatedType(type.StableId.ToString(), t => t with
+        {
+            Members = t.Members with
+            {
+                Methods = updatedMethods,
+                Properties = updatedProperties
+            }
+        });
+
+        return (updatedGraph, resolved);
     }
 
     private static string GetSignatureWithoutReturn(BuildContext ctx, MethodSymbol method)
@@ -154,18 +195,6 @@ public static class OverloadReturnConflictResolver
 
         // All void - just pick first
         return methods.First();
-    }
-
-    private static void MarkAsViewOnly(MethodSymbol method)
-    {
-        var emitScopeProperty = typeof(MethodSymbol).GetProperty(nameof(MethodSymbol.EmitScope));
-        emitScopeProperty!.SetValue(method, EmitScope.ViewOnly);
-    }
-
-    private static void MarkPropertyAsViewOnly(PropertySymbol property)
-    {
-        var emitScopeProperty = typeof(PropertySymbol).GetProperty(nameof(PropertySymbol.EmitScope));
-        emitScopeProperty!.SetValue(property, EmitScope.ViewOnly);
     }
 
     private static string GetTypeFullName(Model.Types.TypeReference typeRef)
