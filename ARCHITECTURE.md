@@ -1,8 +1,8 @@
 # Single-Phase Pipeline Architecture - Complete System Documentation
 
-**Generated**: 2025-11-09
+**Generated**: 2025-11-09 (Updated: commit eeaba5d - Self-contained architecture)
 **Pipeline**: Single-Phase Architecture (Experimental)
-**Files Analyzed**: 66
+**Files Analyzed**: 73 (66 original + 7 replicated Renaming infrastructure)
 **Status**: Comprehensive documentation covering all subsystems
 
 ---
@@ -107,6 +107,41 @@ The single-phase pipeline is a **pure functional architecture** that transforms 
 │    │ ModuleStubEmitter → index.js             │                  │
 │    └──────────────────────────────────────────┘                  │
 └─────────────────────────────────────────────────────────────────┘
+```
+
+### Self-Contained Architecture (as of commit `eeaba5d`)
+
+**Key Architectural Decision**: The SinglePhase pipeline is now fully self-contained with its own renaming infrastructure.
+
+**What Changed**:
+- All renaming infrastructure replicated from `Core/Renaming/` → `SinglePhase/Renaming/`
+- Files replicated:
+  - `SymbolRenamer.cs` (with M5 dual-scope changes applied)
+  - `RenameScope.cs` (with ViewScope record added)
+  - `RenamerScopes.cs` (new canonical scope helper)
+  - `StableId.cs`
+  - `RenameDecision.cs`
+  - `NameReservationTable.cs`
+  - `TypeScriptReservedWords.cs`
+
+**Why This Matters**:
+1. **Independence**: New pipeline can evolve without breaking old pipeline
+2. **Isolation**: M5 changes (dual-scope naming) only affect new pipeline
+3. **Safety**: Old pipeline remains unchanged and functional (validated: 4,047 types, 0 syntax errors)
+4. **Future-Ready**: Eventually `Core/` will be deleted when old pipeline is retired
+
+**Directory Structure**:
+```
+src/tsbindgen/
+├── Core/Renaming/          # Old pipeline (unchanged)
+│   ├── SymbolRenamer.cs    # Original single-scope version
+│   ├── RenameScope.cs      # Original (no ViewScope)
+│   └── ...
+└── SinglePhase/Renaming/   # New pipeline (self-contained)
+    ├── SymbolRenamer.cs    # M5 dual-scope version
+    ├── RenameScope.cs      # With ViewScope record
+    ├── RenamerScopes.cs    # Canonical scope helpers
+    └── ...
 ```
 
 ---
@@ -337,28 +372,34 @@ if (Logger != null && (VerboseLogging || LogCategories?.Contains(category)))
 
 ---
 
-### File: `src/tsbindgen/Core/Renaming/SymbolRenamer.cs`
+### File: `src/tsbindgen/SinglePhase/Renaming/SymbolRenamer.cs`
+
+**Location**: SinglePhase/Renaming (replicated from Core/Renaming for pipeline independence)
 
 **Purpose**: Central naming authority. All TypeScript identifiers flow through this component. Maintains rename decisions with full provenance tracking.
 
+**Architecture Note**: As of commit `eeaba5d`, all renaming infrastructure has been replicated to `SinglePhase/Renaming/` to make the new pipeline fully self-contained. The old pipeline continues using `Core/Renaming/` unchanged.
+
 #### Architecture
 
-**Scope-Based Naming Model**:
+**Scope-Based Naming Model** (M5 Canonical Formats):
 ```
 Scope Hierarchy:
-  - Namespace Scope: "ns:System.Collections.Generic"
-  - Type Scope: "type:System.Collections.Generic.List`1"
-  - Class Surface Scope: "type:System.Decimal#instance" or "#static"
-  - View Scope: "view:{TypeStableId}:{InterfaceStableId}#instance"
+  - Namespace Scope (public):  "ns:System:public"
+  - Namespace Scope (internal): "ns:System:internal"
+  - Class Surface Scope (instance): "type:System.Decimal#instance"
+  - Class Surface Scope (static):   "type:System.Decimal#static"
+  - View Scope: "view:{TypeStableId}:{InterfaceStableId}#instance" or "#static"
+    Example: "view:System.Private.CoreLib:System.Decimal:System.Private.CoreLib:System.IConvertible#instance"
 ```
 
-**Data Structures**:
+**Data Structures** (M5 Dual-Scope Model):
 ```csharp
 // Per-scope reservation tables
 Dictionary<string, NameReservationTable> _tablesByScope
 
-// StableId → Final decision mapping
-Dictionary<StableId, RenameDecision> _decisions
+// M5: StableId + ScopeKey → Final decision mapping (supports dual-scope reservations)
+Dictionary<(StableId Id, string ScopeKey), RenameDecision> _decisions
 
 // Explicit CLI overrides
 Dictionary<StableId, string> _explicitOverrides
@@ -366,6 +407,8 @@ Dictionary<StableId, string> _explicitOverrides
 // Style transform (e.g., camelCase)
 Func<string, string>? _styleTransform
 ```
+
+**M5 Critical Change**: The `_decisions` dictionary now keys by `(StableId, ScopeKey)` tuple to support the same member being reserved in multiple scopes (e.g., `toByte` in class scope and `toByte$view` in view scope).
 
 #### Methods
 
@@ -508,7 +551,9 @@ if (classAllNames.Contains(peek)) {
 
 ---
 
-### File: `src/tsbindgen/Core/Renaming/StableId.cs`
+### File: `src/tsbindgen/SinglePhase/Renaming/StableId.cs`
+
+**Location**: SinglePhase/Renaming (replicated from Core/Renaming for pipeline independence)
 
 **Purpose**: Immutable identity for types and members BEFORE any name transformations. Used as keys for rename decisions and bindings back to CLR.
 
