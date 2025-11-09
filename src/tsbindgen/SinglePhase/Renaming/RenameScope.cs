@@ -72,33 +72,3 @@ public sealed record ImportAliasScope : RenameScope
     /// </summary>
     internal ImportAliasScope() { }
 }
-
-/// <summary>
-/// Scope for explicit interface view members (ViewOnly members).
-/// M5 CRITICAL: View members get separate scopes to avoid colliding with class surface.
-/// NOTE: This type is deprecated - use TypeScope with view: prefix instead (created via ScopeFactory.ViewSurface).
-/// </summary>
-public sealed record ViewScope : RenameScope
-{
-    /// <summary>
-    /// Type StableId (assembly-qualified identifier).
-    /// Example: "System.Private.CoreLib:System.Decimal"
-    /// </summary>
-    public required string TypeStableId { get; init; }
-
-    /// <summary>
-    /// Interface StableId (assembly-qualified identifier).
-    /// Example: "System.Private.CoreLib:System.IConvertible"
-    /// </summary>
-    public required string InterfaceStableId { get; init; }
-
-    /// <summary>
-    /// True for static member sub-scope, false for instance member sub-scope.
-    /// </summary>
-    public required bool IsStatic { get; init; }
-
-    /// <summary>
-    /// Internal constructor - deprecated, use ScopeFactory.ViewSurface which returns TypeScope.
-    /// </summary>
-    internal ViewScope() { }
-}

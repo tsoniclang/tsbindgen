@@ -225,6 +225,60 @@ public sealed class SymbolRenamer
     /// </summary>
     public IReadOnlyCollection<RenameDecision> GetAllDecisions() => _decisions.Values;
 
+    // ============================================================================
+    // QUERY HELPERS (for PhaseGate and emitters - prevent guessing)
+    // ============================================================================
+
+    /// <summary>
+    /// Check if a type name has been reserved in the specified namespace scope.
+    /// Returns true if a rename decision exists for this type.
+    /// </summary>
+    public bool HasFinalTypeName(StableId stableId, NamespaceScope scope)
+    {
+        AssertNamespaceScope(scope);
+        return _decisions.ContainsKey((stableId, scope.ScopeKey));
+    }
+
+    /// <summary>
+    /// Check if a member name has been reserved in the CLASS surface scope.
+    /// CRITICAL: Scope must be a SURFACE scope (with #static or #instance suffix).
+    /// Use ScopeFactory.ClassSurface(type, isStatic) to create the scope.
+    /// </summary>
+    public bool HasFinalMemberName(StableId stableId, TypeScope scope)
+    {
+        AssertMemberScope(scope);
+
+        // Ensure this is a class scope, not a view scope
+        if (scope.ScopeKey.StartsWith("view:", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"HasFinalMemberName called with view scope '{scope.ScopeKey}'. " +
+                "Use HasFinalViewMemberName for view members.");
+        }
+
+        return _decisions.ContainsKey((stableId, scope.ScopeKey));
+    }
+
+    /// <summary>
+    /// Check if a member name has been reserved in the VIEW surface scope.
+    /// CRITICAL: Scope must be a SURFACE scope (with #static or #instance suffix).
+    /// Use ScopeFactory.ViewSurface(type, interfaceStableId, isStatic) to create the scope.
+    /// </summary>
+    public bool HasFinalViewMemberName(StableId stableId, TypeScope scope)
+    {
+        AssertMemberScope(scope);
+
+        // Ensure this is a view scope, not a class scope
+        if (scope.ScopeKey.StartsWith("type:", StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                $"HasFinalViewMemberName called with class scope '{scope.ScopeKey}'. " +
+                "Use HasFinalMemberName for class members.");
+        }
+
+        return _decisions.ContainsKey((stableId, scope.ScopeKey));
+    }
+
     /// <summary>
     /// Check if a name is already reserved in a specific scope.
     /// Used for collision detection when reserving view members.

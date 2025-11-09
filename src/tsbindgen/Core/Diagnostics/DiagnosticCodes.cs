@@ -79,8 +79,16 @@ public static class DiagnosticCodes
     public const string PG_INT_002 = "PG_INT_002"; // Member appears in both ClassSurface and ViewOnly
     public const string PG_INT_003 = "PG_INT_003"; // ClassSurface member has SourceInterface set
 
-    // PhaseGate hardening - Final name completeness (Step 5)
-    public const string PG_FIN_003 = "PG_FIN_003"; // Member missing final name in scope after reservation
+    // PhaseGate hardening - Finalization sweep (comprehensive pre-emit validation)
+    public const string PG_FIN_001 = "PG_FIN_001"; // Member has no final placement (EmitScope null/unspecified) or illegal combo (ClassSurface + ViewOnly)
+    public const string PG_FIN_002 = "PG_FIN_002"; // Member marked ViewOnly but not found in exactly one ExplicitView
+    public const string PG_FIN_003 = "PG_FIN_003"; // Emitting member missing final name in the correct scope
+    public const string PG_FIN_004 = "PG_FIN_004"; // Emitting type missing final name in namespace scope
+    public const string PG_FIN_005 = "PG_FIN_005"; // Empty/invalid view (zero members, or members not belonging to this type)
+    public const string PG_FIN_006 = "PG_FIN_006"; // Duplicate membership (member appears in >1 view of the same type)
+    public const string PG_FIN_007 = "PG_FIN_007"; // Class/View dual-role clash (same StableId ends up on both surfaces)
+    public const string PG_FIN_008 = "PG_FIN_008"; // Interface requires a view (per conformance audit) but the type has no matching view
+    public const string PG_FIN_009 = "PG_FIN_009"; // Param/TypeParam/Property/View property still unsanitized (post-sanitizer audit)
 
     // PhaseGate hardening - Scope validation (Step 6)
     public const string PG_SCOPE_003 = "PG_SCOPE_003"; // Empty/malformed scope key
