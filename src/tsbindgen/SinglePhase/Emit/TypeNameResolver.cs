@@ -39,14 +39,15 @@ public sealed class TypeNameResolver
     /// <summary>
     /// Resolve the final TypeScript identifier for a NamedTypeReference.
     /// Wrapper for ResolveTypeName to provide consistent API.
+    /// CRITICAL: Uses TypeMap to short-circuit built-in types BEFORE graph lookup.
+    /// This prevents PG_LOAD_001 false positives for primitives.
     /// </summary>
     public string For(NamedTypeReference named)
     {
-        // 1. Check if this is a primitive type (short-circuit)
-        var primitiveType = TryMapPrimitive(named.FullName);
-        if (primitiveType != null)
+        // 1. Try TypeMap FIRST (short-circuit built-in types before graph lookup)
+        if (TypeMap.TryMapBuiltin(named.FullName, out var builtinType))
         {
-            return primitiveType;
+            return builtinType;
         }
 
         // 2. Look up TypeSymbol in graph using StableId
@@ -105,37 +106,8 @@ public sealed class TypeNameResolver
     /// </summary>
     public static string? TryMapPrimitive(string clrFullName)
     {
-        return clrFullName switch
-        {
-            // Boolean
-            "System.Boolean" => "boolean",
-
-            // Numeric types → branded types (defined in each namespace)
-            "System.SByte" => "sbyte",
-            "System.Byte" => "byte",
-            "System.Int16" => "short",
-            "System.UInt16" => "ushort",
-            "System.Int32" => "int",
-            "System.UInt32" => "uint",
-            "System.Int64" => "long",
-            "System.UInt64" => "ulong",
-            "System.Single" => "float",
-            "System.Double" => "double",
-            "System.Decimal" => "decimal",
-            "System.IntPtr" => "nint",
-            "System.UIntPtr" => "nuint",
-
-            // String
-            "System.String" => "string",
-
-            // Void
-            "System.Void" => "void",
-
-            // Object
-            "System.Object" => "any",
-
-            _ => null
-        };
+        TypeMap.TryMapBuiltin(clrFullName, out var tsType);
+        return tsType;
     }
 
     /// <summary>
@@ -143,6 +115,6 @@ public sealed class TypeNameResolver
     /// </summary>
     public static bool IsPrimitive(string clrFullName)
     {
-        return TryMapPrimitive(clrFullName) != null;
+        return TypeMap.TryMapBuiltin(clrFullName, out _);
     }
 }

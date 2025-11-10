@@ -78,11 +78,16 @@ public static class PhaseGate
         // Validates TypeRefPrinter→TypeNameResolver→Renamer chain integrity
         ValidatePrinterNameConsistency(ctx, graph, validationContext);
 
-        // PhaseGate Hardening - M8: Import completeness (PG_IMPORT_001)
+        // PhaseGate Hardening - M8: Public API surface validation (PG_API_001, PG_API_002)
+        // Validates public APIs don't reference non-emitted/internal types
+        // THIS MUST RUN BEFORE PG_IMPORT_001 - it's more fundamental
+        ValidatePublicApiSurface(ctx, graph, imports, validationContext);
+
+        // PhaseGate Hardening - M9: Import completeness (PG_IMPORT_001)
         // Validates every foreign type used in signatures has a corresponding import
         ValidateImportCompleteness(ctx, graph, imports, validationContext);
 
-        // PhaseGate Hardening - M9: Export completeness (PG_EXPORT_001)
+        // PhaseGate Hardening - M10: Export completeness (PG_EXPORT_001)
         // Validates imported types are actually exported by source namespaces
         ValidateExportCompleteness(ctx, graph, imports, validationContext);
 
@@ -792,6 +797,8 @@ public static class PhaseGate
             Core.Diagnostics.DiagnosticCodes.PG_PRINT_001 => "Type name mismatch (Printer vs Renamer)",
             Core.Diagnostics.DiagnosticCodes.PG_IMPORT_001 => "Type used but not imported",
             Core.Diagnostics.DiagnosticCodes.PG_EXPORT_001 => "Import references unexported type",
+            Core.Diagnostics.DiagnosticCodes.PG_API_001 => "Public API exposes internal/non-emitted type",
+            Core.Diagnostics.DiagnosticCodes.PG_API_002 => "Generic constraint references non-emitted type",
             _ => "Unknown diagnostic"
         };
     }
@@ -3097,6 +3104,156 @@ public static class PhaseGate
     }
 
     /// <summary>
+    /// PG_API_001/002: Validates that public API surface doesn't reference non-emitted/internal types.
+    /// This is the SEMANTIC validator - catches "public API exposes internal type" errors.
+    /// Must run BEFORE PG_IMPORT_001 because it's more fundamental.
+    /// </summary>
+    private static void ValidatePublicApiSurface(BuildContext ctx, SymbolGraph graph, ImportPlan imports, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate", "Validating public API surface (PG_API_001/002)...");
+
+        int checkedTypes = 0;
+        int apiViolations = 0;
+
+        // Helper: Check if a type will be emitted
+        bool IsEmitted(Model.Symbols.TypeSymbol type)
+        {
+            return type.Accessibility == Model.Symbols.Accessibility.Public;
+        }
+
+        // Helper: Check if a type is exported from its namespace
+        bool IsExported(Model.Symbols.TypeSymbol type, ImportPlan plan)
+        {
+            if (!plan.NamespaceExports.TryGetValue(type.Namespace, out var exports))
+                return false;
+
+            var finalName = ctx.Renamer.GetFinalTypeName(type);
+            return exports.Any(e => e.ExportName == finalName);
+        }
+
+        // Helper: Check a single type reference in public API
+        void CheckApiTypeReference(Model.Symbols.TypeSymbol ownerType, string location, Model.Types.NamedTypeReference named)
+        {
+            // Skip primitives
+            if (Emit.TypeNameResolver.IsPrimitive(named.FullName))
+                return;
+
+            // Try to resolve to in-graph type
+            var stableId = $"{named.AssemblyName}:{named.FullName}";
+            if (!graph.TypeIndex.TryGetValue(stableId, out var referencedType))
+            {
+                // External type - skip (handled separately)
+                return;
+            }
+
+            // Check if referenced type is emitted and exported
+            var isEmitted = IsEmitted(referencedType);
+            var isExported = IsExported(referencedType, imports);
+
+            if (!isEmitted || !isExported)
+            {
+                var finalName = ctx.Renamer.GetFinalTypeName(referencedType);
+                validationCtx.RecordDiagnostic(
+                    Core.Diagnostics.DiagnosticCodes.PG_API_001,
+                    "ERROR",
+                    $"{ownerType.Namespace}.{ownerType.ClrName} exposes non-emitted type '{finalName}' " +
+                    $"at {location} (emitted={isEmitted}, exported={isExported}, " +
+                    $"accessibility={referencedType.Accessibility})");
+                apiViolations++;
+            }
+        }
+
+        // Helper: Walk TypeReference tree
+        void Walk(Model.Symbols.TypeSymbol owner, string location, Model.Types.TypeReference? tr)
+        {
+            if (tr == null) return;
+
+            switch (tr)
+            {
+                case Model.Types.NamedTypeReference named:
+                    CheckApiTypeReference(owner, location, named);
+                    // Recurse into type arguments
+                    foreach (var arg in named.TypeArguments)
+                        Walk(owner, location, arg);
+                    break;
+
+                case Model.Types.ArrayTypeReference arr:
+                    Walk(owner, location, arr.ElementType);
+                    break;
+
+                case Model.Types.PointerTypeReference ptr:
+                    Walk(owner, location, ptr.PointeeType);
+                    break;
+
+                case Model.Types.ByRefTypeReference byref:
+                    Walk(owner, location, byref.ReferencedType);
+                    break;
+
+                case Model.Types.GenericParameterReference:
+                    // Generic parameters are declared locally
+                    break;
+            }
+        }
+
+        // Walk all PUBLIC, EMITTED types
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types.Where(IsEmitted))
+            {
+                // Walk base type
+                if (type.BaseType != null)
+                    Walk(type, "base type", type.BaseType);
+
+                // Walk interfaces
+                foreach (var iface in type.Interfaces)
+                    Walk(type, "interface", iface);
+
+                // Walk method signatures (public only)
+                foreach (var method in type.Members.Methods.Where(m => m.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                {
+                    foreach (var param in method.Parameters)
+                        Walk(type, $"method '{method.ClrName}' parameter '{param.Name}'", param.Type);
+                    Walk(type, $"method '{method.ClrName}' return", method.ReturnType);
+
+                    // PG_API_002: Generic constraints
+                    foreach (var gp in method.GenericParameters)
+                    {
+                        foreach (var constraint in gp.Constraints)
+                            Walk(type, $"method '{method.ClrName}' generic constraint <{gp.Name}>", constraint);
+                    }
+                }
+
+                // Walk property signatures (public only)
+                foreach (var prop in type.Members.Properties.Where(p => p.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                {
+                    Walk(type, $"property '{prop.ClrName}' type", prop.PropertyType);
+                    foreach (var param in prop.IndexParameters)
+                        Walk(type, $"property '{prop.ClrName}' indexer parameter", param.Type);
+                }
+
+                // Walk field types (public only)
+                foreach (var field in type.Members.Fields.Where(f => f.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                    Walk(type, $"field '{field.ClrName}' type", field.FieldType);
+
+                // Walk event types (public only)
+                foreach (var evt in type.Members.Events.Where(e => e.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                    Walk(type, $"event '{evt.ClrName}' handler type", evt.EventHandlerType);
+
+                // PG_API_002: Type-level generic constraints
+                foreach (var gp in type.GenericParameters)
+                {
+                    foreach (var constraint in gp.Constraints)
+                        Walk(type, $"generic constraint <{gp.Name}>", constraint);
+                }
+
+                checkedTypes++;
+            }
+        }
+
+        ctx.Log("PhaseGate", $"Validated {checkedTypes} public types. API violations: {apiViolations}");
+    }
+
+    /// <summary>
     /// PG_IMPORT_001: Validates that every foreign type used in signatures has a corresponding import.
     /// Walks all type references and ensures they're either:
     /// - Declared in the current namespace
@@ -3121,10 +3278,15 @@ public static class PhaseGate
                 stmt.TypeImports.Any(ti => ti.TypeName == tsTypeName || ti.Alias == tsTypeName));
         }
 
-        // Helper: Check if type is declared locally
-        bool IsDeclaredLocally(NamespaceSymbol ns, string clrFullName)
+        // Helper: Check if type is declared locally AND will be emitted
+        bool IsDeclaredAndEmitted(NamespaceSymbol ns, string clrFullName)
         {
-            return ns.Types.Any(t => t.ClrFullName == clrFullName);
+            var type = ns.Types.FirstOrDefault(t => t.ClrFullName == clrFullName);
+            if (type == null) return false;
+
+            // Type must be public and not omitted to be emitted
+            // Internal/private types won't be in the output even if they're in the namespace
+            return type.Accessibility == Model.Symbols.Accessibility.Public;
         }
 
         // Helper: Walk type references and check imports
@@ -3134,8 +3296,8 @@ public static class PhaseGate
             if (Emit.TypeNameResolver.IsPrimitive(named.FullName))
                 return;
 
-            // Check if it's declared in this namespace
-            if (IsDeclaredLocally(ns, named.FullName))
+            // Check if it's declared in this namespace AND will be emitted
+            if (IsDeclaredAndEmitted(ns, named.FullName))
                 return;
 
             // Check if it's in the graph

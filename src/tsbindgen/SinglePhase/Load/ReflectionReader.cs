@@ -44,17 +44,18 @@ public sealed class ReflectionReader
 
             foreach (var type in assembly.GetTypes())
             {
-                // Only process public types
-                if (!type.IsPublic && !type.IsNestedPublic)
-                    continue;
-
-                // Skip compiler-generated types
+                // Skip compiler-generated types first
                 // Common patterns: <Name>e__FixedBuffer, <>c__DisplayClass, <>d__Iterator, <>f__AnonymousType
                 if (IsCompilerGenerated(type.Name))
                 {
                     _ctx.Log("ReflectionReader", $"Skipping compiler-generated type: {type.FullName}");
                     continue;
                 }
+
+                // Only process public types (correctly handling nested types)
+                var accessibility = ComputeAccessibility(type);
+                if (accessibility != Accessibility.Public)
+                    continue;
 
                 var typeSymbol = ReadType(type);
                 var ns = typeSymbol.Namespace;
@@ -107,6 +108,7 @@ public sealed class ReflectionReader
         };
 
         var kind = DetermineTypeKind(type);
+        var accessibility = ComputeAccessibility(type);
         var genericParams = type.IsGenericType
             ? type.GetGenericArguments().Select(_typeFactory.CreateGenericParameterSymbol).ToImmutableArray()
             : ImmutableArray<GenericParameterSymbol>.Empty;
@@ -128,6 +130,7 @@ public sealed class ReflectionReader
             StableId = stableId,
             ClrFullName = _ctx.Intern(type.FullName ?? type.Name),
             ClrName = _ctx.Intern(type.Name),
+            Accessibility = accessibility,
             Namespace = _ctx.Intern(type.Namespace ?? ""),
             Kind = kind,
             Arity = type.IsGenericType ? type.GetGenericArguments().Length : 0,
@@ -141,6 +144,34 @@ public sealed class ReflectionReader
             IsSealed = type.IsSealed,
             IsStatic = type.IsAbstract && type.IsSealed && !type.IsValueType
         };
+    }
+
+    /// <summary>
+    /// Compute accessibility for a type, correctly handling nested types.
+    /// For nested types, accessibility is the intersection of the declaring type's
+    /// accessibility and the nested type's visibility.
+    /// </summary>
+    private static Accessibility ComputeAccessibility(Type type)
+    {
+        // Top-level types: simply check IsPublic
+        if (!type.IsNested)
+        {
+            return type.IsPublic ? Accessibility.Public : Accessibility.Internal;
+        }
+
+        // Nested types: combine declaring type's accessibility with nested visibility
+        // A nested public type is only truly public if its declaring type is also public
+        if (type.IsNestedPublic)
+        {
+            var declaringAccessibility = ComputeAccessibility(type.DeclaringType!);
+            return declaringAccessibility == Accessibility.Public
+                ? Accessibility.Public
+                : Accessibility.Internal;
+        }
+
+        // Any other nested visibility (family, assembly, famandassem, famorassem, private)
+        // is not public - mark as Internal
+        return Accessibility.Internal;
     }
 
     private TypeKind DetermineTypeKind(Type type)

@@ -42,11 +42,12 @@ public static class ImportGraph
     private static void BuildNamespaceTypeIndex(BuildContext ctx, SymbolGraph graph, ImportGraphData graphData)
     {
         // Build index: namespace name -> set of type full names in that namespace
+        // ONLY INDEX PUBLIC TYPES - internal types won't be emitted so shouldn't be in import index
         foreach (var ns in graph.Namespaces)
         {
             var typeNames = new HashSet<string>();
 
-            foreach (var type in ns.Types)
+            foreach (var type in ns.Types.Where(t => t.Accessibility == Accessibility.Public))
             {
                 typeNames.Add(type.ClrFullName);
             }
@@ -65,7 +66,8 @@ public static class ImportGraph
     {
         var dependencies = new HashSet<string>();
 
-        foreach (var type in ns.Types)
+        // ONLY ANALYZE PUBLIC TYPES - internal types won't be emitted
+        foreach (var type in ns.Types.Where(t => t.Accessibility == Accessibility.Public))
         {
             // Analyze base class - collect ALL referenced types recursively
             if (type.BaseType != null)

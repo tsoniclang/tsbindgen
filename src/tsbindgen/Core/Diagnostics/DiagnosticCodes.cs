@@ -102,4 +102,8 @@ public static class DiagnosticCodes
 
     // PhaseGate hardening - Export validation (imported types are actually exported)
     public const string PG_EXPORT_001 = "PG_EXPORT_001"; // Import targets type not exported by source namespace
+
+    // PhaseGate hardening - Public API surface validation (no internal type leaks)
+    public const string PG_API_001 = "PG_API_001"; // Public API references non-emitted/non-exported type
+    public const string PG_API_002 = "PG_API_002"; // Generic constraint references non-emitted type
 }

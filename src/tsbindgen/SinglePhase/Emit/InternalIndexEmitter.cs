@@ -15,6 +15,15 @@ namespace tsbindgen.SinglePhase.Emit;
 /// </summary>
 public static class InternalIndexEmitter
 {
+    /// <summary>
+    /// Determines if a type should be emitted to .d.ts files.
+    /// Only public types are emitted (EmitScope is for members, not types).
+    /// </summary>
+    public static bool ShouldEmit(TypeSymbol type)
+    {
+        return type.Accessibility == Accessibility.Public;
+    }
+
     public static void Emit(BuildContext ctx, EmissionPlan plan, string outputDirectory)
     {
         ctx.Log("InternalIndexEmitter", "Generating TypeScript declarations...");
@@ -96,8 +105,8 @@ public static class InternalIndexEmitter
             sb.AppendLine($"export namespace {nsOrder.Namespace.Name} {{");
         }
 
-        // Emit types in order
-        foreach (var typeOrder in nsOrder.OrderedTypes)
+        // Emit types in order (PUBLIC ONLY - internal types should not appear in .d.ts)
+        foreach (var typeOrder in nsOrder.OrderedTypes.Where(to => ShouldEmit(to.Type)))
         {
             // Check if type has explicit views (attached by ViewPlanner)
             var views = typeOrder.Type.ExplicitViews;
@@ -105,49 +114,40 @@ public static class InternalIndexEmitter
 
             if (hasViews)
             {
-                // Emit class with $instance suffix (non-exported in namespaces, exported in root)
+                // Emit class with $instance suffix - PUBLIC TYPES GET export KEYWORD
                 var instanceClass = ClassPrinter.PrintInstance(typeOrder.Type, resolver, ctx);
                 var indentedInstance = Indent(instanceClass, indent);
 
-                // ROOT NAMESPACE FIX: Add export keyword for module-level declarations
-                if (isRoot)
-                    sb.Append("export ");
-
+                // PUBLIC TYPES: Always export (both root and namespaces)
+                sb.Append("export ");
                 sb.AppendLine(indentedInstance);
                 sb.AppendLine();
 
-                // Emit companion views interface (non-exported in namespaces, exported in root)
+                // Emit companion views interface - PUBLIC TYPES GET export KEYWORD
                 var viewsInterface = EmitCompanionViewsInterface(typeOrder.Type, views, resolver, ctx);
                 var indentedViews = Indent(viewsInterface, indent);
 
-                // ROOT NAMESPACE FIX: Add export keyword for module-level declarations
-                if (isRoot)
-                    sb.Append("export ");
-
+                // PUBLIC TYPES: Always export (both root and namespaces)
+                sb.Append("export ");
                 sb.AppendLine(indentedViews);
                 sb.AppendLine();
 
-                // Emit intersection type alias (always exported)
+                // Emit intersection type alias (already has export in the returned string)
                 var typeAlias = EmitIntersectionTypeAlias(typeOrder.Type, resolver, ctx);
                 var indentedAlias = Indent(typeAlias, indent);
 
-                // ROOT NAMESPACE FIX: Add export keyword if not already present
-                if (isRoot && !typeAlias.TrimStart().StartsWith("export "))
-                    sb.Append("export ");
-
+                // Type alias already includes "export" keyword
                 sb.AppendLine(indentedAlias);
                 sb.AppendLine();
             }
             else
             {
-                // Normal emission (no views)
+                // Normal emission (no views) - PUBLIC TYPES GET export KEYWORD
                 var typeDecl = ClassPrinter.Print(typeOrder.Type, resolver, ctx);
                 var indented = Indent(typeDecl, indent);
 
-                // ROOT NAMESPACE FIX: Add export keyword for module-level declarations
-                if (isRoot)
-                    sb.Append("export ");
-
+                // PUBLIC TYPES: Always export (both root and namespaces)
+                sb.Append("export ");
                 sb.AppendLine(indented);
                 sb.AppendLine();
             }

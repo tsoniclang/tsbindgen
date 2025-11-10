@@ -14,9 +14,17 @@ public static class ClassPrinter
 {
     /// <summary>
     /// Print a complete class declaration.
+    /// GUARD: Only prints public types - internal types are rejected.
     /// </summary>
     public static string Print(TypeSymbol type, TypeNameResolver resolver, BuildContext ctx)
     {
+        // GUARD: Never print non-public types
+        if (type.Accessibility != Accessibility.Public)
+        {
+            ctx.Log("ClassPrinter", $"REJECTED: Attempted to print non-public type {type.ClrFullName} (accessibility={type.Accessibility})");
+            return string.Empty;
+        }
+
         return type.Kind switch
         {
             TypeKind.Class => PrintClass(type, resolver, ctx),
@@ -32,14 +40,22 @@ public static class ClassPrinter
     /// <summary>
     /// Print class/struct with $instance suffix (for companion views pattern).
     /// Used when type has explicit interface views that will be in separate companion interface.
+    /// GUARD: Only prints public types - internal types are rejected.
     /// </summary>
     public static string PrintInstance(TypeSymbol type, TypeNameResolver resolver, BuildContext ctx)
     {
+        // GUARD: Never print non-public types
+        if (type.Accessibility != Accessibility.Public)
+        {
+            ctx.Log("ClassPrinter", $"REJECTED: Attempted to print non-public type {type.ClrFullName} (accessibility={type.Accessibility})");
+            return string.Empty;
+        }
+
         return type.Kind switch
         {
             TypeKind.Class => PrintClass(type, resolver, ctx, instanceSuffix: true),
             TypeKind.Struct => PrintStruct(type, resolver, ctx, instanceSuffix: true),
-            _ => Print(type, resolver, ctx) // Fallback
+            _ => Print(type, resolver, ctx) // Fallback (guard already checked above)
         };
     }
 
