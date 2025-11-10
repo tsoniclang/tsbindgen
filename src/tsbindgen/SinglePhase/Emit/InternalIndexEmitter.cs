@@ -73,6 +73,9 @@ public static class InternalIndexEmitter
         // Every namespace needs these to reference System types (Int32 → int, etc.)
         EmitBrandedPrimitives(sb);
 
+        // Unsafe type markers (for C# pointers and byrefs that have no TS equivalent)
+        EmitUnsafeTypeMarkers(sb);
+
         // Emit import statements for cross-namespace type references
         var imports = importPlan.GetImportsFor(nsOrder.Namespace.Name);
         if (imports.Count > 0)
@@ -178,6 +181,15 @@ public static class InternalIndexEmitter
         sb.AppendLine("export type decimal = number & { __brand: \"decimal\" };");
         sb.AppendLine("export type nint = number & { __brand: \"nint\" };");
         sb.AppendLine("export type nuint = number & { __brand: \"nuint\" };");
+        sb.AppendLine();
+    }
+
+    private static void EmitUnsafeTypeMarkers(StringBuilder sb)
+    {
+        sb.AppendLine("// Unsafe type markers for C# constructs with no TypeScript equivalent");
+        sb.AppendLine("// These force explicit handling and make unsafe usage searchable");
+        sb.AppendLine("export type TSUnsafePointer<T> = unknown;");
+        sb.AppendLine("export type TSByRef<T> = unknown;");
         sb.AppendLine();
     }
 

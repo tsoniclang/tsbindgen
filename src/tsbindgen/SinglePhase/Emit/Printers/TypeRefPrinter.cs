@@ -116,17 +116,19 @@ public static class TypeRefPrinter
     private static string PrintPointer(PointerTypeReference ptr, TypeNameResolver resolver, BuildContext ctx)
     {
         // TypeScript has no pointer types
-        // Map to the underlying type (pointer semantics lost)
-        // This is tracked in metadata as a limitation
-        ctx.Log("TypeRefPrinter", "Warning - Pointer type mapped to underlying type");
-        return Print(ptr.PointeeType, resolver, ctx);
+        // Use branded marker type: TSUnsafePointer<T> = unknown
+        // This preserves type information while being type-safe (forces explicit handling)
+        var pointeeType = Print(ptr.PointeeType, resolver, ctx);
+        return $"TSUnsafePointer<{pointeeType}>";
     }
 
     private static string PrintByRef(ByRefTypeReference byref, TypeNameResolver resolver, BuildContext ctx)
     {
-        // TypeScript has no ref types
-        // Map to the underlying type (ref semantics tracked in metadata)
-        return Print(byref.ReferencedType, resolver, ctx);
+        // TypeScript has no ref types (ref/out/in parameters)
+        // Use branded marker type: TSByRef<T> = unknown
+        // This preserves type information while being type-safe
+        var referencedType = Print(byref.ReferencedType, resolver, ctx);
+        return $"TSByRef<{referencedType}>";
     }
 
     private static string PrintNested(NestedTypeReference nested, TypeNameResolver resolver, BuildContext ctx)
