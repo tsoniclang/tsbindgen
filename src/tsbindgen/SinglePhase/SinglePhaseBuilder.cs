@@ -145,8 +145,11 @@ public static class SinglePhaseBuilder
         }
 
         // Read all types and members via reflection
+        // IMPORTANT: Pass ALL assembly paths (seed + dependencies) to build complete TypeIndex
+        // This ensures PG_LOAD_001 validation can resolve external type references
+        var allAssemblyPaths = closureResult.ResolvedPaths.Values.ToList();
         var reader = new ReflectionReader(ctx);
-        var graph = reader.ReadAssemblies(closureResult.LoadContext, assemblyPaths);
+        var graph = reader.ReadAssemblies(closureResult.LoadContext, allAssemblyPaths);
 
         // Substitute closed generic interface members
         InterfaceMemberSubstitution.SubstituteClosedInterfaces(ctx, graph);

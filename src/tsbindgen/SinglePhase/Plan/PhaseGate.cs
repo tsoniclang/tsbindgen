@@ -3481,7 +3481,9 @@ public static class PhaseGate
 
     /// <summary>
     /// PG_TYPEMAP_001: Validates that no type references use unsupported special forms.
-    /// Detects pointers, byrefs, and function pointers which cannot be represented in TypeScript.
+    /// NOTE: Pointers and byrefs are now properly handled via branded marker types
+    /// (TSUnsafePointer<T>, TSByRef<T>) and no longer trigger validation errors.
+    /// This guard currently detects function pointers and other unsupported forms.
     /// </summary>
     private static void ValidateTypeMapCompliance(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
@@ -3497,22 +3499,14 @@ public static class PhaseGate
             switch (typeRef)
             {
                 case PointerTypeReference ptr:
-                    validationCtx.RecordDiagnostic(
-                        Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001,
-                        "WARNING",
-                        $"{ownerContext}: uses unsupported pointer type. " +
-                        $"Use --allow-unsafe-maps to substitute with 'any'.");
-                    unsupportedForms++;
+                    // Pointer types are now properly handled by TypeRefPrinter → TSUnsafePointer<T>
+                    // Recursively check the pointee type
                     CheckTypeReference(ptr.PointeeType, ownerContext);
                     break;
 
                 case ByRefTypeReference byref:
-                    validationCtx.RecordDiagnostic(
-                        Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001,
-                        "WARNING",
-                        $"{ownerContext}: uses unsupported byref type. " +
-                        $"Use --allow-unsafe-maps to substitute with 'any'.");
-                    unsupportedForms++;
+                    // ByRef types are now properly handled by TypeRefPrinter → TSByRef<T>
+                    // Recursively check the referenced type
                     CheckTypeReference(byref.ReferencedType, ownerContext);
                     break;
 
@@ -3599,6 +3593,7 @@ public static class PhaseGate
     /// <summary>
     /// PG_LOAD_001: Validates that all external type references are either in TypeIndex or built-in.
     /// Detects types that should have been loaded but weren't (missing transitive closure).
+    /// ALLOWS references to types in source assemblies (might be internal types in same assembly).
     /// </summary>
     private static void ValidateExternalTypeResolution(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
     {
@@ -3622,13 +3617,22 @@ public static class PhaseGate
                     var stableId = $"{named.AssemblyName}:{named.FullName}";
                     if (!graph.TypeIndex.TryGetValue(stableId, out _))
                     {
-                        // External type not in graph and not built-in - MISSING
-                        validationCtx.RecordDiagnostic(
-                            Core.Diagnostics.DiagnosticCodes.PG_LOAD_001,
-                            "WARNING",
-                            $"{ownerContext}: references external type '{named.FullName}' from assembly '{named.AssemblyName}', " +
-                            $"but it's not in TypeIndex and not a built-in type. This indicates missing transitive closure loading.");
-                        unresolvedReferences++;
+                        // Check if this is a reference to an assembly we're actively generating
+                        // (Could be an internal type in the same assembly - that's OK)
+                        var isSourceAssembly = graph.SourceAssemblies.Any(path =>
+                            Path.GetFileNameWithoutExtension(path) == named.AssemblyName);
+
+                        if (!isSourceAssembly)
+                        {
+                            // External type not in graph and not built-in - MISSING
+                            validationCtx.RecordDiagnostic(
+                                Core.Diagnostics.DiagnosticCodes.PG_LOAD_001,
+                                "ERROR",
+                                $"{ownerContext}: references external type '{named.FullName}' from assembly '{named.AssemblyName}', " +
+                                $"but it's not in TypeIndex and not a built-in type. Transitive closure loading failed to resolve this dependency.");
+                            unresolvedReferences++;
+                        }
+                        // If it IS a source assembly, allow the reference (might be internal type in same assembly)
                     }
 
                     checkedReferences++;

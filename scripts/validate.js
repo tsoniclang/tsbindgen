@@ -224,7 +224,8 @@ function validateMetadataFiles() {
 
         // Skip internal subdirectories (not real namespaces)
         // 'internal' was used before for root namespace, '_root' is used now to avoid case collision
-        if (ns === 'internal' || ns === '_root') continue;
+        // '_support' contains marker types (TSUnsafePointer, TSByRef)
+        if (ns === 'internal' || ns === '_root' || ns === '_support') continue;
 
         const indexPath = path.join(nsPath, 'internal', 'index.d.ts');
         const metadataPath = path.join(nsPath, 'internal', 'metadata.json');
