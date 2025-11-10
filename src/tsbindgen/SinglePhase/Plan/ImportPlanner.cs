@@ -73,15 +73,23 @@ public static class ImportPlanner
 
             foreach (var clrName in referencedTypeClrNames)
             {
-                // Look up TypeSymbol to get TypeScript emit name
-                if (!graph.TryGetType(clrName, out var typeSymbol) || typeSymbol == null)
+                string tsName;
+
+                // Try to look up TypeSymbol in local graph to get TypeScript emit name
+                if (graph.TryGetType(clrName, out var typeSymbol) && typeSymbol != null)
                 {
-                    ctx.Log("ImportPlanner", $"WARNING: Cannot find type {clrName} in graph (may be external)");
-                    continue;
+                    // Type is in local graph - use Renamer's final name
+                    tsName = ctx.Renamer.GetFinalTypeName(typeSymbol);
+                }
+                else
+                {
+                    // Type is external (from another namespace) - construct TS name from CLR name
+                    // CRITICAL: This handles cross-namespace generic types like IEnumerable_1, Func_2, etc.
+                    // Apply same logic as TypeNameResolver for external types
+                    tsName = GetTypeScriptNameForExternalType(clrName);
+                    ctx.Log("ImportPlanner", $"External type {clrName} → {tsName}");
                 }
 
-                // Get TypeScript emit name (e.g., "TypeConverter$StandardValuesCollection")
-                var tsName = ctx.Renamer.GetFinalTypeName(typeSymbol);
                 var alias = DetermineAlias(ctx, ns.Name, targetNamespace, tsName, aliases);
 
                 typeImports.Add(new TypeImport(
@@ -187,6 +195,31 @@ public static class ImportPlanner
             Model.Symbols.TypeKind.Delegate => ExportKind.Type, // Delegates emit as type aliases
             _ => ExportKind.Type
         };
+    }
+
+    /// <summary>
+    /// Get TypeScript name for an external type (not in current graph).
+    /// Mirrors TypeNameResolver logic for external types.
+    /// CRITICAL: Handles generic arity and reserved words.
+    /// </summary>
+    private static string GetTypeScriptNameForExternalType(string clrFullName)
+    {
+        // Extract simple name from full CLR name
+        // Example: "System.Collections.Generic.IEnumerable`1" → "IEnumerable`1"
+        var simpleName = clrFullName.Contains('.')
+            ? clrFullName.Substring(clrFullName.LastIndexOf('.') + 1)
+            : clrFullName;
+
+        // Sanitize: backtick to underscore (IEnumerable`1 → IEnumerable_1)
+        var sanitized = simpleName.Replace('`', '_');
+
+        // Handle nested types
+        sanitized = sanitized.Replace('+', '$');
+
+        // CRITICAL: Check if sanitized name is a TypeScript reserved word
+        // Example: "Type" → "Type_", "Object" → "Object_"
+        var result = TypeScriptReservedWords.Sanitize(sanitized);
+        return result.Sanitized;
     }
 }
 

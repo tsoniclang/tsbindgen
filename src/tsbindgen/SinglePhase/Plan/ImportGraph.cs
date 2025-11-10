@@ -49,13 +49,20 @@ public static class ImportGraph
 
             foreach (var type in ns.Types.Where(t => t.Accessibility == Accessibility.Public))
             {
+                // Add to set-based index (for backwards compatibility)
                 typeNames.Add(type.ClrFullName);
+
+                // Add to fast lookup map: CLR full name → namespace
+                // CRITICAL: ClrFullName is in backtick form (e.g., "IEnumerable`1")
+                // This matches NamedTypeReference.FullName format
+                graphData.ClrFullNameToNamespace[type.ClrFullName] = ns.Name;
             }
 
             graphData.NamespaceTypeIndex[ns.Name] = typeNames;
         }
 
         ctx.Log("ImportGraph", $"Indexed {graphData.NamespaceTypeIndex.Count} namespaces");
+        ctx.Log("ImportGraph", $"Fast lookup map: {graphData.ClrFullNameToNamespace.Count} types");
     }
 
     private static void AnalyzeNamespaceDependencies(
@@ -305,17 +312,44 @@ public static class ImportGraph
         ImportGraphData graphData,
         TypeReference typeRef)
     {
-        var fullName = GetTypeFullName(typeRef);
+        // Get normalized CLR lookup key (backtick arity, generic definition)
+        var clrKey = GetClrLookupKey(typeRef);
+        if (clrKey == null)
+            return null; // Generic parameter, placeholder, or unknown
 
-        // Check each namespace's type index
-        foreach (var (nsName, typeNames) in graphData.NamespaceTypeIndex)
-        {
-            if (typeNames.Contains(fullName))
-                return nsName;
-        }
+        // Fast O(1) lookup using CLR full name
+        // CRITICAL: This now works for generic types because clrKey uses backtick form
+        // Example: IEnumerable_1<T> → "System.Collections.Generic.IEnumerable`1"
+        if (graphData.ClrFullNameToNamespace.TryGetValue(clrKey, out var ns))
+            return ns;
 
         // Type might be external (not in our graph)
         return null;
+    }
+
+    /// <summary>
+    /// Get normalized CLR lookup key for a TypeReference.
+    /// Returns the generic definition name in CLR backtick format.
+    /// This matches how TypeSymbol.ClrFullName is stored in the index.
+    ///
+    /// Examples:
+    ///   IEnumerable_1&lt;T&gt;  → "System.Collections.Generic.IEnumerable`1"
+    ///   Func_2&lt;T1,T2&gt;    → "System.Func`2"
+    ///   Exception       → "System.Exception"
+    /// </summary>
+    private static string? GetClrLookupKey(TypeReference typeRef)
+    {
+        return typeRef switch
+        {
+            NamedTypeReference named => named.FullName, // Already in CLR backtick form
+            NestedTypeReference nested => nested.FullReference.FullName, // NamedTypeReference behind the scenes
+            ArrayTypeReference arr => GetClrLookupKey(arr.ElementType), // Recurse to element type
+            PointerTypeReference ptr => GetClrLookupKey(ptr.PointeeType), // Recurse to pointee type
+            ByRefTypeReference byref => GetClrLookupKey(byref.ReferencedType), // Recurse to referenced type
+            GenericParameterReference => null, // Type parameters are local, never imported
+            PlaceholderTypeReference => null, // Placeholders are unknown, no import
+            _ => null // Unknown type reference
+        };
     }
 
     private static string GetTypeFullName(TypeReference typeRef)
@@ -406,6 +440,13 @@ public sealed class ImportGraphData
     /// Maps namespace name to set of type full names defined in that namespace.
     /// </summary>
     public Dictionary<string, HashSet<string>> NamespaceTypeIndex { get; init; } = new();
+
+    /// <summary>
+    /// Fast lookup map: CLR full name (with backtick arity) → owning namespace.
+    /// Example: "System.Collections.Generic.IEnumerable`1" → "System.Collections.Generic"
+    /// Built once during BuildNamespaceTypeIndex for O(1) lookups.
+    /// </summary>
+    public Dictionary<string, string> ClrFullNameToNamespace { get; init; } = new();
 
     /// <summary>
     /// List of all cross-namespace type references.
