@@ -93,7 +93,7 @@ public static class ClassSurfaceDeduplicator
             var winner = PickWinner(candidates);
 
             ctx.Log("class-dedupe",
-                $"winner: {type.StableId} name={emittedName} kept={Plan.PhaseGate.FormatMemberStableId(winner.StableId)}");
+                $"winner: {type.StableId} name={emittedName} kept={Plan.Validation.Scopes.FormatMemberStableId(winner.StableId)}");
 
             // Demote all others to ViewOnly
             foreach (var loser in candidates.Where(c => c.StableId != winner.StableId))
@@ -103,7 +103,7 @@ public static class ClassSurfaceDeduplicator
 
                 var ifaceName = loser.SourceInterface?.ToString() ?? "Unknown";
                 ctx.Log("class-dedupe",
-                    $"demote: {type.StableId} name={emittedName} -> ViewOnly iface={ifaceName} {Plan.PhaseGate.FormatMemberStableId(loser.StableId)}");
+                    $"demote: {type.StableId} name={emittedName} -> ViewOnly iface={ifaceName} {Plan.Validation.Scopes.FormatMemberStableId(loser.StableId)}");
             }
         }
 

@@ -270,7 +270,7 @@ public static class ExplicitImplSynthesizer
 
         ctx.Log("explicit-impl",
             $"eii: {type.StableId} {declaringInterface?.ToString() ?? iface.ToString()} " +
-            $"{Plan.PhaseGate.FormatMemberStableId(stableId)} -> ViewOnly");
+            $"{Plan.Validation.Scopes.FormatMemberStableId(stableId)} -> ViewOnly");
 
         // Create synthesized method symbol
         return new MethodSymbol
@@ -314,7 +314,7 @@ public static class ExplicitImplSynthesizer
 
         ctx.Log("explicit-impl",
             $"eii: {type.StableId} {declaringInterface?.ToString() ?? iface.ToString()} " +
-            $"{Plan.PhaseGate.FormatMemberStableId(stableId)} -> ViewOnly");
+            $"{Plan.Validation.Scopes.FormatMemberStableId(stableId)} -> ViewOnly");
 
         return new PropertySymbol
         {

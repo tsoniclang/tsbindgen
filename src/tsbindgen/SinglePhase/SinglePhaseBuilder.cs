@@ -342,7 +342,7 @@ public static class SinglePhaseBuilder
                     ? $"{method.SourceInterface}"
                     : "null";
                 ctx.Log("trace:shape",
-                    $"[trace:shape] {passName} {type.StableId}::{Plan.PhaseGate.FormatMemberStableId(method.StableId)} " +
+                    $"[trace:shape] {passName} {type.StableId}::{Plan.Validation.Scopes.FormatMemberStableId(method.StableId)} " +
                     $"EmitScope={method.EmitScope} SourceInterface={ifaceStableId}");
             }
 
@@ -353,7 +353,7 @@ public static class SinglePhaseBuilder
                     ? $"{prop.SourceInterface}"
                     : "null";
                 ctx.Log("trace:shape",
-                    $"[trace:shape] {passName} {type.StableId}::{Plan.PhaseGate.FormatMemberStableId(prop.StableId)} " +
+                    $"[trace:shape] {passName} {type.StableId}::{Plan.Validation.Scopes.FormatMemberStableId(prop.StableId)} " +
                     $"EmitScope={prop.EmitScope} SourceInterface={ifaceStableId}");
             }
         }
