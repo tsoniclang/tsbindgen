@@ -89,8 +89,12 @@ public static class ClassPrinter
         if (type.BaseType != null)
         {
             var baseTypeName = TypeRefPrinter.Print(type.BaseType, resolver, ctx);
-            // Skip System.Object and System.ValueType
-            if (baseTypeName != "Object" && baseTypeName != "ValueType")
+            // Skip System.Object, System.ValueType, and any fallback types (any, unknown)
+            // CRITICAL: Never emit "extends any" - TypeScript rejects it
+            if (baseTypeName != "Object" &&
+                baseTypeName != "ValueType" &&
+                baseTypeName != "any" &&
+                baseTypeName != "unknown")
             {
                 sb.Append(" extends ");
                 sb.Append(baseTypeName);
