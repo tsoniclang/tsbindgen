@@ -78,6 +78,16 @@ public static class PhaseGate
         // Validates TypeRefPrinter→TypeNameResolver→Renamer chain integrity
         ValidatePrinterNameConsistency(ctx, graph, validationContext);
 
+        // PhaseGate Hardening - M7a: TypeMap validation (PG_TYPEMAP_001)
+        // Validates no unsupported special forms (pointers, byrefs, function pointers)
+        // MUST RUN EARLY - before other type reference validation
+        ValidateTypeMapCompliance(ctx, graph, validationContext);
+
+        // PhaseGate Hardening - M7b: External type resolution (PG_LOAD_001)
+        // Validates all external type references are either in TypeIndex or built-in
+        // MUST RUN AFTER TypeMap check, BEFORE API surface validation
+        ValidateExternalTypeResolution(ctx, graph, validationContext);
+
         // PhaseGate Hardening - M8: Public API surface validation (PG_API_001, PG_API_002)
         // Validates public APIs don't reference non-emitted/internal types
         // THIS MUST RUN BEFORE PG_IMPORT_001 - it's more fundamental
@@ -799,6 +809,11 @@ public static class PhaseGate
             Core.Diagnostics.DiagnosticCodes.PG_EXPORT_001 => "Import references unexported type",
             Core.Diagnostics.DiagnosticCodes.PG_API_001 => "Public API exposes internal/non-emitted type",
             Core.Diagnostics.DiagnosticCodes.PG_API_002 => "Generic constraint references non-emitted type",
+            Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001 => "Unsupported special form (pointer/byref/fnptr)",
+            Core.Diagnostics.DiagnosticCodes.PG_LOAD_001 => "Unresolved external type reference",
+            Core.Diagnostics.DiagnosticCodes.PG_LOAD_002 => "Mixed PublicKeyToken for same assembly",
+            Core.Diagnostics.DiagnosticCodes.PG_LOAD_003 => "Version drift (same assembly, different versions)",
+            Core.Diagnostics.DiagnosticCodes.PG_LOAD_004 => "Retargetable/ContentType assembly reference",
             _ => "Unknown diagnostic"
         };
     }
@@ -3462,6 +3477,238 @@ public static class PhaseGate
         }
 
         ctx.Log("PhaseGate", $"Validated {checkedImports} imports. Missing exports: {missingExports}");
+    }
+
+    /// <summary>
+    /// PG_TYPEMAP_001: Validates that no type references use unsupported special forms.
+    /// Detects pointers, byrefs, and function pointers which cannot be represented in TypeScript.
+    /// </summary>
+    private static void ValidateTypeMapCompliance(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate", "Validating TypeMap compliance (PG_TYPEMAP_001)...");
+
+        int checkedTypes = 0;
+        int unsupportedForms = 0;
+
+        void CheckTypeReference(TypeReference typeRef, string ownerContext)
+        {
+            checkedTypes++;
+
+            switch (typeRef)
+            {
+                case PointerTypeReference ptr:
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001,
+                        "ERROR",
+                        $"{ownerContext}: uses unsupported pointer type. " +
+                        $"Use --allow-unsafe-maps to substitute with 'any'.");
+                    unsupportedForms++;
+                    CheckTypeReference(ptr.PointeeType, ownerContext);
+                    break;
+
+                case ByRefTypeReference byref:
+                    validationCtx.RecordDiagnostic(
+                        Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001,
+                        "ERROR",
+                        $"{ownerContext}: uses unsupported byref type. " +
+                        $"Use --allow-unsafe-maps to substitute with 'any'.");
+                    unsupportedForms++;
+                    CheckTypeReference(byref.ReferencedType, ownerContext);
+                    break;
+
+                case NamedTypeReference named:
+                    // Recursively check type arguments
+                    foreach (var arg in named.TypeArguments)
+                    {
+                        CheckTypeReference(arg, ownerContext);
+                    }
+                    break;
+
+                case ArrayTypeReference array:
+                    CheckTypeReference(array.ElementType, ownerContext);
+                    break;
+
+                case GenericParameterReference:
+                    // Generic parameters are fine
+                    break;
+
+                case NestedTypeReference nested:
+                    CheckTypeReference(nested.FullReference, ownerContext);
+                    break;
+            }
+        }
+
+        // Check all type references in the graph
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                var typeId = $"{type.Namespace}.{type.ClrName}";
+
+                // Check base type
+                if (type.BaseType != null)
+                {
+                    CheckTypeReference(type.BaseType, $"{typeId} (base type)");
+                }
+
+                // Check interfaces
+                foreach (var iface in type.Interfaces)
+                {
+                    CheckTypeReference(iface, $"{typeId} (interface)");
+                }
+
+                // Check generic parameter constraints
+                foreach (var gp in type.GenericParameters)
+                {
+                    foreach (var constraint in gp.Constraints)
+                    {
+                        CheckTypeReference(constraint, $"{typeId}.{gp.Name} (constraint)");
+                    }
+                }
+
+                // Check member signatures
+                foreach (var method in type.Members.Methods)
+                {
+                    CheckTypeReference(method.ReturnType, $"{typeId}.{method.ClrName} (return type)");
+                    foreach (var param in method.Parameters)
+                    {
+                        CheckTypeReference(param.Type, $"{typeId}.{method.ClrName} (param {param.Name})");
+                    }
+                }
+
+                foreach (var prop in type.Members.Properties)
+                {
+                    CheckTypeReference(prop.PropertyType, $"{typeId}.{prop.ClrName} (property type)");
+                }
+
+                foreach (var field in type.Members.Fields)
+                {
+                    CheckTypeReference(field.FieldType, $"{typeId}.{field.ClrName} (field type)");
+                }
+
+                foreach (var evt in type.Members.Events)
+                {
+                    CheckTypeReference(evt.EventHandlerType, $"{typeId}.{evt.ClrName} (event type)");
+                }
+            }
+        }
+
+        ctx.Log("PhaseGate", $"Validated {checkedTypes} type references. Unsupported forms: {unsupportedForms}");
+    }
+
+    /// <summary>
+    /// PG_LOAD_001: Validates that all external type references are either in TypeIndex or built-in.
+    /// Detects types that should have been loaded but weren't (missing transitive closure).
+    /// </summary>
+    private static void ValidateExternalTypeResolution(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate", "Validating external type resolution (PG_LOAD_001)...");
+
+        int checkedReferences = 0;
+        int unresolvedReferences = 0;
+
+        void CheckTypeReference(TypeReference typeRef, string ownerContext)
+        {
+            switch (typeRef)
+            {
+                case NamedTypeReference named:
+                    // Skip built-in types (already handled by TypeMap)
+                    if (Emit.TypeMap.TryMapBuiltin(named.FullName, out _))
+                    {
+                        return;
+                    }
+
+                    // Check if type is in TypeIndex
+                    var stableId = $"{named.AssemblyName}:{named.FullName}";
+                    if (!graph.TypeIndex.TryGetValue(stableId, out _))
+                    {
+                        // External type not in graph and not built-in - MISSING
+                        validationCtx.RecordDiagnostic(
+                            Core.Diagnostics.DiagnosticCodes.PG_LOAD_001,
+                            "ERROR",
+                            $"{ownerContext}: references external type '{named.FullName}' from assembly '{named.AssemblyName}', " +
+                            $"but it's not in TypeIndex and not a built-in type. This indicates missing transitive closure loading.");
+                        unresolvedReferences++;
+                    }
+
+                    checkedReferences++;
+
+                    // Recursively check type arguments
+                    foreach (var arg in named.TypeArguments)
+                    {
+                        CheckTypeReference(arg, ownerContext);
+                    }
+                    break;
+
+                case ArrayTypeReference array:
+                    CheckTypeReference(array.ElementType, ownerContext);
+                    break;
+
+                case PointerTypeReference ptr:
+                    CheckTypeReference(ptr.PointeeType, ownerContext);
+                    break;
+
+                case ByRefTypeReference byref:
+                    CheckTypeReference(byref.ReferencedType, ownerContext);
+                    break;
+
+                case GenericParameterReference:
+                    // Generic parameters are fine
+                    break;
+
+                case NestedTypeReference nested:
+                    CheckTypeReference(nested.FullReference, ownerContext);
+                    break;
+            }
+        }
+
+        // Check all type references in public API surface
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types.Where(t => t.Accessibility == Model.Symbols.Accessibility.Public))
+            {
+                var typeId = $"{type.Namespace}.{type.ClrName}";
+
+                // Check base type
+                if (type.BaseType != null)
+                {
+                    CheckTypeReference(type.BaseType, $"{typeId} (base)");
+                }
+
+                // Check interfaces
+                foreach (var iface in type.Interfaces)
+                {
+                    CheckTypeReference(iface, $"{typeId} (interface)");
+                }
+
+                // Check public member signatures
+                foreach (var method in type.Members.Methods.Where(m => m.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                {
+                    CheckTypeReference(method.ReturnType, $"{typeId}.{method.ClrName}");
+                    foreach (var param in method.Parameters)
+                    {
+                        CheckTypeReference(param.Type, $"{typeId}.{method.ClrName}({param.Name})");
+                    }
+                }
+
+                foreach (var prop in type.Members.Properties.Where(p => p.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                {
+                    CheckTypeReference(prop.PropertyType, $"{typeId}.{prop.ClrName}");
+                }
+
+                foreach (var field in type.Members.Fields.Where(f => f.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                {
+                    CheckTypeReference(field.FieldType, $"{typeId}.{field.ClrName}");
+                }
+
+                foreach (var evt in type.Members.Events.Where(e => e.Visibility == Model.Symbols.MemberSymbols.Visibility.Public))
+                {
+                    CheckTypeReference(evt.EventHandlerType, $"{typeId}.{evt.ClrName}");
+                }
+            }
+        }
+
+        ctx.Log("PhaseGate", $"Validated {checkedReferences} external references. Unresolved: {unresolvedReferences}");
     }
 }
 

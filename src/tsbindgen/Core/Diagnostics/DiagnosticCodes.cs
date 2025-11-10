@@ -106,4 +106,13 @@ public static class DiagnosticCodes
     // PhaseGate hardening - Public API surface validation (no internal type leaks)
     public const string PG_API_001 = "PG_API_001"; // Public API references non-emitted/non-exported type
     public const string PG_API_002 = "PG_API_002"; // Generic constraint references non-emitted type
+
+    // PhaseGate hardening - TypeMap validation (unsupported special forms)
+    public const string PG_TYPEMAP_001 = "PG_TYPEMAP_001"; // Unsupported special form (pointer, byref, function pointer)
+
+    // PhaseGate hardening - Assembly loading validation
+    public const string PG_LOAD_001 = "PG_LOAD_001"; // Unresolved external type reference (not in TypeIndex, not built-in)
+    public const string PG_LOAD_002 = "PG_LOAD_002"; // Mixed PublicKeyToken (same assembly name, different tokens)
+    public const string PG_LOAD_003 = "PG_LOAD_003"; // Version drift (same assembly, different versions)
+    public const string PG_LOAD_004 = "PG_LOAD_004"; // Retargetable/ContentType assembly reference
 }
