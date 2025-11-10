@@ -73,6 +73,18 @@ public static class ImportPlanner
 
             foreach (var clrName in referencedTypeClrNames)
             {
+                // PRE-EMIT GUARD: Catch assembly-qualified garbage in CLR names
+                // This prevents the import garbage bug from ever reaching import planning
+                if (clrName.Contains('[') || clrName.Contains("Culture=") || clrName.Contains("PublicKeyToken="))
+                {
+                    ctx.Diagnostics.Error(
+                        Core.Diagnostics.DiagnosticCodes.InvalidImportModulePath,
+                        $"PRE-EMIT GUARD: CrossNamespaceReference contains assembly-qualified CLR name: '{clrName}' " +
+                        $"(namespace {ns.Name} importing from {targetNamespace}). " +
+                        $"This indicates CollectTypeReferences() failed to use GetOpenGenericClrKey().");
+                    continue; // Skip this type reference
+                }
+
                 string tsName;
 
                 // Try to look up TypeSymbol in local graph to get TypeScript emit name
@@ -88,6 +100,18 @@ public static class ImportPlanner
                     // Apply same logic as TypeNameResolver for external types
                     tsName = GetTypeScriptNameForExternalType(clrName);
                     ctx.Log("ImportPlanner", $"External type {clrName} → {tsName}");
+                }
+
+                // PRE-EMIT GUARD: Detect assembly-qualified garbage before it reaches output
+                // Prevents regressions of the import garbage bug (fixed in commit 70d21db)
+                if (tsName.Contains('[') || tsName.Contains("Culture=") || tsName.Contains("PublicKeyToken="))
+                {
+                    ctx.Diagnostics.Error(
+                        Core.Diagnostics.DiagnosticCodes.InvalidImportModulePath,
+                        $"PRE-EMIT GUARD: Import statement would contain assembly-qualified garbage: '{tsName}' " +
+                        $"(from CLR name: '{clrName}' in namespace {ns.Name} importing from {targetNamespace}). " +
+                        $"This must be fixed before emission.");
+                    continue; // Skip this import to prevent emission
                 }
 
                 var alias = DetermineAlias(ctx, ns.Name, targetNamespace, tsName, aliases);

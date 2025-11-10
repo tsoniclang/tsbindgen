@@ -80,7 +80,7 @@ public static class ImportGraph
             if (type.BaseType != null)
             {
                 var baseTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                CollectTypeReferences(type.BaseType, graph, graphData, baseTypeRefs);
+                CollectTypeReferences(ctx, type.BaseType, graph, graphData, baseTypeRefs);
 
                 foreach (var (fullName, targetNs) in baseTypeRefs)
                 {
@@ -101,7 +101,7 @@ public static class ImportGraph
             foreach (var ifaceRef in type.Interfaces)
             {
                 var ifaceTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                CollectTypeReferences(ifaceRef, graph, graphData, ifaceTypeRefs);
+                CollectTypeReferences(ctx, ifaceRef, graph, graphData, ifaceTypeRefs);
 
                 foreach (var (fullName, targetNs) in ifaceTypeRefs)
                 {
@@ -124,7 +124,7 @@ public static class ImportGraph
                 foreach (var constraint in gp.Constraints)
                 {
                     var constraintTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                    CollectTypeReferences(constraint, graph, graphData, constraintTypeRefs);
+                    CollectTypeReferences(ctx, constraint, graph, graphData, constraintTypeRefs);
 
                     foreach (var (fullName, targetNs) in constraintTypeRefs)
                     {
@@ -166,7 +166,7 @@ public static class ImportGraph
         {
             // Return type - collect ALL referenced types recursively
             var returnTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-            CollectTypeReferences(method.ReturnType, graph, graphData, returnTypeRefs);
+            CollectTypeReferences(ctx, method.ReturnType, graph, graphData, returnTypeRefs);
 
             foreach (var (fullName, targetNs) in returnTypeRefs)
             {
@@ -186,7 +186,7 @@ public static class ImportGraph
             foreach (var param in method.Parameters)
             {
                 var paramTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                CollectTypeReferences(param.Type, graph, graphData, paramTypeRefs);
+                CollectTypeReferences(ctx, param.Type, graph, graphData, paramTypeRefs);
 
                 foreach (var (fullName, targetNs) in paramTypeRefs)
                 {
@@ -209,7 +209,7 @@ public static class ImportGraph
                 foreach (var constraint in gp.Constraints)
                 {
                     var constraintTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                    CollectTypeReferences(constraint, graph, graphData, constraintTypeRefs);
+                    CollectTypeReferences(ctx, constraint, graph, graphData, constraintTypeRefs);
 
                     foreach (var (fullName, targetNs) in constraintTypeRefs)
                     {
@@ -232,7 +232,7 @@ public static class ImportGraph
         foreach (var property in type.Members.Properties)
         {
             var propTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-            CollectTypeReferences(property.PropertyType, graph, graphData, propTypeRefs);
+            CollectTypeReferences(ctx, property.PropertyType, graph, graphData, propTypeRefs);
 
             foreach (var (fullName, targetNs) in propTypeRefs)
             {
@@ -252,7 +252,7 @@ public static class ImportGraph
             foreach (var indexParam in property.IndexParameters)
             {
                 var indexTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                CollectTypeReferences(indexParam.Type, graph, graphData, indexTypeRefs);
+                CollectTypeReferences(ctx, indexParam.Type, graph, graphData, indexTypeRefs);
 
                 foreach (var (fullName, targetNs) in indexTypeRefs)
                 {
@@ -268,7 +268,7 @@ public static class ImportGraph
         foreach (var field in type.Members.Fields)
         {
             var fieldTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-            CollectTypeReferences(field.FieldType, graph, graphData, fieldTypeRefs);
+            CollectTypeReferences(ctx, field.FieldType, graph, graphData, fieldTypeRefs);
 
             foreach (var (fullName, targetNs) in fieldTypeRefs)
             {
@@ -289,7 +289,7 @@ public static class ImportGraph
         foreach (var evt in type.Members.Events)
         {
             var eventTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-            CollectTypeReferences(evt.EventHandlerType, graph, graphData, eventTypeRefs);
+            CollectTypeReferences(ctx, evt.EventHandlerType, graph, graphData, eventTypeRefs);
 
             foreach (var (fullName, targetNs) in eventTypeRefs)
             {
@@ -419,6 +419,7 @@ public static class ImportGraph
     /// Returns set of (FullName, Namespace) pairs for all referenced named types.
     /// </summary>
     private static void CollectTypeReferences(
+        BuildContext ctx,
         TypeReference? typeRef,
         SymbolGraph graph,
         ImportGraphData graphData,
@@ -432,12 +433,24 @@ public static class ImportGraph
                 var ns = FindNamespaceForType(graph, graphData, named);
                 // CRITICAL: Use open generic CLR key, not FullName which may be constructed
                 var clrKey = GetOpenGenericClrKey(named);
+
+                // INVARIANT: CLR keys must never contain assembly-qualified garbage
+                // This guard prevents regressions of the import garbage bug (fixed in commit 70d21db)
+                if (clrKey.Contains('[') || clrKey.Contains(','))
+                {
+                    ctx.Diagnostics.Error(
+                        Core.Diagnostics.DiagnosticCodes.InvalidImportModulePath,
+                        $"INVARIANT VIOLATION: CollectTypeReferences yielded assembly-qualified key: '{clrKey}' " +
+                        $"from type {named.AssemblyName}:{named.FullName}. " +
+                        $"This indicates GetOpenGenericClrKey() failed to strip assembly info.");
+                }
+
                 collected.Add((clrKey, ns));
 
                 // Recurse into type arguments
                 foreach (var arg in named.TypeArguments)
                 {
-                    CollectTypeReferences(arg, graph, graphData, collected);
+                    CollectTypeReferences(ctx, arg, graph, graphData, collected);
                 }
                 break;
 
@@ -445,25 +458,35 @@ public static class ImportGraph
                 var nestedNs = FindNamespaceForType(graph, graphData, nested);
                 // CRITICAL: Use open generic CLR key for nested type
                 var nestedClrKey = GetOpenGenericClrKey(nested.FullReference);
+
+                // INVARIANT: CLR keys must never contain assembly-qualified garbage
+                if (nestedClrKey.Contains('[') || nestedClrKey.Contains(','))
+                {
+                    ctx.Diagnostics.Error(
+                        Core.Diagnostics.DiagnosticCodes.InvalidImportModulePath,
+                        $"INVARIANT VIOLATION: CollectTypeReferences yielded assembly-qualified key: '{nestedClrKey}' " +
+                        $"from nested type. This indicates GetOpenGenericClrKey() failed.");
+                }
+
                 collected.Add((nestedClrKey, nestedNs));
 
                 // Recurse into type arguments of nested type
                 foreach (var arg in nested.FullReference.TypeArguments)
                 {
-                    CollectTypeReferences(arg, graph, graphData, collected);
+                    CollectTypeReferences(ctx, arg, graph, graphData, collected);
                 }
                 break;
 
             case ArrayTypeReference arr:
-                CollectTypeReferences(arr.ElementType, graph, graphData, collected);
+                CollectTypeReferences(ctx, arr.ElementType, graph, graphData, collected);
                 break;
 
             case PointerTypeReference ptr:
-                CollectTypeReferences(ptr.PointeeType, graph, graphData, collected);
+                CollectTypeReferences(ctx, ptr.PointeeType, graph, graphData, collected);
                 break;
 
             case ByRefTypeReference byref:
-                CollectTypeReferences(byref.ReferencedType, graph, graphData, collected);
+                CollectTypeReferences(ctx, byref.ReferencedType, graph, graphData, collected);
                 break;
 
             case GenericParameterReference:
