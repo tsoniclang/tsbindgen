@@ -3499,7 +3499,7 @@ public static class PhaseGate
                 case PointerTypeReference ptr:
                     validationCtx.RecordDiagnostic(
                         Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001,
-                        "ERROR",
+                        "WARNING",
                         $"{ownerContext}: uses unsupported pointer type. " +
                         $"Use --allow-unsafe-maps to substitute with 'any'.");
                     unsupportedForms++;
@@ -3509,7 +3509,7 @@ public static class PhaseGate
                 case ByRefTypeReference byref:
                     validationCtx.RecordDiagnostic(
                         Core.Diagnostics.DiagnosticCodes.PG_TYPEMAP_001,
-                        "ERROR",
+                        "WARNING",
                         $"{ownerContext}: uses unsupported byref type. " +
                         $"Use --allow-unsafe-maps to substitute with 'any'.");
                     unsupportedForms++;
@@ -3625,7 +3625,7 @@ public static class PhaseGate
                         // External type not in graph and not built-in - MISSING
                         validationCtx.RecordDiagnostic(
                             Core.Diagnostics.DiagnosticCodes.PG_LOAD_001,
-                            "ERROR",
+                            "WARNING",
                             $"{ownerContext}: references external type '{named.FullName}' from assembly '{named.AssemblyName}', " +
                             $"but it's not in TypeIndex and not a built-in type. This indicates missing transitive closure loading.");
                         unresolvedReferences++;

@@ -105,14 +105,16 @@ public static class FacadeEmitter
                         _ => "type"
                     };
 
-                    // ROOT NAMESPACE FIX: For root namespace, export directly (no namespace qualifier)
+                    // Export types by referencing Internal namespace
+                    // CRITICAL: Always use Internal.{ns.Name}.{export.ExportName} for non-root
+                    // This ensures we're referencing the actual location in internal/index.d.ts
                     if (ns.IsRoot)
                     {
                         sb.AppendLine($"export type {export.ExportName} = Internal.{export.ExportName};");
                     }
                     else
                     {
-                        sb.AppendLine($"export type {export.ExportName} = {ns.Name}.{export.ExportName};");
+                        sb.AppendLine($"export type {export.ExportName} = Internal.{ns.Name}.{export.ExportName};");
                     }
                 }
             }
