@@ -15,6 +15,7 @@ This directory defines the **contracts** exposed by tsbindgen:
 | [output-layout.md](output-layout.md) | Directory structure and file organization |
 | [metadata.md](metadata.md) | Metadata JSON schema (`*.metadata.json`) |
 | [bindings-consumer.md](bindings-consumer.md) | Bindings JSON schema (`*.bindings.json`) |
+| [scopes.md](scopes.md) | Renaming scope format and API contracts |
 | [ref-path.md](ref-path.md) | External package resolution via `--ref-path` |
 | [validation.md](validation.md) | Validation expectations and success criteria |
 
