@@ -202,6 +202,12 @@ public static class SinglePhaseBuilder
         // 3. Interface inlining (flatten interfaces - AFTER indices and conformance) - PURE - returns new graph
         graph = InterfaceInliner.Inline(ctx, graph);
 
+        // 3.5. FIX F: Filter internal interfaces (BCL implementation details)
+        //      Must run AFTER InterfaceInliner (need flattened list) but BEFORE ExplicitImplSynthesizer
+        //      (don't synthesize members for internal interfaces)
+        graph = Shape.InternalInterfaceFilter.FilterGraph(ctx, graph);
+        LogEmitScopeState(ctx, graph, "After InternalInterfaceFilter");
+
         // 4. Explicit interface implementation synthesis - PURE - returns new graph
         graph = ExplicitImplSynthesizer.Synthesize(ctx, graph);
         LogEmitScopeState(ctx, graph, "AfterExplicitImplSynthesizer");
