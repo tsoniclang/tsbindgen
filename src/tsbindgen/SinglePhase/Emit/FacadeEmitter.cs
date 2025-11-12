@@ -109,16 +109,19 @@ public static class FacadeEmitter
                         _ => "type"
                     };
 
+                    // TS2314 FIX: Generate generic type parameters
+                    var typeParams = GenerateTypeParameters(export.Arity);
+
                     // Export types by referencing Internal namespace
                     // CRITICAL: Always use Internal.{ns.Name}.{export.ExportName} for non-root
                     // This ensures we're referencing the actual location in internal/index.d.ts
                     if (ns.IsRoot)
                     {
-                        sb.AppendLine($"export type {export.ExportName} = Internal.{export.ExportName};");
+                        sb.AppendLine($"export type {export.ExportName}{typeParams} = Internal.{export.ExportName}{typeParams};");
                     }
                     else
                     {
-                        sb.AppendLine($"export type {export.ExportName} = Internal.{ns.Name}.{export.ExportName};");
+                        sb.AppendLine($"export type {export.ExportName}{typeParams} = Internal.{ns.Name}.{export.ExportName}{typeParams};");
                     }
                 }
             }
@@ -151,5 +154,26 @@ public static class FacadeEmitter
     {
         // Convert "System.Collections.Generic" to "System_Collections_Generic"
         return namespaceName.Replace('.', '_');
+    }
+
+    /// <summary>
+    /// TS2314 FIX: Generates generic type parameter list for facade type aliases.
+    /// Examples:
+    ///   arity=0 → "" (non-generic)
+    ///   arity=1 → "<T>"
+    ///   arity=2 → "<T1, T2>"
+    ///   arity=3 → "<T1, T2, T3>"
+    /// </summary>
+    private static string GenerateTypeParameters(int arity)
+    {
+        if (arity == 0)
+            return string.Empty;
+
+        if (arity == 1)
+            return "<T>";
+
+        // For arity > 1, use T1, T2, T3, ...
+        var typeParams = string.Join(", ", Enumerable.Range(1, arity).Select(i => $"T{i}"));
+        return $"<{typeParams}>";
     }
 }

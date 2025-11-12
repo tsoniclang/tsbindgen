@@ -212,7 +212,8 @@ public static class ImportPlanner
                 var finalName = ctx.Renamer.GetFinalTypeName(type);
                 exports.Add(new ExportStatement(
                     ExportName: finalName,
-                    ExportKind: DetermineExportKind(type)));
+                    ExportKind: DetermineExportKind(type),
+                    Arity: type.Arity)); // TS2314 FIX: Capture generic arity
             }
         }
 
@@ -399,7 +400,8 @@ public sealed record TypeImport(
 /// </summary>
 public sealed record ExportStatement(
     string ExportName,
-    ExportKind ExportKind);
+    ExportKind ExportKind,
+    int Arity); // Number of generic type parameters (0 for non-generic types)
 
 /// <summary>
 /// Kind of export.
