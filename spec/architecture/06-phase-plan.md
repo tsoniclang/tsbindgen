@@ -124,6 +124,92 @@ private static void PlanNamespaceExports(
 - `Enum` → `ExportKind.Enum`
 - `Delegate` → `ExportKind.Type` (delegates emit as type aliases)
 
+#### Method: GetTypeScriptNameForExternalType()
+
+```csharp
+private static string GetTypeScriptNameForExternalType(string clrFullName)
+```
+
+**Lines:** 229-247
+
+**Purpose:** Convert CLR full name to TypeScript emit name for external types (types from other namespaces not in local graph).
+
+**Why needed:** When planning imports for cross-namespace references, we need to determine the TypeScript name that will be emitted for types we haven't processed yet. This method applies the same naming conventions as TypeNameResolver but works purely from CLR names.
+
+**Algorithm:**
+
+1. **Extract simple name from full CLR name:**
+   ```csharp
+   var simpleName = clrFullName.Contains('.')
+       ? clrFullName.Substring(clrFullName.LastIndexOf('.') + 1)
+       : clrFullName;
+   ```
+   - Example: `"System.Collections.Generic.IEnumerable\`1"` → `"IEnumerable\`1"`
+
+2. **Sanitize backtick to underscore (generic arity marker):**
+   ```csharp
+   var sanitized = simpleName.Replace('\`', '_');
+   ```
+   - Example: `"IEnumerable\`1"` → `"IEnumerable_1"`
+
+3. **Handle nested types (replace + with $):**
+   ```csharp
+   sanitized = sanitized.Replace('+', '$');
+   ```
+   - Example: `"Dictionary\`2+Enumerator"` → `"Dictionary_2$Enumerator"`
+
+4. **Check TypeScript reserved words:**
+   ```csharp
+   var result = TypeScriptReservedWords.Sanitize(sanitized);
+   return result.Sanitized;
+   ```
+   - Example: `"Type"` → `"Type_"`, `"Object"` → `"Object_"`
+
+**Examples:**
+
+```csharp
+// Generic interface:
+GetTypeScriptNameForExternalType("System.Collections.Generic.IEnumerable`1")
+→ "IEnumerable_1"
+
+// Nested type:
+GetTypeScriptNameForExternalType("System.Collections.Generic.Dictionary`2+Enumerator")
+→ "Dictionary_2$Enumerator"
+
+// Reserved word:
+GetTypeScriptNameForExternalType("System.Type")
+→ "Type_"
+
+// Multi-arity generic:
+GetTypeScriptNameForExternalType("System.Func`3")
+→ "Func_3"
+```
+
+**Used in:** `PlanNamespaceImports()` at line 101 when type is not found in local graph
+
+**Integration:**
+
+```csharp
+// In PlanNamespaceImports():
+if (graph.TryGetType(clrName, out var typeSymbol) && typeSymbol != null)
+{
+    // Type is in local graph - use Renamer's final name
+    tsName = ctx.Renamer.GetFinalTypeName(typeSymbol);
+}
+else
+{
+    // Type is external - construct TS name from CLR name
+    tsName = GetTypeScriptNameForExternalType(clrName);
+    ctx.Log("ImportPlanner", $"External type {clrName} → {tsName}");
+}
+```
+
+**Critical for:** Cross-namespace generic type imports like `IEnumerable_1`, `Func_2`, etc.
+
+**Pre-emit guard:** After getting `tsName`, the code checks for assembly-qualified garbage to prevent regressions of the import garbage bug (commit 70d21db). If `tsName` contains `[`, `Culture=`, or `PublicKeyToken=`, an error is raised and the import is skipped.
+
+**Consistency:** Applies same transformations as `TypeNameResolver` for external types to ensure import names match emitted names across namespaces.
+
 ### Class: ImportPlan
 
 Data structure containing all import/export information.
