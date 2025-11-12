@@ -93,6 +93,9 @@ public static class ClassPrinter
         if (type.BaseType != null)
         {
             var baseTypeName = TypeRefPrinter.Print(type.BaseType, resolver, ctx);
+            // TS2693 FIX (Same-Namespace): For same-namespace types with views, use instance class name
+            baseTypeName = ApplyInstanceSuffixForSameNamespaceViews(baseTypeName, type.BaseType, type.Namespace, graph, ctx);
+
             // Skip System.Object, System.ValueType, and any fallback types (any, unknown)
             // CRITICAL: Never emit "extends any" - TypeScript rejects it
             if (baseTypeName != "Object" &&
@@ -109,7 +112,13 @@ public static class ClassPrinter
         if (type.Interfaces.Length > 0)
         {
             sb.Append(" implements ");
-            sb.Append(string.Join(", ", type.Interfaces.Select(i => TypeRefPrinter.Print(i, resolver, ctx))));
+            var interfaceNames = type.Interfaces.Select(i =>
+            {
+                var name = TypeRefPrinter.Print(i, resolver, ctx);
+                // TS2693 FIX (Same-Namespace): For same-namespace types with views, use instance class name
+                return ApplyInstanceSuffixForSameNamespaceViews(name, i, type.Namespace, graph, ctx);
+            });
+            sb.Append(string.Join(", ", interfaceNames));
         }
 
         sb.AppendLine(" {");
@@ -1019,5 +1028,60 @@ public static class ClassPrinter
             NestedTypeReference nested => nested.FullReference.TypeArguments.Any(arg => ReferencesClassGeneric(arg, classGenericNames)),
             _ => false
         };
+    }
+
+    /// <summary>
+    /// TS2693 FIX (Same-Namespace): For types with views in the SAME namespace, heritage clauses
+    /// need the instance class name, not the type alias. Type aliases are emitted at module level
+    /// (outside namespace) and aren't accessible as VALUES inside namespace declarations.
+    /// This only applies to heritage clauses (extends/implements), not method signatures.
+    /// </summary>
+    private static string ApplyInstanceSuffixForSameNamespaceViews(
+        string resolvedName,
+        TypeReference typeRef,
+        string currentNamespace,
+        SymbolGraph graph,
+        BuildContext ctx)
+    {
+        // Only applies to named types in the same namespace
+        if (typeRef is not NamedTypeReference named)
+            return resolvedName;
+
+        // Look up type symbol to check if it has views
+        // CRITICAL: TypeIndex is keyed by ClrFullName (not stable ID format)
+        var clrFullName = named.FullName;
+        if (!graph.TypeIndex.TryGetValue(clrFullName, out var typeSymbol))
+            return resolvedName; // External type
+
+        // Check if it's in the same namespace
+        if (typeSymbol.Namespace != currentNamespace)
+            return resolvedName; // Cross-namespace (already handled by qualified names)
+
+        // Check if type has views (emits as instance class + type alias)
+        if (typeSymbol.ExplicitViews.Length > 0 &&
+            (typeSymbol.Kind == Model.Symbols.TypeKind.Class || typeSymbol.Kind == Model.Symbols.TypeKind.Struct))
+        {
+            // Type has views - return instance class name
+            // The type alias "SafeHandle" exists at module level but isn't accessible as a value
+            // inside namespace declarations. Must use "SafeHandle$instance".
+
+            // CRITICAL: If the resolved name contains generic arguments (e.g., "Foo<T>"),
+            // we need to insert $instance BEFORE the '<', not at the end:
+            //   CORRECT: "Foo$instance<T>"
+            //   WRONG:   "Foo<T>$instance" (syntax error!)
+            var genericStart = resolvedName.IndexOf('<');
+            if (genericStart >= 0)
+            {
+                // Insert $instance before the generic arguments
+                return resolvedName.Substring(0, genericStart) + "$instance" + resolvedName.Substring(genericStart);
+            }
+            else
+            {
+                // No generic arguments - just append $instance
+                return $"{resolvedName}$instance";
+            }
+        }
+
+        return resolvedName;
     }
 }
