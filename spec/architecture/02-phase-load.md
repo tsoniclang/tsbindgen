@@ -2064,3 +2064,185 @@ The **Load phase** is responsible for:
 - **Compiler-generated types filtered:** Skips angle-bracket types that aren't valid in declarations
 - **Deduplication:** Assembly identity, member MetadataToken, type keys all deduplicated
 - **Determinism:** Sorted iteration for reproducible output
+- **Cross-assembly resolution:** DeclaringAssemblyResolver maps unresolved type references to their declaring assemblies (Fix E Phase 1)
+
+---
+
+## File: DeclaringAssemblyResolver.cs
+
+### Purpose
+
+Resolves CLR type full names to their declaring assembly names using the reflection context. Used for cross-assembly dependency resolution (Fix E) to identify types that exist outside the current generation set. Enables future generation of ambient stubs for external dependencies.
+
+**Context:** When ImportGraph encounters type references that don't resolve to any namespace in the current SymbolGraph, those CLR keys are collected as "unresolved". DeclaringAssemblyResolver uses the MetadataLoadContext to search through all loaded assemblies and determine which assembly declares each unresolved type.
+
+**Use case:** If generating System.Linq and encountering a reference to a type from System.IO (not in generation set), the resolver identifies "System.IO" as the declaring assembly. Future phases can then generate ambient stub declarations for cross-assembly imports.
+
+### Class: DeclaringAssemblyResolver
+
+**Fields:**
+- `_loadContext: MetadataLoadContext` - Reflection context with all assemblies loaded
+- `_ctx: BuildContext` - Context for logging
+- `_cache: Dictionary<string, string?>` - CLR key → assembly name cache (null = not found)
+
+**Constructor:**
+```csharp
+public DeclaringAssemblyResolver(MetadataLoadContext loadContext, BuildContext ctx)
+```
+- Stores load context and BuildContext
+- Initializes empty cache for memoization
+
+---
+
+### Method: ResolveAssembly
+
+**Signature:**
+```csharp
+public string? ResolveAssembly(string clrFullName)
+```
+
+**What it does:**
+Resolves a single CLR type full name (backtick form) to its declaring assembly name. Returns null if type cannot be found in any loaded assembly.
+
+**Parameters:**
+- `clrFullName` - CLR full name with backtick arity, e.g., `"System.Collections.Generic.IEnumerable`1"`
+
+**Returns:**
+- Assembly name (e.g., `"System.Private.CoreLib"`) if found
+- `null` if type not found in any loaded assembly or on error
+
+**Called by:**
+- `ResolveBatch()` - For batch resolution
+- Plan phase after ImportGraph.Build() collects unresolved keys
+
+**How it works:**
+1. Check cache - return cached result if available (null or assembly name)
+2. Iterate through all assemblies in MetadataLoadContext via `GetAssemblies()`
+3. For each assembly, try `assembly.GetType(clrFullName, throwOnError: false)`
+4. If type found, cache and return assembly name
+5. If not found in any assembly, cache null and return null
+6. On exception, log error, cache null, return null
+
+**Why:** MetadataLoadContext doesn't have a global FindType() method, so must search assemblies linearly. Caching prevents repeated expensive searches.
+
+**Examples:**
+- `"System.IO.Stream"` → `"System.Private.CoreLib"`
+- `"System.Linq.Enumerable"` → `"System.Linq"`
+- `"FooBar.NonExistent"` → `null`
+
+---
+
+### Method: ResolveBatch
+
+**Signature:**
+```csharp
+public Dictionary<string, string> ResolveBatch(IEnumerable<string> clrKeys)
+```
+
+**What it does:**
+Batch resolves multiple CLR keys to their declaring assemblies. Only returns successfully resolved types (not null results).
+
+**Parameters:**
+- `clrKeys` - Collection of CLR full names to resolve
+
+**Returns:**
+- Dictionary mapping CLR key → assembly name (only successful resolutions)
+
+**Called by:**
+- SinglePhaseBuilder.PlanPhase() after ImportGraph collects unresolved keys
+
+**How it works:**
+1. Create empty results dictionary
+2. For each CLR key, call `ResolveAssembly()`
+3. If result is non-null, add to results dictionary
+4. Log batch resolution stats (X resolved out of Y total)
+5. Return results
+
+**Example:**
+```
+Input: ["System.IO.Stream", "System.Linq.Enumerable", "Unknown.Type"]
+Output: {
+  "System.IO.Stream" → "System.Private.CoreLib",
+  "System.Linq.Enumerable" → "System.Linq"
+}
+```
+
+---
+
+### Method: GroupByAssembly
+
+**Signature:**
+```csharp
+public Dictionary<string, List<string>> GroupByAssembly(
+    Dictionary<string, string> resolvedTypes)
+```
+
+**What it does:**
+Groups resolved types by their declaring assembly name. Useful for diagnostic output and planning stub generation.
+
+**Parameters:**
+- `resolvedTypes` - Dictionary from ResolveBatch (CLR key → assembly name)
+
+**Returns:**
+- Dictionary mapping assembly name → list of CLR keys declared in that assembly
+
+**Called by:**
+- SinglePhaseBuilder.PlanPhase() for diagnostic logging
+
+**How it works:**
+1. Group resolved types by assembly name using LINQ GroupBy
+2. Convert each group to dictionary entry: assembly name → list of CLR keys
+3. Return grouped dictionary
+
+**Example:**
+```
+Input: {
+  "System.IO.Stream" → "System.Private.CoreLib",
+  "System.IO.File" → "System.Private.CoreLib",
+  "System.Linq.Enumerable" → "System.Linq"
+}
+
+Output: {
+  "System.Private.CoreLib" → ["System.IO.Stream", "System.IO.File"],
+  "System.Linq" → ["System.Linq.Enumerable"]
+}
+```
+
+**Use case:** Diagnostic logging shows:
+```
+Resolved 15 types across 3 assemblies:
+  - System.Private.CoreLib: 8 types
+  - System.Linq: 5 types
+  - System.IO: 2 types
+```
+
+---
+
+### Integration Point
+
+**Used in:** SinglePhaseBuilder.PlanPhase()
+
+```csharp
+// After ImportGraph.Build()
+if (importGraph.UnresolvedClrKeys.Count > 0)
+{
+    ctx.Log("CrossAssembly", $"Found {importGraph.UnresolvedClrKeys.Count} unresolved type references");
+
+    var resolver = new DeclaringAssemblyResolver(loadContext, ctx);
+    var unresolvedToAssembly = resolver.ResolveBatch(importGraph.UnresolvedClrKeys);
+
+    // Store in graph data for future use
+    importGraph.UnresolvedToAssembly = unresolvedToAssembly;
+
+    // Diagnostic logging
+    var byAssembly = resolver.GroupByAssembly(unresolvedToAssembly);
+    foreach (var (assembly, types) in byAssembly)
+    {
+        ctx.Log("CrossAssembly", $"  - {assembly}: {types.Count} types");
+    }
+}
+```
+
+**Status:** Infrastructure complete (Fix E Phase 1). Future phases (Fix E Phase 2-3) will use this data to generate ambient stub declarations for cross-assembly imports.
+
+---
