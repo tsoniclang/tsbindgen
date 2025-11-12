@@ -888,7 +888,7 @@ Filter internal BCL interfaces from type interface lists. Internal interfaces ar
 
 **Called by:** Shape phase (early pass, before interface indexes built)
 
-**Impact:** Eliminates TS2304 errors for internal interfaces (Fix F: -74 errors in BCL validation)
+**Impact:** Eliminates TS2304 errors for internal interfaces
 
 #### `InternalInterfaceFilter.FilterInterfaces(BuildContext ctx, TypeSymbol type)`
 **Signature:** `public static TypeSymbol FilterInterfaces(BuildContext ctx, TypeSymbol type)`
@@ -1076,7 +1076,7 @@ struct ImmutableArray_1<T> : IEnumerable_1<T>, IEnumerable,
 
 **Impact:** Prevents TS2304 errors for 2 internal Immutable Collections interfaces
 
-### Validation Results (Fix F)
+### Validation Results
 
 **Metrics from BCL validation:**
 - Total errors before: 2,991
@@ -1126,7 +1126,7 @@ struct ImmutableArray_1<T> : IEnumerable_1<T>, IEnumerable,
 - `ISerializable` (simple name) doesn't contain "Runtime" → NOT filtered ✅
 - `System.Runtime.InteropServices.ISerializable` (full name) contains "Runtime" → Would be filtered ❌
 
-**Result:** Eliminated 341 false positive errors (Fix F v2)
+**Result:** Eliminated 341 false positive errors
 
 #### Extensibility
 **Adding new internal interfaces:**

@@ -2074,7 +2074,7 @@ The **Load phase** is responsible for:
 - **Compiler-generated types filtered:** Skips angle-bracket types that aren't valid in declarations
 - **Deduplication:** Assembly identity, member MetadataToken, type keys all deduplicated
 - **Determinism:** Sorted iteration for reproducible output
-- **Cross-assembly resolution:** DeclaringAssemblyResolver maps unresolved type references to their declaring assemblies (Fix E Phase 1)
+- **Cross-assembly resolution:** DeclaringAssemblyResolver maps unresolved type references to their declaring assemblies
 
 ---
 
@@ -2082,7 +2082,7 @@ The **Load phase** is responsible for:
 
 ### Purpose
 
-Resolves CLR type full names to their declaring assembly names using the reflection context. Used for cross-assembly dependency resolution (Fix E) to identify types that exist outside the current generation set. Enables future generation of ambient stubs for external dependencies.
+Resolves CLR type full names to their declaring assembly names using the reflection context. Used for cross-assembly dependency resolution to identify types that exist outside the current generation set. Enables future generation of ambient stubs for external dependencies.
 
 **Context:** When ImportGraph encounters type references that don't resolve to any namespace in the current SymbolGraph, those CLR keys are collected as "unresolved". DeclaringAssemblyResolver uses the MetadataLoadContext to search through all loaded assemblies and determine which assembly declares each unresolved type.
 
@@ -2252,7 +2252,5 @@ if (importGraph.UnresolvedClrKeys.Count > 0)
     }
 }
 ```
-
-**Status:** Infrastructure complete (Fix E Phase 1). Future phases (Fix E Phase 2-3) will use this data to generate ambient stub declarations for cross-assembly imports.
 
 ---
