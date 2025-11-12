@@ -290,9 +290,11 @@ public static class ImportPlanner
 
     /// <summary>
     /// TS2693 FIX: Determines if a type is used as a value (not just a type).
-    /// Types used in extends/implements clauses AND generic constraints need value imports (not 'import type').
-    /// Returns true if the type is referenced as BaseClass, Interface, or GenericConstraint.
-    /// TS2344 FIX: Generic constraints are "type sites" that need value imports and qualified names.
+    /// Types used in extends/implements clauses need value imports (not 'import type').
+    /// Returns true if the type is referenced as BaseClass or Interface.
+    ///
+    /// NOTE: Generic constraints are TYPE-ONLY positions (type sites), not value sites.
+    /// They get qualified names through TypeNameResolver, but use 'import type' (not namespace imports).
     /// </summary>
     private static bool IsTypeUsedAsValue(
         ImportGraphData importGraph,
@@ -300,14 +302,14 @@ public static class ImportPlanner
         string targetNamespace,
         string targetTypeClrName)
     {
-        // Check if any cross-namespace reference for this type is BaseClass, Interface, or GenericConstraint
+        // Check if any cross-namespace reference for this type is BaseClass or Interface
+        // Constraints are explicitly NOT included - they are type-only positions
         return importGraph.CrossNamespaceReferences.Any(r =>
             r.SourceNamespace == sourceNamespace &&
             r.TargetNamespace == targetNamespace &&
             r.TargetType == targetTypeClrName &&
             (r.ReferenceKind == ReferenceKind.BaseClass ||
-             r.ReferenceKind == ReferenceKind.Interface ||
-             r.ReferenceKind == ReferenceKind.GenericConstraint));
+             r.ReferenceKind == ReferenceKind.Interface));
     }
 
     /// <summary>
