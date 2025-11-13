@@ -51,6 +51,9 @@ public static class TypeMap
             case "System.Int64":
                 tsType = "long";
                 return true;
+            case "System.Int128":
+                tsType = "int128";
+                return true;
             case "System.IntPtr":
                 tsType = "nint";
                 return true;
@@ -68,11 +71,17 @@ public static class TypeMap
             case "System.UInt64":
                 tsType = "ulong";
                 return true;
+            case "System.UInt128":
+                tsType = "uint128";
+                return true;
             case "System.UIntPtr":
                 tsType = "nuint";
                 return true;
 
             // Floating point (branded types)
+            case "System.Half":
+                tsType = "half";
+                return true;
             case "System.Single":
                 tsType = "float";
                 return true;
@@ -157,8 +166,11 @@ public static class TypeMap
             "System.UInt32" => true,
             "System.Int64" => true,
             "System.UInt64" => true,
+            "System.Int128" => true,
+            "System.UInt128" => true,
             "System.IntPtr" => true,
             "System.UIntPtr" => true,
+            "System.Half" => true,
             "System.Single" => true,
             "System.Double" => true,
             "System.Decimal" => true,

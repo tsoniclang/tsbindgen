@@ -79,8 +79,18 @@ public static class TypeRefPrinter
             return baseName;
 
         // Print generic type with arguments: Foo<T, U>
-        // CRITICAL: Recursively print type arguments using resolver
-        var argParts = named.TypeArguments.Select(arg => Print(arg, resolver, ctx)).ToList();
+        // CRITICAL: Wrap ONLY concrete primitive types with CLROf<> to lift to their CLR types
+        // This ensures generic constraints (IEquatable_1<Int32>, IComparable_1<Int32>) are satisfied
+        // CLROf<T> maps: int → Int32, string → String_, byte → Byte, etc.
+        // Generic parameters (T, U, TKey) pass through unchanged to avoid double-wrapping
+        // Uses PrimitiveLift.IsLiftableTs as single source of truth (PG_GENERIC_PRIM_LIFT_001)
+        var argParts = named.TypeArguments.Select(arg =>
+        {
+            var printed = Print(arg, resolver, ctx);
+            // Only wrap liftable primitives with CLROf<>
+            var isPrimitive = PrimitiveLift.IsLiftableTs(printed);
+            return isPrimitive ? $"CLROf<{printed}>" : printed;
+        }).ToList();
         var nonEmptyArgs = argParts.Where(a => !string.IsNullOrWhiteSpace(a)).ToList();
 
         if (nonEmptyArgs.Count == 0)

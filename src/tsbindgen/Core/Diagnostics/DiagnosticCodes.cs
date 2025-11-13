@@ -97,6 +97,9 @@ public static class DiagnosticCodes
     public const string SurfaceNamePolicyMismatch      = "TBG8A1"; // PG_NAME_SURF_001 - Class member doesn't match interface member using CLR-name policy
     public const string NumericSuffixOnSurface         = "TBG8A2"; // PG_NAME_SURF_002 - Surface or view member ends with numeric suffix (equals2, etc.)
 
+    // 8Px — Primitive Lifting / CLROf
+    public const string PrimitiveGenericLiftMismatch   = "TBG8P1"; // PG_GENERIC_PRIM_LIFT_001 - Primitive type argument not covered by CLROf lifting rules
+
     // 9xx — Assembly Load
     public const string UnresolvedExternalType         = "TBG880"; // PG_LOAD_001
     public const string MixedPublicKeyTokenForSameName = "TBG881"; // PG_LOAD_002

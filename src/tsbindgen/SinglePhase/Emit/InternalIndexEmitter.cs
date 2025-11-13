@@ -253,8 +253,11 @@ public static class InternalIndexEmitter
         sb.AppendLine($"export type uint = number & {{ __brand: \"uint\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type long = number & {{ __brand: \"long\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type ulong = number & {{ __brand: \"ulong\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type int128 = number & {{ __brand: \"int128\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type uint128 = number & {{ __brand: \"uint128\" }} & {IEq} & {ICmp};");
 
         // Floating-point types
+        sb.AppendLine($"export type half = number & {{ __brand: \"half\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type float = number & {{ __brand: \"float\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type double = number & {{ __brand: \"double\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type decimal = number & {{ __brand: \"decimal\" }} & {IEq} & {ICmp};");
@@ -263,6 +266,22 @@ public static class InternalIndexEmitter
         sb.AppendLine($"export type nint = number & {{ __brand: \"nint\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type nuint = number & {{ __brand: \"nuint\" }} & {IEq} & {ICmp};");
 
+        sb.AppendLine();
+
+        // CLROf<T> - Primitive Lifting Utility
+        // CRITICAL: Uses PrimitiveLift.Rules as single source of truth (PG_GENERIC_PRIM_LIFT_001)
+        sb.AppendLine("// CLROf<T> - Maps ergonomic primitives to their CLR types for generic constraints");
+        sb.AppendLine("// This utility is used ONLY in generic type arguments to satisfy CLR interface constraints");
+        sb.AppendLine("// Value positions (parameters, return types) use lowercase primitives for ergonomics");
+        sb.AppendLine("export type CLROf<T> =");
+
+        // Generate conditional type branches from PrimitiveLift.Rules
+        foreach (var (tsName, _, clrSimpleName) in PrimitiveLift.Rules)
+        {
+            sb.AppendLine($"    T extends {tsName} ? import(\"../../System/internal/index\").{clrSimpleName} :");
+        }
+
+        sb.AppendLine("    T; // Identity fallback for non-primitive types");
         sb.AppendLine();
     }
 

@@ -95,6 +95,11 @@ public static class PhaseGate
         // MUST RUN EARLY - before other type reference validation
         Types.ValidateTypeMapCompliance(ctx, graph, validationContext);
 
+        // PhaseGate Hardening - M7_CLROf: Primitive generic lifting (PG_GENERIC_PRIM_LIFT_001)
+        // Validates all primitive type arguments are covered by CLROf lifting rules
+        // Ensures TypeRefPrinter primitive detection stays in sync with PrimitiveLift configuration
+        Types.ValidatePrimitiveGenericLifting(ctx, graph, validationContext);
+
         // PhaseGate Hardening - M7b: External type resolution (PG_LOAD_001)
         // Validates all external type references are either in TypeIndex or built-in
         // MUST RUN AFTER TypeMap check, BEFORE API surface validation

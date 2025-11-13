@@ -409,4 +409,145 @@ internal static class Types
 
         ctx.Log("PhaseGate", $"Validated {checkedReferences} external references. Unresolved: {unresolvedReferences}");
     }
+
+    /// <summary>
+    /// PG_GENERIC_PRIM_LIFT_001: Validates that all primitive type arguments are covered by CLROf lifting rules.
+    /// Ensures TypeRefPrinter primitive detection stays in sync with PrimitiveLift configuration.
+    /// Prevents regressions where a new primitive is used but not added to CLROf mapping.
+    /// </summary>
+    internal static void ValidatePrimitiveGenericLifting(BuildContext ctx, SymbolGraph graph, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate", "Validating primitive generic lifting (PG_GENERIC_PRIM_LIFT_001)...");
+
+        int checkedTypeArgs = 0;
+        int primitiveTypeArgs = 0;
+
+        // Helper: Check all type references in a type signature
+        void CheckTypeReference(TypeReference typeRef, string owner)
+        {
+            // Walk the type reference tree
+            switch (typeRef)
+            {
+                case NamedTypeReference named:
+                    // Check if this is a generic instantiation
+                    if (named.TypeArguments.Count > 0)
+                    {
+                        foreach (var arg in named.TypeArguments)
+                        {
+                            checkedTypeArgs++;
+
+                            // Check if the type argument is a concrete primitive
+                            if (arg is NamedTypeReference argNamed)
+                            {
+                                // Is this a CLR primitive type?
+                                if (PrimitiveLift.IsLiftableClr(argNamed.FullName))
+                                {
+                                    primitiveTypeArgs++;
+                                    // This is covered by CLROf - good!
+                                }
+                                // If it's NOT in PrimitiveLift but IS a System primitive,
+                                // that's a configuration error
+                                else if (argNamed.FullName.StartsWith("System.") && IsPotentialPrimitive(argNamed.FullName))
+                                {
+                                    validationCtx.RecordDiagnostic(
+                                        DiagnosticCodes.PrimitiveGenericLiftMismatch,
+                                        "ERROR",
+                                        $"Type '{owner}' uses primitive type argument '{argNamed.FullName}' " +
+                                        $"in generic type '{named.FullName}', but this primitive is not covered by " +
+                                        $"CLROf lifting rules. Add it to PrimitiveLift.Rules. (PG_GENERIC_PRIM_LIFT_001)");
+                                }
+                            }
+
+                            // Recursively check nested generics
+                            CheckTypeReference(arg, owner);
+                        }
+                    }
+                    break;
+
+                case ArrayTypeReference arr:
+                    CheckTypeReference(arr.ElementType, owner);
+                    break;
+
+                case PointerTypeReference ptr:
+                    CheckTypeReference(ptr.PointeeType, owner);
+                    break;
+
+                case ByRefTypeReference byref:
+                    CheckTypeReference(byref.ReferencedType, owner);
+                    break;
+
+                case NestedTypeReference nested:
+                    CheckTypeReference(nested.FullReference, owner);
+                    break;
+
+                case GenericParameterReference:
+                    // Generic parameters themselves don't need checking
+                    break;
+            }
+        }
+
+        // Helper: Check if a type name looks like a potential primitive
+        // This catches cases where someone adds a new primitive without configuring it
+        bool IsPotentialPrimitive(string fullName) =>
+            fullName is "System.SByte" or "System.Byte"
+                or "System.Int16" or "System.UInt16"
+                or "System.Int32" or "System.UInt32"
+                or "System.Int64" or "System.UInt64"
+                or "System.IntPtr" or "System.UIntPtr"
+                or "System.Single" or "System.Double" or "System.Decimal"
+                or "System.Char" or "System.Boolean" or "System.String"
+                or "System.Half" or "System.Int128" or "System.UInt128"; // Future primitives
+
+        // Walk all types and their public surfaces
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                var typeId = $"{type.Namespace}.{type.ClrName}";
+
+            // Check base type
+            if (type.BaseType != null)
+            {
+                CheckTypeReference(type.BaseType, typeId);
+            }
+
+            // Check interfaces
+            foreach (var iface in type.Interfaces)
+            {
+                CheckTypeReference(iface, typeId);
+            }
+
+            // Check method signatures
+            foreach (var method in type.Members.Methods)
+            {
+                CheckTypeReference(method.ReturnType, $"{typeId}.{method.ClrName}");
+
+                foreach (var param in method.Parameters)
+                {
+                    CheckTypeReference(param.Type, $"{typeId}.{method.ClrName}");
+                }
+            }
+
+            // Check properties
+            foreach (var prop in type.Members.Properties)
+            {
+                CheckTypeReference(prop.PropertyType, $"{typeId}.{prop.ClrName}");
+            }
+
+            // Check fields
+            foreach (var field in type.Members.Fields)
+            {
+                CheckTypeReference(field.FieldType, $"{typeId}.{field.ClrName}");
+            }
+
+            // Check events
+            foreach (var evt in type.Members.Events)
+            {
+                CheckTypeReference(evt.EventHandlerType, $"{typeId}.{evt.ClrName}");
+            }
+            }
+        }
+
+        ctx.Log("PhaseGate", $"Validated {checkedTypeArgs} generic type arguments. Primitive args: {primitiveTypeArgs}");
+    }
 }
