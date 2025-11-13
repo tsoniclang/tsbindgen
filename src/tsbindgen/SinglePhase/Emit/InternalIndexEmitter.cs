@@ -233,19 +233,36 @@ public static class InternalIndexEmitter
     private static void EmitBrandedPrimitives(StringBuilder sb)
     {
         sb.AppendLine("// Branded primitive types for CLR numeric types");
-        sb.AppendLine("export type sbyte = number & { __brand: \"sbyte\" };");
-        sb.AppendLine("export type byte = number & { __brand: \"byte\" };");
-        sb.AppendLine("export type short = number & { __brand: \"short\" };");
-        sb.AppendLine("export type ushort = number & { __brand: \"ushort\" };");
-        sb.AppendLine("export type int = number & { __brand: \"int\" };");
-        sb.AppendLine("export type uint = number & { __brand: \"uint\" };");
-        sb.AppendLine("export type long = number & { __brand: \"long\" };");
-        sb.AppendLine("export type ulong = number & { __brand: \"ulong\" };");
-        sb.AppendLine("export type float = number & { __brand: \"float\" };");
-        sb.AppendLine("export type double = number & { __brand: \"double\" };");
-        sb.AppendLine("export type decimal = number & { __brand: \"decimal\" };");
-        sb.AppendLine("export type nint = number & { __brand: \"nint\" };");
-        sb.AppendLine("export type nuint = number & { __brand: \"nuint\" };");
+
+        sb.AppendLine("// Primitives implement IEquatable and IComparable to satisfy generic constraints");
+        sb.AppendLine("// Note: Using 'any' in interface type parameters to avoid circular reference (TS2456)");
+
+        // Use inline type imports to reference interfaces from System namespace
+        // Format: import("relative-path").InterfaceName
+        // IMPORTANT: Use 'any' as type parameter to avoid circular references
+        // TypeScript limitation: `type byte = ... & IEquatable_1<byte>` causes TS2456
+        const string IEq = "import(\"../../System/internal/index\").IEquatable_1<any>";
+        const string ICmp = "import(\"../../System/internal/index\").IComparable_1<any>";
+
+        // Integer types
+        sb.AppendLine($"export type sbyte = number & {{ __brand: \"sbyte\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type byte = number & {{ __brand: \"byte\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type short = number & {{ __brand: \"short\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type ushort = number & {{ __brand: \"ushort\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type int = number & {{ __brand: \"int\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type uint = number & {{ __brand: \"uint\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type long = number & {{ __brand: \"long\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type ulong = number & {{ __brand: \"ulong\" }} & {IEq} & {ICmp};");
+
+        // Floating-point types
+        sb.AppendLine($"export type float = number & {{ __brand: \"float\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type double = number & {{ __brand: \"double\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type decimal = number & {{ __brand: \"decimal\" }} & {IEq} & {ICmp};");
+
+        // Native-sized integers
+        sb.AppendLine($"export type nint = number & {{ __brand: \"nint\" }} & {IEq} & {ICmp};");
+        sb.AppendLine($"export type nuint = number & {{ __brand: \"nuint\" }} & {IEq} & {ICmp};");
+
         sb.AppendLine();
     }
 
