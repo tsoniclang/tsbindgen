@@ -92,80 +92,102 @@ public static class ImportGraph
         // ONLY ANALYZE PUBLIC TYPES - internal types won't be emitted
         foreach (var type in ns.Types.Where(t => t.Accessibility == Accessibility.Public))
         {
-            // Analyze base class - collect ALL referenced types recursively
-            if (type.BaseType != null)
-            {
-                var baseTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                CollectTypeReferences(ctx, type.BaseType, graph, graphData, baseTypeRefs);
-
-                foreach (var (fullName, targetNs) in baseTypeRefs)
-                {
-                    if (targetNs != null && targetNs != ns.Name)
-                    {
-                        dependencies.Add(targetNs);
-                        graphData.CrossNamespaceReferences.Add(new CrossNamespaceReference(
-                            SourceNamespace: ns.Name,
-                            SourceType: type.ClrFullName,
-                            TargetNamespace: targetNs,
-                            TargetType: fullName,
-                            ReferenceKind: ReferenceKind.BaseClass));
-                    }
-                }
-            }
-
-            // Analyze interfaces - collect ALL referenced types recursively
-            foreach (var ifaceRef in type.Interfaces)
-            {
-                var ifaceTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                CollectTypeReferences(ctx, ifaceRef, graph, graphData, ifaceTypeRefs);
-
-                foreach (var (fullName, targetNs) in ifaceTypeRefs)
-                {
-                    if (targetNs != null && targetNs != ns.Name)
-                    {
-                        dependencies.Add(targetNs);
-                        graphData.CrossNamespaceReferences.Add(new CrossNamespaceReference(
-                            SourceNamespace: ns.Name,
-                            SourceType: type.ClrFullName,
-                            TargetNamespace: targetNs,
-                            TargetType: fullName,
-                            ReferenceKind: ReferenceKind.Interface));
-                    }
-                }
-            }
-
-            // Analyze generic parameters constraints - collect ALL referenced types recursively
-            foreach (var gp in type.GenericParameters)
-            {
-                foreach (var constraint in gp.Constraints)
-                {
-                    var constraintTypeRefs = new HashSet<(string FullName, string? Namespace)>();
-                    CollectTypeReferences(ctx, constraint, graph, graphData, constraintTypeRefs);
-
-                    foreach (var (fullName, targetNs) in constraintTypeRefs)
-                    {
-                        if (targetNs != null && targetNs != ns.Name)
-                        {
-                            dependencies.Add(targetNs);
-                            graphData.CrossNamespaceReferences.Add(new CrossNamespaceReference(
-                                SourceNamespace: ns.Name,
-                                SourceType: type.ClrFullName,
-                                TargetNamespace: targetNs,
-                                TargetType: fullName,
-                                ReferenceKind: ReferenceKind.GenericConstraint));
-                        }
-                    }
-                }
-            }
-
-            // Analyze members
-            AnalyzeMemberDependencies(ctx, graph, graphData, ns, type, dependencies);
+            // TS2304 FIX: Analyze this type AND all nested types recursively
+            AnalyzeTypeAndNestedRecursively(ctx, graph, graphData, ns, type, dependencies);
         }
 
         if (dependencies.Count > 0)
         {
             graphData.NamespaceDependencies[ns.Name] = dependencies;
             ctx.Log("ImportGraph", $"{ns.Name} depends on {dependencies.Count} other namespaces");
+        }
+    }
+
+    /// <summary>
+    /// TS2304 FIX: Recursively analyze a type and all its nested types.
+    /// Ensures nested type members are scanned for cross-namespace dependencies.
+    /// </summary>
+    private static void AnalyzeTypeAndNestedRecursively(
+        BuildContext ctx,
+        SymbolGraph graph,
+        ImportGraphData graphData,
+        NamespaceSymbol ns,
+        TypeSymbol type,
+        HashSet<string> dependencies)
+    {
+        // Analyze base class - collect ALL referenced types recursively
+        if (type.BaseType != null)
+        {
+            var baseTypeRefs = new HashSet<(string FullName, string? Namespace)>();
+            CollectTypeReferences(ctx, type.BaseType, graph, graphData, baseTypeRefs);
+
+            foreach (var (fullName, targetNs) in baseTypeRefs)
+            {
+                if (targetNs != null && targetNs != ns.Name)
+                {
+                    dependencies.Add(targetNs);
+                    graphData.CrossNamespaceReferences.Add(new CrossNamespaceReference(
+                        SourceNamespace: ns.Name,
+                        SourceType: type.ClrFullName,
+                        TargetNamespace: targetNs,
+                        TargetType: fullName,
+                        ReferenceKind: ReferenceKind.BaseClass));
+                }
+            }
+        }
+
+        // Analyze interfaces - collect ALL referenced types recursively
+        foreach (var ifaceRef in type.Interfaces)
+        {
+            var ifaceTypeRefs = new HashSet<(string FullName, string? Namespace)>();
+            CollectTypeReferences(ctx, ifaceRef, graph, graphData, ifaceTypeRefs);
+
+            foreach (var (fullName, targetNs) in ifaceTypeRefs)
+            {
+                if (targetNs != null && targetNs != ns.Name)
+                {
+                    dependencies.Add(targetNs);
+                    graphData.CrossNamespaceReferences.Add(new CrossNamespaceReference(
+                        SourceNamespace: ns.Name,
+                        SourceType: type.ClrFullName,
+                        TargetNamespace: targetNs,
+                        TargetType: fullName,
+                        ReferenceKind: ReferenceKind.Interface));
+                }
+            }
+        }
+
+        // Analyze generic parameters constraints - collect ALL referenced types recursively
+        foreach (var gp in type.GenericParameters)
+        {
+            foreach (var constraint in gp.Constraints)
+            {
+                var constraintTypeRefs = new HashSet<(string FullName, string? Namespace)>();
+                CollectTypeReferences(ctx, constraint, graph, graphData, constraintTypeRefs);
+
+                foreach (var (fullName, targetNs) in constraintTypeRefs)
+                {
+                    if (targetNs != null && targetNs != ns.Name)
+                    {
+                        dependencies.Add(targetNs);
+                        graphData.CrossNamespaceReferences.Add(new CrossNamespaceReference(
+                            SourceNamespace: ns.Name,
+                            SourceType: type.ClrFullName,
+                            TargetNamespace: targetNs,
+                            TargetType: fullName,
+                            ReferenceKind: ReferenceKind.GenericConstraint));
+                    }
+                }
+            }
+        }
+
+        // Analyze members of this type
+        AnalyzeMemberDependencies(ctx, graph, graphData, ns, type, dependencies);
+
+        // TS2304 FIX: Recursively analyze nested types (ONLY PUBLIC nested types)
+        foreach (var nestedType in type.NestedTypes.Where(t => t.Accessibility == Accessibility.Public))
+        {
+            AnalyzeTypeAndNestedRecursively(ctx, graph, graphData, ns, nestedType, dependencies);
         }
     }
 
@@ -405,6 +427,25 @@ public static class ImportGraph
     /// </summary>
     private static string GetOpenGenericClrKey(NamedTypeReference named)
     {
+        // TS2304 FIX: For nested types, FullName already has the correct CLR format with '+' separator
+        // (e.g., "System.Collections.Immutable.ImmutableArray`1+Builder")
+        // We should use it directly instead of reconstructing from Namespace + Name,
+        // because Name for nested types is just the child part (e.g., "Builder")
+        if (named.FullName.Contains('+'))
+        {
+            // This is a nested type - use FullName directly, stripping type arguments if present
+            var fullName = named.FullName;
+
+            // Strip assembly qualification if present (defensive)
+            if (fullName.Contains(','))
+            {
+                fullName = fullName.Substring(0, fullName.IndexOf(',')).Trim();
+            }
+
+            // FullName already has backtick arity in the correct CLR format
+            return fullName;
+        }
+
         var ns = named.Namespace;       // e.g., "System.Collections.Generic"
         var name = named.Name;          // e.g., "IEnumerable`1" or "List`1"
         var arity = named.Arity;        // e.g., 1 (0 for non-generic)
