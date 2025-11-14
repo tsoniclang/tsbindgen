@@ -481,6 +481,17 @@ public static class InternalIndexEmitter
     {
         foreach (var type in ns.Types.Where(t => t.Accessibility == Accessibility.Public))
         {
+            // TS2304 FIX: Check constructors for unsafe types
+            foreach (var ctor in type.Members.Constructors)
+            {
+                // Constructors are always on class surface
+                foreach (var param in ctor.Parameters)
+                {
+                    if (ContainsUnsafeType(param.Type))
+                        return true;
+                }
+            }
+
             // Check methods (only those actually emitted to class/static surface)
             foreach (var method in type.Members.Methods)
             {
