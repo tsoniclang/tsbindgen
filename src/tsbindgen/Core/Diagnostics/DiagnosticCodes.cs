@@ -86,6 +86,8 @@ public static class DiagnosticCodes
     public const string FacadeImportsMustUseInternalIndex = "TBG853"; // PG_FACADE_001
     public const string HeritageTypeOnlyImport         = "TBG854"; // PG_IMPORT_002 - Base class/interface imported as type-only (needs value import)
     public const string QualifiedExportPathInvalid     = "TBG855"; // PG_EXPORT_002 - Qualified name path doesn't exist in export structure
+    public const string TypeReferenceUnresolvable      = "TBG856"; // PG_REF_001 - Type reference cannot be resolved (no import/local/built-in)
+    public const string GenericArityInconsistent       = "TBG857"; // PG_ARITY_001 - Generic type arity mismatch (alias/export vs TypeSymbol)
 
     public const string PublicApiReferencesNonEmittedType = "TBG860"; // PG_API_001
     public const string GenericConstraintReferencesNonEmittedType = "TBG861"; // PG_API_002

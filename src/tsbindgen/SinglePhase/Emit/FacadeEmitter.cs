@@ -97,6 +97,10 @@ public static class FacadeEmitter
             if (exports.Count > 0)
             {
                 sb.AppendLine("// Individual type exports for convenience");
+
+                // Create TypeNameResolver for constraint printing
+                var resolver = new TypeNameResolver(ctx, plan.Graph);
+
                 foreach (var export in exports)
                 {
                     var exportKind = export.ExportKind switch
@@ -109,20 +113,32 @@ public static class FacadeEmitter
                         _ => "type"
                     };
 
-                    // TS2314 FIX: Generate generic type parameters
-                    var typeParams = GenerateTypeParameters(export.Arity);
+                    // TS2315 FIX: Skip facade exports for types that lose their generics during emission
+                    // Static classes with generic static members are emitted as non-generic classes
+                    // (TypeScript doesn't support class-level generics for static-only classes)
+                    if (export.SourceType.Kind == Model.Symbols.TypeKind.StaticNamespace &&
+                        export.SourceType.GenericParameters.Length > 0)
+                    {
+                        ctx.Log("TS2315Fix", $"Skipping facade export for {export.ExportName} (static class with generics - emitted without generic parameters)");
+                        continue;
+                    }
 
+                    // FACADE CONSTRAINTS: Use unified alias emitter with constraints
                     // Export types by referencing Internal namespace
                     // CRITICAL: Always use Internal.{ns.Name}.{export.ExportName} for non-root
                     // This ensures we're referencing the actual location in internal/index.d.ts
-                    if (ns.IsRoot)
-                    {
-                        sb.AppendLine($"export type {export.ExportName}{typeParams} = Internal.{export.ExportName}{typeParams};");
-                    }
-                    else
-                    {
-                        sb.AppendLine($"export type {export.ExportName}{typeParams} = Internal.{ns.Name}.{export.ExportName}{typeParams};");
-                    }
+                    var rhsBase = ns.IsRoot
+                        ? $"Internal.{export.ExportName}"
+                        : $"Internal.{ns.Name}.{export.ExportName}";
+
+                    AliasEmit.EmitGenericAlias(
+                        sb,
+                        aliasName: export.ExportName,
+                        sourceType: export.SourceType,
+                        rhsExpression: rhsBase,
+                        resolver,
+                        ctx,
+                        withConstraints: true); // Facade preserves constraints
                 }
             }
         }
@@ -157,12 +173,91 @@ public static class FacadeEmitter
     }
 
     /// <summary>
-    /// TS2314 FIX: Generates generic type parameter list for facade type aliases.
+    /// FACADE CONSTRAINTS: Generates generic type parameters WITH constraints for facade type aliases.
+    /// Mirrors source type's generic parameter constraints to maintain type safety across facade boundary.
+    ///
     /// Examples:
-    ///   arity=0 → "" (non-generic)
-    ///   arity=1 → "<T>"
-    ///   arity=2 → "<T1, T2>"
-    ///   arity=3 → "<T1, T2, T3>"
+    ///   No constraints: "<T>" or "<T1, T2>"
+    ///   With constraints: "<T extends IEquatable_1<T>>"
+    ///   Multiple constraints: "<T extends IComparable_1<T> & IEquatable_1<T>>"
+    ///   Mixed: "<T, U extends IComparer_1<T>>"
+    ///
+    /// CLROf wrapping is automatically applied by TypeRefPrinter for primitive type arguments in constraints.
+    /// </summary>
+    private static string GenerateTypeParametersWithConstraints(
+        Model.Symbols.TypeSymbol sourceType,
+        TypeNameResolver resolver,
+        BuildContext ctx)
+    {
+        var gps = sourceType.GenericParameters;
+        if (gps.Length == 0)
+            return string.Empty;
+
+        var parts = new List<string>(gps.Length);
+
+        foreach (var gp in gps)
+        {
+            // Collect type constraints (interfaces/classes)
+            // Skip C# special constraints (struct, class, new()) as TypeScript can't express them
+            var typeConstraints = gp.Constraints
+                .Where(c => c is not null && !IsSpecialConstraint(c))
+                .ToList();
+
+            if (typeConstraints.Count == 0)
+            {
+                // No constraints: just the parameter name
+                parts.Add(gp.Name);
+            }
+            else
+            {
+                // Print each constraint using TypeRefPrinter (handles CLROf, imports, etc.)
+                var constraintStrings = typeConstraints
+                    .Select(c => Printers.TypeRefPrinter.Print(c, resolver, ctx))
+                    .ToArray();
+
+                // Join multiple constraints with & (intersection type)
+                var constraintList = string.Join(" & ", constraintStrings);
+                parts.Add($"{gp.Name} extends {constraintList}");
+            }
+        }
+
+        return $"<{string.Join(", ", parts)}>";
+    }
+
+    /// <summary>
+    /// Check if a constraint is a C# special constraint (struct, class, new()).
+    /// These don't translate to TypeScript and should be filtered out.
+    ///
+    /// In current model, special constraints are NOT represented as TypeReferences in Constraints array,
+    /// so this is a defensive check that always returns false.
+    /// </summary>
+    private static bool IsSpecialConstraint(Model.Types.TypeReference constraint)
+    {
+        // Special constraints (struct, class, new()) are not in GenericParameter.Constraints
+        // They're represented by separate flags in the model
+        // This method is here for future-proofing in case the model changes
+        return false;
+    }
+
+    /// <summary>
+    /// Generates simple type argument list for RHS of facade alias (no constraints).
+    /// Uses actual generic parameter names from source type for consistency.
+    /// Examples: "<T>", "<TKey, TValue>", "<T1, T2, T3>"
+    /// </summary>
+    private static string GenerateTypeArguments(Model.Symbols.TypeSymbol sourceType)
+    {
+        var gps = sourceType.GenericParameters;
+        if (gps.Length == 0)
+            return string.Empty;
+
+        var names = gps.Select(gp => gp.Name);
+        return $"<{string.Join(", ", names)}>";
+    }
+
+    /// <summary>
+    /// DEPRECATED: Old arity-based parameter generator.
+    /// Use GenerateTypeParametersWithConstraints instead to preserve type safety.
+    /// Kept for reference during migration.
     /// </summary>
     private static string GenerateTypeParameters(int arity)
     {

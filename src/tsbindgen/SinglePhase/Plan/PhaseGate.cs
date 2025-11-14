@@ -105,6 +105,16 @@ public static class PhaseGate
         // MUST RUN AFTER TypeMap check, BEFORE API surface validation
         Types.ValidateExternalTypeResolution(ctx, graph, validationContext);
 
+        // PhaseGate Hardening - M7c: Type reference resolution (PG_REF_001)
+        // Validates all type references can be resolved via import/local/built-in
+        // Catches TS2304 "Cannot find name" at planning time
+        Types.ValidateTypeReferenceResolution(ctx, graph, imports, validationContext);
+
+        // PhaseGate Hardening - M7d: Generic arity consistency (PG_ARITY_001)
+        // Validates generic type arity matches across aliases and type references
+        // Catches TS2315 "Type is not generic" at planning time
+        Types.ValidateGenericArityConsistency(ctx, graph, imports, validationContext);
+
         // PhaseGate Hardening - M8: Public API surface validation (PG_API_001, PG_API_002)
         // Validates public APIs don't reference non-emitted/internal types
         // THIS MUST RUN BEFORE PG_IMPORT_001 - it's more fundamental

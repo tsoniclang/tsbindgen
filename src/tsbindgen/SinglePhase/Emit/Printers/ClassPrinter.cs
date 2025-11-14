@@ -21,7 +21,8 @@ public static class ClassPrinter
     /// Print a complete class declaration.
     /// GUARD: Only prints public types - internal types are rejected.
     /// </summary>
-    public static string Print(TypeSymbol type, TypeNameResolver resolver, BuildContext ctx, Model.SymbolGraph graph)
+    /// <param name="typesWithoutGenerics">Optional set to track types that had generics in CLR but were emitted without them (e.g., static classes)</param>
+    public static string Print(TypeSymbol type, TypeNameResolver resolver, BuildContext ctx, Model.SymbolGraph graph, HashSet<string>? typesWithoutGenerics = null)
     {
         // GUARD: Never print non-public types
         if (type.Accessibility != Accessibility.Public)
@@ -34,7 +35,7 @@ public static class ClassPrinter
         {
             TypeKind.Class => PrintClass(type, resolver, ctx, graph),
             TypeKind.Struct => PrintStruct(type, resolver, ctx, graph),
-            TypeKind.StaticNamespace => PrintStaticClass(type, resolver, ctx),
+            TypeKind.StaticNamespace => PrintStaticClass(type, resolver, ctx, typesWithoutGenerics),
             TypeKind.Enum => PrintEnum(type, ctx),
             TypeKind.Delegate => PrintDelegate(type, resolver, ctx),
             TypeKind.Interface => PrintInterface(type, resolver, ctx),
@@ -171,7 +172,7 @@ public static class ClassPrinter
         return sb.ToString();
     }
 
-    private static string PrintStaticClass(TypeSymbol type, TypeNameResolver resolver, BuildContext ctx)
+    private static string PrintStaticClass(TypeSymbol type, TypeNameResolver resolver, BuildContext ctx, HashSet<string>? typesWithoutGenerics)
     {
         // Static classes emit as abstract classes with static members in TypeScript
         // NOTE: We do NOT emit class-level generic parameters here because TypeScript
@@ -180,6 +181,14 @@ public static class ClassPrinter
         var sb = new StringBuilder();
 
         var finalName = ctx.Renamer.GetFinalTypeName(type);
+
+        // TS2315 FIX: Track types that had generics in CLR but are emitted without them
+        // This prevents convenience export aliases from referencing them with type parameters
+        if (typesWithoutGenerics != null && type.GenericParameters.Length > 0)
+        {
+            typesWithoutGenerics.Add(finalName);
+            ctx.Log("TS2315Fix", $"Tracking type without generics: {finalName} (CLR had {type.GenericParameters.Length} generic parameters)");
+        }
 
         sb.Append("abstract class ");
         sb.Append(finalName);
@@ -1113,6 +1122,15 @@ public static class ClassPrinter
         if (typeRef is not NamedTypeReference named)
             return resolvedName;
 
+        // TS2304 FIX: Skip built-in TypeScript types that come from TypeMap mappings
+        // (e.g., System.Delegate → "Function", System.Array → "Array")
+        // These should never get $instance suffix
+        if (IsBuiltInTypeScriptType(resolvedName))
+        {
+            ctx.Log("TS2304Fix", $"Skipping $instance suffix for built-in type: {resolvedName}");
+            return resolvedName;
+        }
+
         // Look up type symbol to check if it has views
         // CRITICAL: TypeIndex is keyed by ClrFullName (not stable ID format)
         var clrFullName = named.FullName;
@@ -1149,6 +1167,22 @@ public static class ClassPrinter
         }
 
         return resolvedName;
+    }
+
+    /// <summary>
+    /// TS2304 FIX: Check if a resolved type name is a built-in TypeScript type.
+    /// Built-in types come from TypeMap mappings (e.g., System.Delegate → "Function")
+    /// and should never get $instance suffix.
+    /// Handles generic arguments (e.g., "Function<T>" → extracts "Function").
+    /// </summary>
+    private static bool IsBuiltInTypeScriptType(string resolvedName)
+    {
+        // Extract base name before generic arguments
+        var genericStart = resolvedName.IndexOf('<');
+        var baseName = genericStart >= 0 ? resolvedName.Substring(0, genericStart) : resolvedName;
+
+        // Built-in types that come from TypeMap or are TypeScript primitives
+        return baseName is "Function" or "Array" or "String" or "Number" or "Boolean";
     }
 
     /// <summary>

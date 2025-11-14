@@ -130,6 +130,11 @@ public static class InternalIndexEmitter
         // Store TypeSymbol to preserve generic parameter information
         var topLevelExports = new List<TypeSymbol>();
 
+        // TS2315 FIX: Track types that had generics in CLR but were emitted without them
+        // (e.g., static classes with generic static members - TypeScript doesn't support class-level generics for static-only classes)
+        // This prevents convenience export aliases from referencing them with type parameters
+        var typesWithoutGenerics = new HashSet<string>();
+
         if (!isRoot)
         {
             // Non-root: Wrap in namespace declaration
@@ -179,7 +184,7 @@ public static class InternalIndexEmitter
             else
             {
                 // Normal emission (no views) - PUBLIC TYPES GET export KEYWORD
-                var typeDecl = ClassPrinter.Print(typeOrder.Type, resolver, ctx, graph);
+                var typeDecl = ClassPrinter.Print(typeOrder.Type, resolver, ctx, graph, typesWithoutGenerics);
                 var indented = Indent(typeDecl, indent);
 
                 // PUBLIC TYPES: Always export (both root and namespaces)
@@ -211,23 +216,90 @@ public static class InternalIndexEmitter
                 // Sort by type name for stable output
                 var sortedExports = topLevelExports.OrderBy(t => ctx.Renamer.GetFinalTypeName(t)).ToList();
 
-                // Emit as type aliases with generic parameters preserved
+                // INTERNAL CONSTRAINTS: Emit type aliases with generic constraints preserved
                 foreach (var type in sortedExports)
                 {
                     var typeName = ctx.Renamer.GetFinalTypeName(type);
 
-                    // Build generic parameter list if type is generic
-                    var genericParams = type.GenericParameters.Length > 0
-                        ? "<" + string.Join(", ", type.GenericParameters.Select(gp => gp.Name)) + ">"
-                        : "";
+                    // TS2315 FIX: Skip convenience exports for types that lost their generics during emission
+                    // These are static classes with generic static members - emitted as non-generic classes
+                    if (typesWithoutGenerics.Contains(typeName))
+                    {
+                        ctx.Log("TS2315Fix", $"Skipping convenience export for {typeName} (type was emitted without generics)");
+                        continue;
+                    }
 
-                    // Emit: export type Foo<T, U> = Namespace.Foo<T, U>;
-                    sb.AppendLine($"export type {typeName}{genericParams} = {nsOrder.Namespace.Name}.{typeName}{genericParams};");
+                    // Use unified alias emitter with constraints
+                    // Emit: export type Foo<T extends IFoo> = Namespace.Foo<T>;
+                    AliasEmit.EmitGenericAlias(
+                        sb,
+                        aliasName: typeName,
+                        sourceType: type,
+                        rhsExpression: $"{nsOrder.Namespace.Name}.{typeName}",
+                        resolver,
+                        ctx,
+                        withConstraints: true); // Internal convenience exports preserve constraints
                 }
             }
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// INTERNAL CONSTRAINTS: Generates generic type parameters WITH constraints for internal convenience exports.
+    /// Mirrors the facade constraint propagation logic to fix TS2344 errors in module-level type aliases.
+    /// </summary>
+    private static string GenerateTypeParametersWithConstraints(
+        Model.Symbols.TypeSymbol sourceType,
+        TypeNameResolver resolver,
+        BuildContext ctx)
+    {
+        var gps = sourceType.GenericParameters;
+        if (gps.Length == 0)
+            return string.Empty;
+
+        var parts = new List<string>(gps.Length);
+
+        foreach (var gp in gps)
+        {
+            // Collect type constraints (interfaces/classes)
+            // Skip C# special constraints (struct, class, new()) as TypeScript can't express them
+            var typeConstraints = gp.Constraints
+                .Where(c => c is not null && !IsSpecialConstraint(c))
+                .ToList();
+
+            if (typeConstraints.Count == 0)
+            {
+                // No constraints: just the parameter name
+                parts.Add(gp.Name);
+            }
+            else
+            {
+                // Print each constraint using TypeRefPrinter (handles CLROf, imports, etc.)
+                var constraintStrings = typeConstraints
+                    .Select(c => Printers.TypeRefPrinter.Print(c, resolver, ctx))
+                    .ToArray();
+
+                // Join multiple constraints with & (intersection type)
+                var constraintList = string.Join(" & ", constraintStrings);
+                parts.Add($"{gp.Name} extends {constraintList}");
+            }
+        }
+
+        return $"<{string.Join(", ", parts)}>";
+    }
+
+    /// <summary>
+    /// Check if a constraint is a C# special constraint (struct, class, new()).
+    /// These don't translate to TypeScript and should be filtered out.
+    /// </summary>
+    private static bool IsSpecialConstraint(Model.Types.TypeReference constraint)
+    {
+        // Special constraints (struct, class, new()) are not in GenericParameter.Constraints
+        // They're represented by separate flags in the model
+        // This method is here for future-proofing in case the model changes
+        return false;
     }
 
     private static void EmitBrandedPrimitives(StringBuilder sb)
@@ -265,6 +337,9 @@ public static class InternalIndexEmitter
         // Native-sized integers
         sb.AppendLine($"export type nint = number & {{ __brand: \"nint\" }} & {IEq} & {ICmp};");
         sb.AppendLine($"export type nuint = number & {{ __brand: \"nuint\" }} & {IEq} & {ICmp};");
+
+        // Character type
+        sb.AppendLine($"export type char = string & {{ __brand: \"char\" }} & {IEq} & {ICmp};");
 
         sb.AppendLine();
 
@@ -370,44 +445,24 @@ public static class InternalIndexEmitter
         // Get final type name
         var finalName = ctx.Renamer.GetFinalTypeName(type);
 
-        // Type alias: export type TypeName<...> = TypeName$instance<...> & __TypeName$views<...>
+        // VIEW COMPOSITION CONSTRAINTS: Type alias with constraints on LHS, plain args on RHS
+        // export type TypeName<T extends IFoo> = TypeName$instance<T> & __TypeName$views<T>
+
+        // Build RHS: both $instance and $views need type arguments
+        var typeArgs = AliasEmit.GenerateTypeArguments(type);
+        var rhsExpression = $"{finalName}$instance{typeArgs} & __{finalName}$views{typeArgs}";
+
+        // Emit the alias with constraints on LHS
+        // Note: We pass the complete RHS (including type args), so we use the manual emission
         sb.Append("export type ");
         sb.Append(finalName);
 
-        // Generic parameters
-        if (type.GenericParameters.Length > 0)
-        {
-            sb.Append('<');
-            var genericParams = string.Join(", ", type.GenericParameters.Select(gp => gp.Name));
-            sb.Append(genericParams);
-            sb.Append('>');
-        }
+        var typeParamsLHS = AliasEmit.GenerateTypeParametersWithConstraints(type, resolver, ctx);
+        sb.Append(typeParamsLHS);
 
         sb.Append(" = ");
-        sb.Append(finalName);
-        sb.Append("$instance");
-
-        // Generic arguments
-        if (type.GenericParameters.Length > 0)
-        {
-            sb.Append('<');
-            sb.Append(string.Join(", ", type.GenericParameters.Select(gp => gp.Name)));
-            sb.Append('>');
-        }
-
-        sb.Append(" & __");
-        sb.Append(finalName);
-        sb.Append("$views");
-
-        // Generic arguments
-        if (type.GenericParameters.Length > 0)
-        {
-            sb.Append('<');
-            sb.Append(string.Join(", ", type.GenericParameters.Select(gp => gp.Name)));
-            sb.Append('>');
-        }
-
-        sb.Append(";");
+        sb.Append(rhsExpression);
+        sb.AppendLine(";");
 
         return sb.ToString();
     }

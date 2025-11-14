@@ -213,7 +213,8 @@ public static class ImportPlanner
                 exports.Add(new ExportStatement(
                     ExportName: finalName,
                     ExportKind: DetermineExportKind(type),
-                    Arity: type.Arity)); // TS2314 FIX: Capture generic arity
+                    Arity: type.Arity, // TS2314 FIX: Capture generic arity
+                    SourceType: type)); // FACADE CONSTRAINTS: Store source type for constraint propagation
             }
         }
 
@@ -401,7 +402,8 @@ public sealed record TypeImport(
 public sealed record ExportStatement(
     string ExportName,
     ExportKind ExportKind,
-    int Arity); // Number of generic type parameters (0 for non-generic types)
+    int Arity, // Number of generic type parameters (0 for non-generic types)
+    Model.Symbols.TypeSymbol SourceType); // Source type symbol (for constraint propagation)
 
 /// <summary>
 /// Kind of export.

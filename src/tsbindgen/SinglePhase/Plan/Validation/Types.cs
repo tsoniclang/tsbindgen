@@ -550,4 +550,300 @@ internal static class Types
 
         ctx.Log("PhaseGate", $"Validated {checkedTypeArgs} generic type arguments. Primitive args: {primitiveTypeArgs}");
     }
+
+    /// <summary>
+    /// PG_REF_001: Validates that all type references can be resolved via import/local declaration/built-in.
+    /// Detects TS2304 "Cannot find name" errors at planning time instead of tsc runtime.
+    /// Checks that TypeNameResolver would produce a resolvable reference for every type used.
+    /// </summary>
+    internal static void ValidateTypeReferenceResolution(BuildContext ctx, SymbolGraph graph, ImportPlan imports, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate", "Validating type reference resolution (PG_REF_001)...");
+
+        int checkedReferences = 0;
+        int unresolvedReferences = 0;
+
+        // Helper: Check if a type reference is resolvable
+        bool IsResolvable(NamedTypeReference named, NamespaceSymbol currentNamespace, TypeNameResolver resolver)
+        {
+            // 1. Check if it's a built-in type
+            if (TypeMap.TryMapBuiltin(named.FullName, out _))
+                return true;
+
+            // 2. Check if it's a primitive that TypeNameResolver handles
+            if (TypeNameResolver.IsPrimitive(named.FullName))
+                return true;
+
+            // 3. Check if it's a local type in current namespace
+            var stableId = $"{named.AssemblyName}:{named.FullName}";
+            if (graph.TypeIndex.TryGetValue(stableId, out var targetType))
+            {
+                // Type exists in graph - check if it's in current namespace (local) or needs import
+                if (targetType.Namespace == currentNamespace.Name)
+                {
+                    // Local type in same namespace - always resolvable
+                    return true;
+                }
+
+                // Foreign namespace - check if there's an import for it
+                if (imports.NamespaceImports.TryGetValue(currentNamespace.Name, out var nsImports))
+                {
+                    // Check if any import covers this type's namespace
+                    foreach (var import in nsImports)
+                    {
+                        if (import.TargetNamespace == targetType.Namespace)
+                            return true;
+                    }
+                }
+
+                // Type in different namespace but no import
+                return false;
+            }
+
+            // 4. Type not in graph - could be external or missing
+            // Allow if it's from a source assembly (might be internal type)
+            var isSourceAssembly = graph.SourceAssemblies.Any(path =>
+                System.IO.Path.GetFileNameWithoutExtension(path) == named.AssemblyName);
+
+            return isSourceAssembly;
+        }
+
+        // Helper: Walk type reference tree
+        void CheckTypeReference(TypeReference typeRef, string owner, NamespaceSymbol currentNamespace, TypeNameResolver resolver)
+        {
+            switch (typeRef)
+            {
+                case NamedTypeReference named:
+                    checkedReferences++;
+
+                    if (!IsResolvable(named, currentNamespace, resolver))
+                    {
+                        validationCtx.RecordDiagnostic(
+                            DiagnosticCodes.TypeReferenceUnresolvable,
+                            "ERROR",
+                            $"{owner}: type reference '{named.FullName}' from assembly '{named.AssemblyName}' " +
+                            $"cannot be resolved. No local declaration, import, or built-in type found. (PG_REF_001)");
+                        unresolvedReferences++;
+                    }
+
+                    // Recursively check type arguments
+                    foreach (var arg in named.TypeArguments)
+                        CheckTypeReference(arg, owner, currentNamespace, resolver);
+                    break;
+
+                case ArrayTypeReference array:
+                    CheckTypeReference(array.ElementType, owner, currentNamespace, resolver);
+                    break;
+
+                case PointerTypeReference ptr:
+                    CheckTypeReference(ptr.PointeeType, owner, currentNamespace, resolver);
+                    break;
+
+                case ByRefTypeReference byref:
+                    CheckTypeReference(byref.ReferencedType, owner, currentNamespace, resolver);
+                    break;
+
+                case NestedTypeReference nested:
+                    CheckTypeReference(nested.FullReference, owner, currentNamespace, resolver);
+                    break;
+
+                case GenericParameterReference:
+                    // Generic parameters are always resolvable (locally declared)
+                    break;
+            }
+        }
+
+        // Walk all types and their signatures
+        foreach (var ns in graph.Namespaces)
+        {
+            var resolver = new TypeNameResolver(ctx, graph);
+
+            foreach (var type in ns.Types)
+            {
+                var typeId = $"{ns.Name}.{type.ClrName}";
+
+                // Check base type
+                if (type.BaseType != null)
+                    CheckTypeReference(type.BaseType, $"{typeId} (base)", ns, resolver);
+
+                // Check interfaces
+                foreach (var iface in type.Interfaces)
+                    CheckTypeReference(iface, $"{typeId} (interface)", ns, resolver);
+
+                // Check generic parameter constraints
+                foreach (var gp in type.GenericParameters)
+                {
+                    foreach (var constraint in gp.Constraints)
+                        CheckTypeReference(constraint, $"{typeId}<{gp.Name}> (constraint)", ns, resolver);
+                }
+
+                // Check method signatures
+                foreach (var method in type.Members.Methods)
+                {
+                    var methodId = $"{typeId}.{method.ClrName}";
+
+                    CheckTypeReference(method.ReturnType, $"{methodId} (return)", ns, resolver);
+
+                    foreach (var param in method.Parameters)
+                        CheckTypeReference(param.Type, $"{methodId} ({param.Name})", ns, resolver);
+
+                    foreach (var gp in method.GenericParameters)
+                    {
+                        foreach (var constraint in gp.Constraints)
+                            CheckTypeReference(constraint, $"{methodId}<{gp.Name}> (constraint)", ns, resolver);
+                    }
+                }
+
+                // Check property signatures
+                foreach (var prop in type.Members.Properties)
+                {
+                    CheckTypeReference(prop.PropertyType, $"{typeId}.{prop.ClrName} (property)", ns, resolver);
+
+                    foreach (var param in prop.IndexParameters)
+                        CheckTypeReference(param.Type, $"{typeId}.{prop.ClrName}[{param.Name}]", ns, resolver);
+                }
+
+                // Check field types
+                foreach (var field in type.Members.Fields)
+                    CheckTypeReference(field.FieldType, $"{typeId}.{field.ClrName} (field)", ns, resolver);
+
+                // Check event types
+                foreach (var evt in type.Members.Events)
+                    CheckTypeReference(evt.EventHandlerType, $"{typeId}.{evt.ClrName} (event)", ns, resolver);
+            }
+        }
+
+        ctx.Log("PhaseGate", $"Validated {checkedReferences} type references. Unresolved: {unresolvedReferences}");
+    }
+
+    /// <summary>
+    /// PG_ARITY_001: Validates that generic type arity is consistent across aliases and exports.
+    /// Detects TS2315 "Type is not generic" errors at planning time.
+    /// Checks that every facade/internal export/view composition alias has matching arity.
+    /// </summary>
+    internal static void ValidateGenericArityConsistency(BuildContext ctx, SymbolGraph graph, ImportPlan imports, ValidationContext validationCtx)
+    {
+        ctx.Log("PhaseGate", "Validating generic arity consistency (PG_ARITY_001)...");
+
+        int checkedTypes = 0;
+        int arityMismatches = 0;
+
+        // Walk all types and check their arity is consistent
+        foreach (var ns in graph.Namespaces)
+        {
+            foreach (var type in ns.Types)
+            {
+                checkedTypes++;
+
+                var typeId = $"{ns.Name}.{type.ClrName}";
+                var expectedArity = type.Arity;
+
+                // Check 1: Verify namespace exports (including facade exports if this namespace has them)
+                if (imports.NamespaceExports.TryGetValue(ns.Name, out var nsExports))
+                {
+                    var finalTypeName = ctx.Renamer.GetFinalTypeName(type);
+
+                    foreach (var export in nsExports)
+                    {
+                        if (export.ExportName == finalTypeName)
+                        {
+                            if (export.Arity != expectedArity)
+                            {
+                                validationCtx.RecordDiagnostic(
+                                    DiagnosticCodes.GenericArityInconsistent,
+                                    "ERROR",
+                                    $"{typeId}: export has arity {export.Arity} but type has arity {expectedArity}. (PG_ARITY_001)");
+                                arityMismatches++;
+                            }
+                        }
+                    }
+                }
+
+                // Check 2: Verify all type references to this type use correct arity
+                // This is implicitly checked by TypeRefPrinter, but we can add explicit validation
+                // for type arguments count vs declared generic parameter count
+                void CheckTypeRefArity(TypeReference typeRef, string owner)
+                {
+                    if (typeRef is NamedTypeReference named)
+                    {
+                        // Try to resolve to a type in the graph
+                        var stableId = $"{named.AssemblyName}:{named.FullName}";
+                        if (graph.TypeIndex.TryGetValue(stableId, out var targetType))
+                        {
+                            var declaredArity = targetType.Arity;
+                            var usedArity = named.TypeArguments.Count;
+
+                            if (declaredArity != usedArity)
+                            {
+                                validationCtx.RecordDiagnostic(
+                                    DiagnosticCodes.GenericArityInconsistent,
+                                    "ERROR",
+                                    $"{owner}: uses type '{named.FullName}' with {usedArity} type arguments, " +
+                                    $"but type is declared with {declaredArity} generic parameters. (PG_ARITY_001)");
+                                arityMismatches++;
+                            }
+                        }
+
+                        // Recursively check type arguments
+                        foreach (var arg in named.TypeArguments)
+                            CheckTypeRefArity(arg, owner);
+                    }
+                    else if (typeRef is ArrayTypeReference array)
+                    {
+                        CheckTypeRefArity(array.ElementType, owner);
+                    }
+                    else if (typeRef is PointerTypeReference ptr)
+                    {
+                        CheckTypeRefArity(ptr.PointeeType, owner);
+                    }
+                    else if (typeRef is ByRefTypeReference byref)
+                    {
+                        CheckTypeRefArity(byref.ReferencedType, owner);
+                    }
+                    else if (typeRef is NestedTypeReference nested)
+                    {
+                        CheckTypeRefArity(nested.FullReference, owner);
+                    }
+                }
+
+                // Check type references in this type's signatures
+                if (type.BaseType != null)
+                    CheckTypeRefArity(type.BaseType, $"{typeId} (base)");
+
+                foreach (var iface in type.Interfaces)
+                    CheckTypeRefArity(iface, $"{typeId} (interface)");
+
+                foreach (var gp in type.GenericParameters)
+                {
+                    foreach (var constraint in gp.Constraints)
+                        CheckTypeRefArity(constraint, $"{typeId}<{gp.Name}> (constraint)");
+                }
+
+                foreach (var method in type.Members.Methods)
+                {
+                    CheckTypeRefArity(method.ReturnType, $"{typeId}.{method.ClrName} (return)");
+
+                    foreach (var param in method.Parameters)
+                        CheckTypeRefArity(param.Type, $"{typeId}.{method.ClrName} ({param.Name})");
+                }
+
+                foreach (var prop in type.Members.Properties)
+                {
+                    CheckTypeRefArity(prop.PropertyType, $"{typeId}.{prop.ClrName} (property)");
+                }
+
+                foreach (var field in type.Members.Fields)
+                {
+                    CheckTypeRefArity(field.FieldType, $"{typeId}.{field.ClrName} (field)");
+                }
+
+                foreach (var evt in type.Members.Events)
+                {
+                    CheckTypeRefArity(evt.EventHandlerType, $"{typeId}.{evt.ClrName} (event)");
+                }
+            }
+        }
+
+        ctx.Log("PhaseGate", $"Validated {checkedTypes} types for arity consistency. Mismatches: {arityMismatches}");
+    }
 }

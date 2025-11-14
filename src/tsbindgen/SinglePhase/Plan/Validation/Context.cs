@@ -218,6 +218,8 @@ internal static class Context
             DiagnosticCodes.ImportedTypeNotExported => "Import references unexported type",
             DiagnosticCodes.HeritageTypeOnlyImport => "Heritage clause uses type-only import (needs value)",
             DiagnosticCodes.QualifiedExportPathInvalid => "Qualified name path doesn't exist in exports",
+            DiagnosticCodes.TypeReferenceUnresolvable => "Type reference unresolvable (no import/local/built-in)",
+            DiagnosticCodes.GenericArityInconsistent => "Generic arity mismatch (alias vs type)",
             DiagnosticCodes.PublicApiReferencesNonEmittedType => "Public API exposes internal/non-emitted type",
             DiagnosticCodes.GenericConstraintReferencesNonEmittedType => "Generic constraint references non-emitted type",
             DiagnosticCodes.UnsupportedClrSpecialForm => "Unsupported special form (pointer/byref/fnptr)",

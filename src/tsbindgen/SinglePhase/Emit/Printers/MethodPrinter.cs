@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+using System.Linq;
 using System.Text;
 using tsbindgen.SinglePhase.Model;
 using tsbindgen.SinglePhase.Model.Symbols;
@@ -12,6 +14,63 @@ namespace tsbindgen.SinglePhase.Emit.Printers;
 /// </summary>
 public static class MethodPrinter
 {
+    /// <summary>
+    /// METHOD CONSTRAINTS (Pattern A - Shadowing): Enriches method generic parameters with class constraints.
+    /// When a method generic parameter has the same name as a class generic but no constraints of its own,
+    /// inherit the class generic's constraints for TypeScript emission.
+    ///
+    /// This fixes TS2344 errors where:
+    ///   class Foo<T extends IEquatable_1<T>> {
+    ///       static Bar<T>(x: T): Foo<T>;  // method T unconstrained
+    ///   }
+    ///
+    /// Becomes:
+    ///   class Foo<T extends IEquatable_1<T>> {
+    ///       static Bar<T extends IEquatable_1<T>>(x: T): Foo<T>;  // inherited constraint
+    ///   }
+    /// </summary>
+    private static ImmutableArray<GenericParameterSymbol> EnrichMethodGenericParametersWithClassConstraints(
+        MethodSymbol method,
+        TypeSymbol declaringType)
+    {
+        // Build lookup: class generic name → constraints
+        var classConstraints = declaringType.GenericParameters
+            .Where(gp => gp.Constraints.Length > 0)
+            .ToDictionary(gp => gp.Name, gp => gp.Constraints);
+
+        if (classConstraints.Count == 0)
+        {
+            // No class constraints to inherit
+            return method.GenericParameters;
+        }
+
+        var enriched = new List<GenericParameterSymbol>(method.GenericParameters.Length);
+        bool anyEnriched = false;
+
+        foreach (var methodGp in method.GenericParameters)
+        {
+            // Pattern A: Shadowing fallback
+            // If method parameter has no constraints but class has constraints for same name, inherit them
+            if (methodGp.Constraints.Length == 0 &&
+                classConstraints.TryGetValue(methodGp.Name, out var inheritedConstraints))
+            {
+                // Create enriched parameter with class constraints
+                enriched.Add(methodGp with { Constraints = inheritedConstraints });
+                anyEnriched = true;
+            }
+            else
+            {
+                // Keep as-is (method has its own constraints, or no matching class constraint)
+                enriched.Add(methodGp);
+            }
+        }
+
+        return anyEnriched
+            ? enriched.ToImmutableArray()
+            : method.GenericParameters;
+    }
+
+
     /// <summary>
     /// Print a method signature to TypeScript.
     /// </summary>
@@ -51,10 +110,12 @@ public static class MethodPrinter
         sb.Append(methodName);
 
         // Generic parameters: <T, U>
-        if (method.GenericParameters.Length > 0)
+        // METHOD CONSTRAINTS: Enrich with class constraints for shadowing case (Pattern A)
+        var enrichedGenericParams = EnrichMethodGenericParametersWithClassConstraints(method, declaringType);
+        if (enrichedGenericParams.Length > 0)
         {
             sb.Append('<');
-            sb.Append(string.Join(", ", method.GenericParameters.Select(gp => PrintGenericParameter(gp, resolver, ctx))));
+            sb.Append(string.Join(", ", enrichedGenericParams.Select(gp => PrintGenericParameter(gp, resolver, ctx))));
             sb.Append('>');
         }
 
